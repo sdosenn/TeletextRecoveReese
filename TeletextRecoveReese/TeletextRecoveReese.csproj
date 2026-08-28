@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RootNamespace>TeletextRecoveReese</RootNamespace>
+    <AssemblyName>TeletextRecoveReese</AssemblyName>
+    <Version>0.1-beta</Version>
+    <Product>TeletextRecoveReese</Product>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TeletextRecoveReese.Core\TeletextRecoveReese.Core.csproj" />
+  </ItemGroup>
+
+<ItemGroup>
+  <!-- Ensure images are included as Avalonia resources -->
+  <AvaloniaResource Include="Assets\**" />
+</ItemGroup>
+
+</Project>

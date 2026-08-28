@@ -1,0 +1,414 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:TeletextRecoveReese"
+        x:Class="TeletextRecoveReese.MainWindow"
+        Title="TeletextRecoveReese"
+        SizeToContent="WidthAndHeight"
+        CanResize="False"
+        Background="#1e1e1e"
+        WindowStartupLocation="CenterScreen">
+
+    <NativeMenu.Menu>
+        <NativeMenu>
+            <NativeMenuItem Header="File">
+                <NativeMenu>
+                    <NativeMenuItem Header="Open Squashed or Single…" Gesture="Meta+O" Click="OnNativeOpenSquashedClicked" />
+                    <NativeMenuItem Header="Open Broadcast Stream…" Click="OnNativeOpenClicked" />
+                    <NativeMenuItem Header="Open Recent"><NativeMenu /></NativeMenuItem>
+                    <NativeMenuItemSeparator />
+                    <NativeMenuItem Header="Save" Gesture="Meta+S" Click="OnNativeSaveClicked" />
+                    <NativeMenuItem Header="Save As…" Gesture="Meta+Shift+S" Click="OnNativeSaveAsClicked" />
+                    <NativeMenuItemSeparator />
+                    <NativeMenuItem Header="Export Screenshot…" Click="OnNativeExportScreenshotClicked" />
+                    <NativeMenuItem Header="Batch Export Screenshots…" Click="OnNativeBatchExportScreenshotsClicked" />
+                    <NativeMenuItem Header="Export Video…" IsEnabled="False" Click="OnNativeExportVideoClicked" />
+                    <NativeMenuItemSeparator />
+                    <NativeMenuItem Header="Close Window" Gesture="Meta+W" Click="OnNativeExitClicked" />
+                </NativeMenu>
+            </NativeMenuItem>
+            <NativeMenuItem Header="Edit">
+                <NativeMenu>
+                    <NativeMenuItem Header="Undo" Gesture="Meta+Z" IsEnabled="False" Click="OnNativeUndoClicked" />
+                    <NativeMenuItem Header="Redo" Gesture="Meta+Shift+Z" IsEnabled="False" Click="OnNativeRedoClicked" />
+                    <NativeMenuItemSeparator />
+                    <NativeMenuItem Header="Insert">
+                        <NativeMenu>
+                            <NativeMenuItem Header="Alpha color"><NativeMenu><NativeMenuItem Header="Black" CommandParameter="0" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Red" CommandParameter="1" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Green" CommandParameter="2" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Yellow" CommandParameter="3" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Blue" CommandParameter="4" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Magenta" CommandParameter="5" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Cyan" CommandParameter="6" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="White" CommandParameter="7" Click="OnNativeInsertControlCodeClicked"/></NativeMenu></NativeMenuItem>
+                            <NativeMenuItem Header="Mosaic color"><NativeMenu><NativeMenuItem Header="Black" CommandParameter="16" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Red" CommandParameter="17" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Green" CommandParameter="18" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Yellow" CommandParameter="19" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Blue" CommandParameter="20" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Magenta" CommandParameter="21" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Cyan" CommandParameter="22" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="White" CommandParameter="23" Click="OnNativeInsertControlCodeClicked"/></NativeMenu></NativeMenuItem>
+                            <NativeMenuItemSeparator />
+                            <NativeMenuItem Header="Flash" CommandParameter="8" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Steady" CommandParameter="9" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Start box" CommandParameter="11" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="End box" CommandParameter="10" Click="OnNativeInsertControlCodeClicked"/>
+                            <NativeMenuItemSeparator />
+                            <NativeMenuItem Header="Normal size" CommandParameter="12" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Double height" CommandParameter="13" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Double width" CommandParameter="14" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Double size" CommandParameter="15" Click="OnNativeInsertControlCodeClicked"/>
+                            <NativeMenuItemSeparator />
+                            <NativeMenuItem Header="Conceal" CommandParameter="24" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Contiguous mosaic" CommandParameter="25" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Separated mosaic" CommandParameter="26" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="End new background (black)" CommandParameter="28" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Start new background" CommandParameter="29" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Hold mosaics" CommandParameter="30" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Release mosaics" CommandParameter="31" Click="OnNativeInsertControlCodeClicked"/>
+                        </NativeMenu>
+                    </NativeMenuItem>
+                </NativeMenu>
+            </NativeMenuItem>
+            <NativeMenuItem Header="View">
+                <NativeMenu>
+                    <NativeMenuItem Header="X/26 Enhancements Sidebar"
+                                    ToggleType="CheckBox"
+                                    IsChecked="True"
+                                    Click="OnNativeX26EnhancementsSidebarClicked" />
+                    <NativeMenuItem Header="Page Bookmarks Sidebar"
+                                    ToggleType="CheckBox"
+                                    IsChecked="True"
+                                    Click="OnNativeVideoBookmarksSidebarClicked" />
+                    <NativeMenuItem Header="Suppress Flash"
+                                    ToggleType="CheckBox"
+                                    Click="OnNativeSuppressFlashClicked" />
+                </NativeMenu>
+            </NativeMenuItem>
+            <NativeMenuItem Header="Page">
+                <NativeMenu>
+                    <NativeMenuItem Header="New Page" Gesture="Meta+N" Click="OnNativeNewPageClicked" />
+                    <NativeMenuItem Header="Delete Current Page" Click="OnNativeDeletePageClicked" />
+                    <NativeMenuItem Header="G0 Subset">
+                        <NativeMenu>
+                            <NativeMenuItem Header="Auto (from header)" CommandParameter="auto" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="Default G0 + enhancements" CommandParameter="default" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItemSeparator/>
+                            <NativeMenuItem Header="English" CommandParameter="0" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="German" CommandParameter="1" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="Swedish/Finnish/Hungarian" CommandParameter="2" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="Italian" CommandParameter="3" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="French" CommandParameter="4" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="Portuguese/Spanish" CommandParameter="5" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="Czech/Slovak" CommandParameter="6" Click="OnNativeG0SubsetClicked"/>
+                        </NativeMenu>
+                    </NativeMenuItem>
+                </NativeMenu>
+            </NativeMenuItem>
+            <NativeMenuItem Header="Options">
+                <NativeMenu>
+                    <NativeMenuItem Header="Font…" Click="OnNativeChooseFontClicked" />
+                </NativeMenu>
+            </NativeMenuItem>
+        </NativeMenu>
+    </NativeMenu.Menu>
+
+    <DockPanel>
+        <!-- Standard Menu -->
+        <Menu x:Name="WindowMenu" DockPanel.Dock="Top">
+            <MenuItem Header="_File">
+                <MenuItem Header="Open _Squashed or Single..." InputGesture="Ctrl+O" Click="OnOpenSquashedClicked" />
+                <MenuItem Header="Open broadcast stream..." Click="OnOpenClicked" />
+                <MenuItem x:Name="OpenRecentMenuItem" Header="Open _Recent" />
+                <Separator />
+                <MenuItem Header="_Save" InputGesture="Ctrl+S" Click="OnSaveClicked" />
+                <MenuItem Header="Save _As..." Click="OnSaveAsClicked" />
+                <Separator />
+                <MenuItem Header="Export _Screenshot..." Click="OnExportScreenshotClicked" />
+                <MenuItem Header="_Batch Export Screenshots..." Click="OnBatchExportScreenshotsClicked" />
+                <MenuItem x:Name="ExportVideoMenuItem" Header="Export _Video..." IsEnabled="False" Click="OnExportVideoClicked" />
+                <Separator />
+                <MenuItem Header="E_xit" Click="OnExitClicked" />
+            </MenuItem>
+            <MenuItem Header="_Edit">
+                <MenuItem x:Name="UndoMenuItem" Header="_Undo" InputGesture="Ctrl+Z" IsEnabled="False" Click="OnUndoClicked"/>
+                <MenuItem x:Name="RedoMenuItem" Header="_Redo" InputGesture="Ctrl+Shift+Z" IsEnabled="False" Click="OnRedoClicked"/>
+                <Separator />
+                <MenuItem Header="_Insert">
+                    <MenuItem Header="Alpha color">
+                        <MenuItem Header="Black" CommandParameter="0" Click="OnInsertControlCodeClicked"/><MenuItem Header="Red" CommandParameter="1" Click="OnInsertControlCodeClicked"/><MenuItem Header="Green" CommandParameter="2" Click="OnInsertControlCodeClicked"/><MenuItem Header="Yellow" CommandParameter="3" Click="OnInsertControlCodeClicked"/><MenuItem Header="Blue" CommandParameter="4" Click="OnInsertControlCodeClicked"/><MenuItem Header="Magenta" CommandParameter="5" Click="OnInsertControlCodeClicked"/><MenuItem Header="Cyan" CommandParameter="6" Click="OnInsertControlCodeClicked"/><MenuItem Header="White" CommandParameter="7" Click="OnInsertControlCodeClicked"/>
+                    </MenuItem>
+                    <MenuItem Header="Mosaic color">
+                        <MenuItem Header="Black" CommandParameter="16" Click="OnInsertControlCodeClicked"/><MenuItem Header="Red" CommandParameter="17" Click="OnInsertControlCodeClicked"/><MenuItem Header="Green" CommandParameter="18" Click="OnInsertControlCodeClicked"/><MenuItem Header="Yellow" CommandParameter="19" Click="OnInsertControlCodeClicked"/><MenuItem Header="Blue" CommandParameter="20" Click="OnInsertControlCodeClicked"/><MenuItem Header="Magenta" CommandParameter="21" Click="OnInsertControlCodeClicked"/><MenuItem Header="Cyan" CommandParameter="22" Click="OnInsertControlCodeClicked"/><MenuItem Header="White" CommandParameter="23" Click="OnInsertControlCodeClicked"/>
+                    </MenuItem>
+                    <Separator />
+                    <MenuItem Header="Flash" CommandParameter="8" Click="OnInsertControlCodeClicked"/><MenuItem Header="Steady" CommandParameter="9" Click="OnInsertControlCodeClicked"/>
+                    <MenuItem Header="Start box" CommandParameter="11" Click="OnInsertControlCodeClicked"/><MenuItem Header="End box" CommandParameter="10" Click="OnInsertControlCodeClicked"/>
+                    <Separator />
+                    <MenuItem Header="Normal size" CommandParameter="12" Click="OnInsertControlCodeClicked"/><MenuItem Header="Double height" CommandParameter="13" Click="OnInsertControlCodeClicked"/><MenuItem Header="Double width" CommandParameter="14" Click="OnInsertControlCodeClicked"/><MenuItem Header="Double size" CommandParameter="15" Click="OnInsertControlCodeClicked"/>
+                    <Separator />
+                    <MenuItem Header="Conceal" CommandParameter="24" Click="OnInsertControlCodeClicked"/><MenuItem Header="Contiguous mosaic" CommandParameter="25" Click="OnInsertControlCodeClicked"/><MenuItem Header="Separated mosaic" CommandParameter="26" Click="OnInsertControlCodeClicked"/>
+                    <MenuItem Header="End new background (black)" CommandParameter="28" Click="OnInsertControlCodeClicked"/><MenuItem Header="Start new background" CommandParameter="29" Click="OnInsertControlCodeClicked"/>
+                    <MenuItem Header="Hold mosaics" CommandParameter="30" Click="OnInsertControlCodeClicked"/><MenuItem Header="Release mosaics" CommandParameter="31" Click="OnInsertControlCodeClicked"/>
+                </MenuItem>
+            </MenuItem>
+            <MenuItem Header="_View">
+                <MenuItem x:Name="X26EnhancementsMenuItem"
+                          Header="X/26 _Enhancements Sidebar"
+                          ToggleType="CheckBox"
+                          IsChecked="True"
+                          Click="OnX26EnhancementsSidebarClicked" />
+                <MenuItem x:Name="VideoBookmarksMenuItem"
+                          Header="Page _Bookmarks Sidebar"
+                          ToggleType="CheckBox"
+                          IsChecked="True"
+                          Click="OnVideoBookmarksSidebarClicked" />
+                <MenuItem x:Name="SuppressFlashMenuItem"
+                          Header="Suppress _Flash"
+                          ToggleType="CheckBox"
+                          Click="OnSuppressFlashClicked" />
+            </MenuItem>
+            <MenuItem Header="_Page">
+                <MenuItem Header="_New Page" InputGesture="Ctrl+N" Click="OnNewPageClicked" />
+                <MenuItem Header="_Delete Current Page" Click="OnDeletePageClicked" />
+                <MenuItem Header="G0 _Subset">
+                    <MenuItem Header="Auto (from header)" CommandParameter="auto" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="Default G0 + enhancements" CommandParameter="default" Click="OnG0SubsetClicked"/>
+                    <Separator/>
+                    <MenuItem Header="English" CommandParameter="0" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="German" CommandParameter="1" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="Swedish/Finnish/Hungarian" CommandParameter="2" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="Italian" CommandParameter="3" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="French" CommandParameter="4" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="Portuguese/Spanish" CommandParameter="5" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="Czech/Slovak" CommandParameter="6" Click="OnG0SubsetClicked"/>
+                </MenuItem>
+            </MenuItem>
+            <MenuItem Header="_Options">
+                <MenuItem Header="_Font..." Click="OnChooseFontClicked" />
+            </MenuItem>
+            <MenuItem Header="_Help">
+                <MenuItem Header="_About" Click="AboutButton_Click" />
+            </MenuItem>
+        </Menu>
+
+        <!-- Main Content Area -->
+        <Border Padding="12">
+            <!-- 3 Columns: Left Grid, Middle Transfer Buttons, Right Grid -->
+            <Grid ColumnDefinitions="Auto, Auto, Auto" ColumnSpacing="0" x:Name="MainGrid">
+
+                <!-- ==================== LEFT SIDE (Recovered squash) ==================== -->
+                <Grid x:Name="SquashPaneGrid" Grid.Column="0" RowDefinitions="Auto, Auto, Auto" RowSpacing="6" VerticalAlignment="Top">
+                    <StackPanel x:Name="SquashHeaderStack" Grid.Row="0" Spacing="6">
+                        <TextBlock x:Name="SquashInfoText" Text="Squashed page" Foreground="#ffffff" FontSize="16" FontWeight="Bold" Margin="2,0"/>
+                        <Border x:Name="SquashToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBlock Text="Address:" VerticalAlignment="Center" Foreground="#ffffff" FontSize="13" FontWeight="SemiBold"/>
+                                <ComboBox x:Name="SquashMagazineComboBox" Width="70" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashMagazineComboChanged"/>
+                                <ComboBox x:Name="SquashPageNumberComboBox" Width="70" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashPageNumberComboChanged"/>
+                                <ComboBox x:Name="SquashSubpageComboBox" Width="80" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashSubpageComboChanged"/>
+                                <Separator Width="1" Background="#3f3f46" Margin="2,2"/>
+                                <Button x:Name="SquashPreviousButton" IsEnabled="False" Content="&lt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnSquashPreviousClicked"/>
+                                <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="#ffffff" FontSize="13" Margin="2,0"/>
+                                <Button x:Name="SquashNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnSquashNextClicked"/>
+                                <Separator Width="1" Background="#3f3f46" Margin="2,2"/>
+                                <Button x:Name="SquashJumpToBroadcastButton" IsEnabled="False" Content="Jump to in full" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToBroadcastClicked"/>
+                            </StackPanel>
+                        </Border>
+                        <Border x:Name="SquashEditToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44">
+                            <Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <Button x:Name="ColorModeButton" Content="Alpha" Width="65" Height="28" Click="OnColorModeClicked"/>
+                                    <Button Tag="0" Background="#111111" Width="30" Height="28" Click="OnColorClicked"/>
+                                    <Button Tag="1" Background="#D02020" Width="30" Height="28" Click="OnColorClicked"/>
+                                    <Button Tag="2" Background="#20A020" Width="30" Height="28" Click="OnColorClicked"/>
+                                    <Button Tag="3" Background="#D0B000" Width="30" Height="28" Click="OnColorClicked"/>
+                                    <Button Tag="4" Background="#2040C0" Width="30" Height="28" Click="OnColorClicked"/>
+                                    <Button Tag="5" Background="#B020B0" Width="30" Height="28" Click="OnColorClicked"/>
+                                    <Button Tag="6" Background="#20B0B0" Width="30" Height="28" Click="OnColorClicked"/>
+                                    <Button Tag="7" Background="#E0E0E0" Width="30" Height="28" Click="OnColorClicked"/>
+                                    <Separator Width="1" Background="#3f3f46" Margin="3,2"/>
+                                    <Button x:Name="BackgroundAttributeButton" Content="🟨" Width="38" Height="28" FontSize="16" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="New background" Click="OnBackgroundAttributeClicked"/>
+                                    <Button x:Name="FlashAttributeButton" Content="⚡" Width="38" Height="28" FontSize="16" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Flash" Click="OnFlashAttributeClicked"/>
+                                    <Button x:Name="HeightAttributeButton" Content="H×2" Width="38" Height="28" FontSize="12" FontWeight="SemiBold" FontFamily="Menlo,DejaVu Sans Mono,monospace" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Enable double height" Click="OnHeightAttributeClicked"/>
+                                    <Button x:Name="WidthAttributeButton" Content="W×2" Width="38" Height="28" FontSize="12" FontWeight="SemiBold" FontFamily="Menlo,DejaVu Sans Mono,monospace" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Enable double width" Click="OnWidthAttributeClicked"/>
+                                    <Button x:Name="MosaicShapeAttributeButton" Content="SEP" Width="38" Height="28" FontSize="10" FontWeight="SemiBold" FontFamily="Menlo,DejaVu Sans Mono,monospace" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Separated mosaics" Click="OnMosaicShapeAttributeClicked"/>
+                                    <Button x:Name="HoldMosaicAttributeButton" Content="✋" Width="38" Height="28" FontSize="16" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Hold mosaics" Click="OnHoldMosaicAttributeClicked"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                        <Border x:Name="SquashDisplayToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
+                                    <Button x:Name="ControlCodesButton" Content="Codes: Off" Width="88" Click="OnControlCodesClicked"/>
+                                    <Button x:Name="DiacriticsButton" Content="Diacritics: Off" Width="112" Click="OnDiacriticsClicked"/>
+                                    <Button x:Name="SelectionBytesButton" Content="Bytes: Off" Width="96" Click="OnSelectionBytesClicked"/>
+                                    <TextBox x:Name="VideoBookmarkTextBox" Width="200" Margin="6,0,0,0" PlaceholderText="Page bookmark" TextChanged="OnVideoBookmarkTextChanged"/>
+                                </StackPanel>
+                                <TextBlock x:Name="UndoInfoText"
+                                           Grid.Column="1"
+                                           Text="History: 0/0"
+                                           Foreground="#D8D8D8"
+                                           VerticalAlignment="Center"
+                                           HorizontalAlignment="Right"
+                                           Margin="16,0,2,0"/>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+
+                    <Grid x:Name="SquashContentGrid"
+                          Grid.Row="1"
+                          ColumnSpacing="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border x:Name="EnhancementSidebar" Grid.Column="0"
+                                Width="280"
+                                Margin="0,0,6,0"
+                                Background="#252526"
+                                BorderBrush="#3f3f46"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="6"
+                                Height="610"
+                                VerticalAlignment="Top">
+                            <Grid x:Name="SidebarSectionsGrid" RowDefinitions="*,*" RowSpacing="8">
+                                <Grid x:Name="X26SidebarSection" Grid.Row="0" RowDefinitions="Auto,*" RowSpacing="6">
+                                    <TextBlock x:Name="EnhancementInfoText"
+                                               Text="X/26 enhancements (0)"
+                                               Foreground="#E0E0E0"
+                                               FontWeight="SemiBold"/>
+                                    <Border x:Name="EnhancementListBorder" Grid.Row="1" Background="#1E1E1E">
+                                        <ListBox x:Name="EnhancementItemsControl"
+                                                 SelectionMode="Multiple"
+                                                 FontFamily="Consolas,DejaVu Sans Mono,monospace"
+                                                 FontSize="11"
+                                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Background="{ReflectionBinding HighlightBackground}"
+                                                                CornerRadius="3"
+                                                                Padding="3,2">
+                                                            <TextBlock Text="{ReflectionBinding Text}"
+                                                                       Foreground="#D6D6D6"
+                                                                       TextWrapping="Wrap"
+                                                                       MaxWidth="240"/>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </Border>
+                                </Grid>
+                                <Grid x:Name="VideoBookmarkSidebarSection" Grid.Row="1" RowDefinitions="Auto,*" RowSpacing="6">
+                                    <TextBlock x:Name="VideoBookmarkInfoText"
+                                               Text="Page bookmarks (0)"
+                                               Foreground="#E0E0E0"
+                                               FontWeight="SemiBold"/>
+                                    <ListBox x:Name="VideoBookmarkListBox"
+                                             Grid.Row="1"
+                                             SelectionChanged="OnPageBookmarkSelected"
+                                             FontFamily="Consolas,DejaVu Sans Mono,monospace"
+                                             FontSize="11"
+                                             Background="#1E1E1E"
+                                             ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                                </Grid>
+                            </Grid>
+                        </Border>
+                        <Border Grid.Column="1"
+                                Background="Black"
+                                HorizontalAlignment="Center"
+                                Padding="4"
+                                BorderBrush="#3f3f46"
+                                BorderThickness="1"
+                                CornerRadius="4">
+                            <Grid>
+                                <local:TeletextGridControl x:Name="SquashGrid" />
+                                <Border x:Name="SquashLoadingOverlay" Background="#D0101010" IsVisible="False" IsHitTestVisible="False">
+                                    <TextBlock x:Name="SquashLoadingText"
+                                               Text="Loading... 0%"
+                                               Foreground="#EEEEEE"
+                                               FontSize="24"
+                                               FontWeight="Bold"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center" />
+                                </Border>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                    <Grid Grid.Row="2"
+                          ColumnDefinitions="Auto,*"
+                          ColumnSpacing="12">
+                        <TextBlock x:Name="SquashFilePathText"
+                                   Grid.Column="0"
+                                   Foreground="#AFAFAF"
+                                   FontSize="11"
+                                   TextTrimming="CharacterEllipsis"
+                                   MaxWidth="520"
+                                   HorizontalAlignment="Left"
+                                   VerticalAlignment="Center" />
+                        <Grid Grid.Column="1" MinWidth="180" VerticalAlignment="Center">
+                            <ProgressBar x:Name="SquashRestorationProgressBar"
+                                         Minimum="0"
+                                         Maximum="1"
+                                         Value="0"
+                                         Height="16"
+                                         HorizontalAlignment="Stretch" />
+                            <TextBlock x:Name="SquashRestorationProgressText"
+                                       Text="0 / 0"
+                                       Foreground="#F0F0F0"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       IsHitTestVisible="False" />
+                        </Grid>
+                    </Grid>
+                </Grid>
+
+                <!-- ==================== MIDDLE TRANSFER BUTTONS ==================== -->
+                <Grid x:Name="TransferPaneGrid"
+                      Grid.Column="1"
+                      RowDefinitions="Auto, Auto"
+                      RowSpacing="6"
+                      Margin="6,0"
+                      VerticalAlignment="Top">
+                    <Border Grid.Row="0" Height="{Binding Bounds.Height, ElementName=SquashHeaderStack}" />
+                    <UniformGrid Grid.Row="1" x:Name="TransferButtonsGrid" Rows="25" Columns="1" Margin="0,5,0,0" />
+                </Grid>
+
+                <!-- ==================== RIGHT SIDE (Full broadcast stream) ==================== -->
+                <Grid Grid.Column="2" x:Name="BroadcastPaneGrid" RowDefinitions="Auto, Auto, Auto" RowSpacing="6" VerticalAlignment="Top">
+                    <StackPanel Grid.Row="0" Spacing="6">
+                        <TextBlock x:Name="BroadcastInfoText" Text="Full broadcast" Foreground="#ffffff" FontSize="16" FontWeight="Bold" Margin="2,0"/>
+                        <Border x:Name="BroadcastToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBlock Text="Address:" VerticalAlignment="Center" Foreground="#ffffff" FontSize="13" FontWeight="SemiBold"/>
+                                <ComboBox x:Name="MagazineComboBox" Width="70" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnMagazineComboChanged"/>
+                                <ComboBox x:Name="PageNumberComboBox" Width="70" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnPageNumberComboChanged"/>
+                                <ComboBox x:Name="SubpageComboBox" Width="80" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSubpageComboChanged"/>
+                                <ComboBox x:Name="VersionComboBox" Width="80" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnVersionComboChanged"/>
+                                <Separator Width="1" Background="#3f3f46" Margin="2,2"/>
+                                <Button x:Name="BroadcastPreviousButton" IsEnabled="False" Content="&lt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnBroadcastPreviousClicked"/>
+                                <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="#ffffff" FontSize="13" Margin="2,0"/>
+                                <Button x:Name="BroadcastNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnBroadcastNextClicked"/>
+                                <Separator Width="1" Background="#3f3f46" Margin="2,2"/>
+                                <Button x:Name="BroadcastJumpToSquashButton" IsEnabled="False" Content="Jump to in squash" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToSquashClicked"/>
+                            </StackPanel>
+                        </Border>
+                        <Border x:Name="BroadcastEditToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44">
+                            <Grid />
+                        </Border>
+                        <Border x:Name="BroadcastDisplayToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button x:Name="BroadcastControlCodesButton" Content="Codes: Off" Width="88" Click="OnBroadcastControlCodesClicked"/>
+                                <Button x:Name="BroadcastDiacriticsButton" Content="Diacritics: Off" Width="112" Click="OnBroadcastDiacriticsClicked"/>
+                                <Button x:Name="BroadcastSelectionBytesButton" Content="Bytes: Off" Width="96" Click="OnBroadcastSelectionBytesClicked"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <Grid Grid.Row="1">
+                        <Border Background="Black" HorizontalAlignment="Center" Padding="4" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4">
+                            <Grid>
+                                <local:TeletextGridControl x:Name="BroadcastGrid" />
+                                <Border x:Name="BroadcastLoadingOverlay" Background="#D0101010" IsVisible="False" IsHitTestVisible="False">
+                                    <TextBlock x:Name="BroadcastLoadingText"
+                                               Text="Loading... 0%"
+                                               Foreground="#EEEEEE"
+                                               FontSize="24"
+                                               FontWeight="Bold"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center" />
+                                </Border>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                    <TextBlock x:Name="BroadcastFilePathText"
+                               Grid.Row="2"
+                               Foreground="#AFAFAF"
+                               FontSize="11"
+                               TextWrapping="Wrap"
+                               MaxWidth="648" />
+                </Grid>
+
+            </Grid>
+        </Border>
+    </DockPanel>
+</Window>
