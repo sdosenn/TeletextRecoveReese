@@ -1,12 +1,17 @@
 # TeletextRecoveReese
+Teletext recovery editor (AI built, with a name to pun Kyle Reese (much to his horror) and recoveries)
 
-TeletextRecoveReese is a desktop tool for inspecting, editing, and reconstructing
-teletext pages from raw broadcast captures. Its primary purpose is damaged-page
-recovery: every occurrence of a page is preserved as a separate version, allowing
+<img width="780" height="488" alt="TRR preview" src="https://github.com/user-attachments/assets/ebddef02-19d4-4bae-8d66-f8500a5df900" />
+<br><br>
+TeletextRecoveReese is a tool for inspecting, editing, and reconstructing
+teletext pages from raw broadcast captures.<br>
+Its primary purpose is damaged-page
+recovery: every occurrence of a page is preserved as a separate version,<br>allowing
 the best rows from different broadcasts to be combined into a new restored capture.
 
-The project is written in C#, targets .NET 10, uses Avalonia UI, and is designed as
-a cross-platform application for Linux, macOS, and Windows.
+# Cross-platform
+The project is written in C#, targets .NET 10, uses Avalonia UI,<br>
+and is designed as a cross-platform application for Linux, macOS, and Windows.
 
 ## How the application works
 
@@ -18,38 +23,27 @@ The workspace contains two views:
   shown on the right can be transferred into it, edited further, and saved as a new
   `.t42` capture.
 
-The application does not preserve only decoded text. It retains the original
-42-byte teletext packet for every row as the source of truth, allowing unchanged
-data to be written back without unnecessary re-encoding.
-
 A typical workflow is:
 
 1. Open a complete capture through **File > Open broadcast stream**.
 2. Find the required page, subpage, and best captured version.
 3. Transfer good rows into the restored view on the left.
-4. Edit characters, control codes, mosaics, or X/26 diacritics as needed.
-5. Save the result as `.t42` or export pages as PNG images.
+4. It is recommended to also load a squashed version from vhs-teletext
+5. Edit characters, control codes, mosaics, or X/26 diacritics as needed.
+6. Save the result as `.t42` or export pages as PNG images.
 
 ## Current features
 
 - decoding raw 42-byte teletext packets
-- rendering a 40-column by 25-row grid, including the header
 - organizing captures by magazine, page, subpage, and version
 - preserving every repeated page instance from a broadcast capture
-- Hamming 8/4 and Hamming 24/18 decoding, encoding, and error correction
-- teletext foreground and background colors
-- contiguous and separated mosaic/sixel graphics
-- hold and release mosaics
-- normal, double-height, double-width, and double-size characters
-- flash, conceal, and boxed attributes
-- Level 1.5 X/26 enhancement packets and diacritics
-- X/26 triplet inspection and uncorrectable Hamming error indication
-- moving X/26 diacritics within a page
+- allows editing text, mosaics and supports adding diacritics (tested croatian for now)
+- supports moving X/26 diacritics within a page via drag and drop
 - character and teletext control-code editing
-- cell and block selection, copy/paste, and undo/redo history
+- cell and block selection, copy/paste, and per page undo/redo history
 - transferring individual rows from the broadcast view to the restored page
 - adding and deleting pages
-- selecting the font used to render the teletext grid
+- selecting the font used to render the teletext grid (TIFAX font recommended)
 - exporting the current page or all restored pages as PNG images or video (ffmpeg required)
 - preserving paths, selected pages, the X/26 sidebar preference, and font settings
   between sessions
@@ -75,8 +69,14 @@ Build the complete solution with:
 dotnet build TeletextRecoveReese.sln
 ```
 
-Both projects currently target `net10.0`. Using an older SDK requires changing
-`TargetFramework` in both `.csproj` files and installing the corresponding runtime.
+Project target `net10.0`.
+
+## Inspiration
+I copied concepts from two Teletext editors I used for my recoveries,<br>
+Teletext Meddler and QTeletextMaker but I also wanted some extra features,<br>
+so in this day and age I used AI to build me a tool that I need.<br>
+Even though I could have used any other language I used C# which I like<br>
+so I can check the code myself if need be. Surprisingly for now I didn't need to.
 
 ## Formats
 
@@ -88,7 +88,10 @@ and saving operate directly on these packets.
 
 ## Status
 
-This is an actively developed early-stage project, currently at version **0.1 beta**.
-The core workflow for loading a broadcast capture, combining rows, editing content,
-preserving source packets, and saving a restored `.t42` file is available. Complete
-EN 300 706 coverage and broader interoperability testing are still in progress.
+This is an actively developed early-stage project, currently at version **0.1 beta**.<br>
+The core workflow for loading a broadcast capture, combining rows, editing content,<br>
+preserving source packets, and saving a restored `.t42` file is available.<br>
+Complete EN 300 706 coverage and broader interoperability testing are still in progress.
+
+## Message from Reese
+<img width="584" height="500" alt="Reese" src="https://github.com/user-attachments/assets/81d6b8dd-63d3-4289-8fb7-4ed07bf13981" />
