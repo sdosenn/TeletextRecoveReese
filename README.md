@@ -1,5 +1,5 @@
 # TeletextRecoveReese
-Teletext recovery editor (AI built, with a name to pun Kyle Reese (much to his horror) and recoveries)
+Editor for editing VHS Teletext recoveries (AI built, with a name to pun Kyle Reese (much to his horror))
 
 <img width="780" height="488" alt="TRR preview" src="https://github.com/user-attachments/assets/ebddef02-19d4-4bae-8d66-f8500a5df900" />
 <br><br>
