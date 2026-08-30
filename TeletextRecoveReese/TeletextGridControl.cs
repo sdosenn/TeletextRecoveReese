@@ -30,6 +30,12 @@ public sealed class EnhancementHoverChangedEventArgs(int designationCode, int tr
     public int TripletNumber { get; } = tripletNumber;
 }
 
+public sealed class DiacriticDeleteRequestedEventArgs(int designationCode, int tripletNumber) : EventArgs
+{
+    public int DesignationCode { get; } = designationCode;
+    public int TripletNumber { get; } = tripletNumber;
+}
+
 /// <summary>
 /// Manually renders the 40x24 teletext grid via DrawingContext (no per-cell
 /// TextBox/TextBlock - that would be too slow and wouldn't look authentic).
@@ -41,6 +47,7 @@ public class TeletextGridControl : Control
 
     public event EventHandler? CellSelected;
     public event EventHandler<DiacriticMoveRequestedEventArgs>? DiacriticMoveRequested;
+    public event EventHandler<DiacriticDeleteRequestedEventArgs>? DiacriticDeleteRequested;
     public event EventHandler<EnhancementHoverChangedEventArgs>? EnhancementHoverChanged;
 
     public bool IsActive { get; set; } = true;
@@ -123,6 +130,9 @@ public class TeletextGridControl : Control
     private static readonly Brush SelFillBrush = new SolidColorBrush(Color.Parse("#553344AA"));
     private static readonly Brush SelBorderBrush = new SolidColorBrush(Color.Parse("#B8D0D0D0"));
     private static readonly Pen SelBorderPen = new(SelBorderBrush, 2, DashStyle.Dash);
+    private static readonly Brush RecoverySelectionFillBrush = new SolidColorBrush(Color.Parse("#5540B860"));
+    private static readonly Brush RecoverySelectionBorderBrush = new SolidColorBrush(Color.Parse("#D090F0A0"));
+    private static readonly Pen RecoverySelectionBorderPen = new(RecoverySelectionBorderBrush, 2, DashStyle.Dash);
     // Same opacity/weight as the normal selector; warning pulses change only the hue.
     private static readonly Brush WarningFillBrush = new SolidColorBrush(Color.Parse("#55AA3344"));
     private static readonly Brush WarningBorderBrush = new SolidColorBrush(Color.Parse("#B8F0A0A8"));
@@ -137,6 +147,9 @@ public class TeletextGridControl : Control
     private static readonly Brush TransferRowFillBrush = new SolidColorBrush(Color.Parse("#44C030C8"));
     private static readonly Brush TransferRowBorderBrush = new SolidColorBrush(Color.Parse("#E8F080F0"));
     private static readonly Pen TransferRowBorderPen = new(TransferRowBorderBrush, 1.5, DashStyle.Dash);
+    private static readonly Brush PinnedTransferRowFillBrush = new SolidColorBrush(Color.Parse("#44D0B020"));
+    private static readonly Brush PinnedTransferRowBorderBrush = new SolidColorBrush(Color.Parse("#FFF0D050"));
+    private static readonly Pen PinnedTransferRowBorderPen = new(PinnedTransferRowBorderBrush, 2, DashStyle.Dash);
     private static readonly Brush HoverInfoBackgroundBrush = new SolidColorBrush(Color.Parse("#F02B2B2B"));
     private static readonly Brush HoverInfoBorderBrush = new SolidColorBrush(Color.Parse("#FF707070"));
     private static readonly Brush HoverInfoTextBrush = new SolidColorBrush(Color.Parse("#FFF2F2F2"));
@@ -157,6 +170,11 @@ public class TeletextGridControl : Control
     private int _dragRow = 0;
     private int _dragCol = 0;
     private bool _readOnlyWarning;
+    private bool _recoveryBrowseActive;
+    private bool _hideRecoverySelection;
+    private string? _selectionStatusText;
+    private int _selectionStatusGeneration;
+    private int _recoveryBlinkGeneration;
     private int _warningGeneration;
     private bool _showControlCodes;
     private bool _showSelectionBytes;
@@ -179,6 +197,7 @@ public class TeletextGridControl : Control
     private string? _hoverInfoText;
     private Point _hoverInfoPosition;
     private int _transferRowHighlight = -1;
+    private int _pinnedTransferRowHighlight = -1;
 
     public TeletextGridControl()
     {
@@ -189,6 +208,18 @@ public class TeletextGridControl : Control
     public int SelectedColumn => _selectedColumn;
     public int SelectionWidth => _selectionWidth;
     public int SelectionHeight => _selectionHeight;
+
+    public bool RecoveryBrowseActive
+    {
+        get => _recoveryBrowseActive;
+        set
+        {
+            if (_recoveryBrowseActive == value) return;
+            _recoveryBrowseActive = value;
+            if (!value) _hideRecoverySelection = false;
+            InvalidateVisual();
+        }
+    }
 
     public bool ShowControlCodes
     {
@@ -220,6 +251,11 @@ public class TeletextGridControl : Control
         {
             if (_showDiacriticMarkers == value) return;
             _showDiacriticMarkers = value;
+            if (!value)
+            {
+                ContextMenu?.Close();
+                ContextMenu = null;
+            }
             CloseHoverInfoOverlay();
             InvalidateVisual();
         }
@@ -279,6 +315,14 @@ public class TeletextGridControl : Control
         InvalidateVisual();
     }
 
+    public void SetPinnedTransferRowHighlight(int row)
+    {
+        int normalized = row is >= 0 and < Rows ? row : -1;
+        if (_pinnedTransferRowHighlight == normalized) return;
+        _pinnedTransferRowHighlight = normalized;
+        InvalidateVisual();
+    }
+
     public void SetSelectionSize(int w, int h)
     {
         _selectionWidth = w;
@@ -330,6 +374,34 @@ public class TeletextGridControl : Control
         }
     }
 
+    public async Task ShowSelectionStatusAsync(string text)
+    {
+        int generation = ++_selectionStatusGeneration;
+        _selectionStatusText = text;
+        InvalidateVisual();
+        await Task.Delay(1000);
+        if (generation != _selectionStatusGeneration) return;
+        _selectionStatusText = null;
+        InvalidateVisual();
+    }
+
+    public async Task FlashRecoveryBoundaryAsync()
+    {
+        int generation = ++_recoveryBlinkGeneration;
+        for (int pulse = 0; pulse < 4; pulse++)
+        {
+            if (generation != _recoveryBlinkGeneration) return;
+            _hideRecoverySelection = pulse % 2 == 0;
+            InvalidateVisual();
+            await Task.Delay(100);
+        }
+        if (generation == _recoveryBlinkGeneration)
+        {
+            _hideRecoverySelection = false;
+            InvalidateVisual();
+        }
+    }
+
     static TeletextGridControl()
     {
         AffectsRender<TeletextGridControl>(PageProperty);
@@ -337,11 +409,47 @@ public class TeletextGridControl : Control
 
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
-        base.OnPointerPressed(e);
-        Focus();
         var pos = e.GetPosition(this);
         int col = Math.Clamp((int)(pos.X / CellWidth), 0, Columns - 1);
         int row = Math.Clamp((int)(pos.Y / CellHeight), 0, Rows - 1);
+        bool rightButtonPressed = e.GetCurrentPoint(this).Properties.IsRightButtonPressed;
+
+        // ContextMenu is a control property and otherwise remains attached after
+        // the first valid diacritic click. Detach that stale menu before every new
+        // right-click so Avalonia cannot reopen it over an unrelated cell.
+        if (rightButtonPressed)
+        {
+            ContextMenu?.Close();
+            ContextMenu = null;
+        }
+
+        base.OnPointerPressed(e);
+        Focus();
+
+        if (ShowDiacriticMarkers && Page is not null
+            && rightButtonPressed
+            && DiacriticDeleteRequested is not null
+            && Page.Grid[col, row].EnhancementDesignationCode >= 0)
+        {
+            var cell = Page.Grid[col, row];
+            var deleteItem = new MenuItem { Header = "Delete diacritic" };
+            deleteItem.Click += (_, _) => DiacriticDeleteRequested?.Invoke(
+                this,
+                new DiacriticDeleteRequestedEventArgs(
+                    cell.EnhancementDesignationCode,
+                    cell.EnhancementTripletNumber));
+            var menu = new ContextMenu { ItemsSource = new[] { deleteItem } };
+            ContextMenu = menu;
+            menu.Closed += (_, _) =>
+            {
+                if (ReferenceEquals(ContextMenu, menu))
+                    ContextMenu = null;
+            };
+            CloseHoverInfoOverlay();
+            menu.Open(this);
+            e.Handled = true;
+            return;
+        }
 
         if (ShowDiacriticMarkers && Page is not null
             && e.GetCurrentPoint(this).Properties.IsLeftButtonPressed
@@ -561,6 +669,7 @@ public class TeletextGridControl : Control
             DrawSelectionByteOverlays(context);
             DrawDiacriticOverlays(context);
             DrawTransferRowHighlight(context);
+            DrawPinnedTransferRowHighlight(context);
 
             // Always paint the selection last, above text, mosaics, control-code markers
             // and double-size cells.
@@ -755,6 +864,18 @@ public class TeletextGridControl : Control
         context.DrawRectangle(TransferRowBorderPen, rect);
     }
 
+    private void DrawPinnedTransferRowHighlight(DrawingContext context)
+    {
+        if (_pinnedTransferRowHighlight < 0) return;
+        var rect = new Rect(
+            1,
+            _pinnedTransferRowHighlight * CellHeight + 1,
+            Columns * CellWidth - 2,
+            CellHeight - 2);
+        context.FillRectangle(PinnedTransferRowFillBrush, rect);
+        context.DrawRectangle(PinnedTransferRowBorderPen, rect);
+    }
+
     private void UpdateHoverInfoOverlay(Point position)
     {
         int column = Math.Clamp((int)(position.X / CellWidth), 0, Columns - 1);
@@ -881,6 +1002,7 @@ public class TeletextGridControl : Control
     private void DrawSelection(DrawingContext context)
     {
         if (!IsActive || !_hasSelection || _selectionWidth <= 0 || _selectionHeight <= 0) return;
+        if (_recoveryBrowseActive && _hideRecoverySelection) return;
 
         int minRow = Math.Min(_anchorRow, _dragRow);
         int minCol = Math.Min(_anchorCol, _dragCol);
@@ -890,10 +1012,59 @@ public class TeletextGridControl : Control
         double drawH = _selectionHeight * CellHeight;
         var rect = new Rect(drawX, drawY, drawW, drawH);
 
-        context.FillRectangle(_readOnlyWarning ? WarningFillBrush : SelFillBrush, rect);
+        IBrush fill = _readOnlyWarning
+            ? WarningFillBrush
+            : _recoveryBrowseActive ? RecoverySelectionFillBrush : SelFillBrush;
+        Pen border = _readOnlyWarning
+            ? WarningBorderPen
+            : _recoveryBrowseActive ? RecoverySelectionBorderPen : SelBorderPen;
+        context.FillRectangle(fill, rect);
         context.DrawRectangle(
-            _readOnlyWarning ? WarningBorderPen : SelBorderPen,
+            border,
             new Rect(drawX + 1, drawY + 1, drawW - 2, drawH - 2));
+
+        if (string.IsNullOrEmpty(_selectionStatusText)) return;
+        var status = new FormattedText(
+            _selectionStatusText,
+            System.Globalization.CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight,
+            HoverInfoTypeface,
+            14,
+            Brushes.White);
+        double labelWidth = status.Width + 12;
+        double labelHeight = status.Height + 6;
+        double gridWidth = Columns * CellWidth;
+        double gridHeight = Rows * CellHeight;
+        const double gap = 4;
+        Point? labelPosition = null;
+
+        // Prefer the vertical sides because they remain easy to associate with a
+        // wide selected block. Fall back to either horizontal side when the block
+        // reaches the top/bottom edge. Never obscure the selected cells.
+        if (drawY >= labelHeight + gap)
+            labelPosition = new Point(
+                Math.Clamp(drawX + (drawW - labelWidth) / 2, 0, gridWidth - labelWidth),
+                drawY - labelHeight - gap);
+        else if (drawY + drawH + gap + labelHeight <= gridHeight)
+            labelPosition = new Point(
+                Math.Clamp(drawX + (drawW - labelWidth) / 2, 0, gridWidth - labelWidth),
+                drawY + drawH + gap);
+        else if (drawX + drawW + gap + labelWidth <= gridWidth)
+            labelPosition = new Point(
+                drawX + drawW + gap,
+                Math.Clamp(drawY + (drawH - labelHeight) / 2, 0, gridHeight - labelHeight));
+        else if (drawX >= labelWidth + gap)
+            labelPosition = new Point(
+                drawX - labelWidth - gap,
+                Math.Clamp(drawY + (drawH - labelHeight) / 2, 0, gridHeight - labelHeight));
+
+        if (labelPosition is not { } position) return;
+        var labelRect = new Rect(position, new Size(labelWidth, labelHeight));
+        context.FillRectangle(
+            new SolidColorBrush(Color.Parse("#CC163A20")),
+            labelRect);
+        context.DrawRectangle(RecoverySelectionBorderPen, labelRect);
+        context.DrawText(status, new Point(position.X + 6, position.Y + 3));
     }
 
     private void DrawCellContent(DrawingContext context, Point origin, Cell cell)

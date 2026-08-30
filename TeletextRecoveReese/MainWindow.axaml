@@ -3,6 +3,7 @@
         xmlns:local="using:TeletextRecoveReese"
         x:Class="TeletextRecoveReese.MainWindow"
         Title="TeletextRecoveReese"
+        Icon="/Assets/Icons/app-icon.png"
         SizeToContent="WidthAndHeight"
         CanResize="False"
         Background="#1e1e1e"
@@ -64,18 +65,20 @@
                 <NativeMenu>
                     <NativeMenuItem Header="New Page" Gesture="Meta+N" Click="OnNativeNewPageClicked" />
                     <NativeMenuItem Header="Delete Current Page" Click="OnNativeDeletePageClicked" />
+                    <NativeMenuItem Header="Create Squashed Stream" IsEnabled="False" Click="OnNativeCreateSquashedStreamClicked" />
+                    <NativeMenuItemSeparator/>
                     <NativeMenuItem Header="G0 Subset">
                         <NativeMenu>
-                            <NativeMenuItem Header="Auto (from header)" CommandParameter="auto" Click="OnNativeG0SubsetClicked"/>
-                            <NativeMenuItem Header="Default G0 + enhancements" CommandParameter="default" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="Auto (from stream)" CommandParameter="auto" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="Default G0 + enhancements" CommandParameter="default" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
                             <NativeMenuItemSeparator/>
-                            <NativeMenuItem Header="English" CommandParameter="0" Click="OnNativeG0SubsetClicked"/>
-                            <NativeMenuItem Header="German" CommandParameter="1" Click="OnNativeG0SubsetClicked"/>
-                            <NativeMenuItem Header="Swedish/Finnish/Hungarian" CommandParameter="2" Click="OnNativeG0SubsetClicked"/>
-                            <NativeMenuItem Header="Italian" CommandParameter="3" Click="OnNativeG0SubsetClicked"/>
-                            <NativeMenuItem Header="French" CommandParameter="4" Click="OnNativeG0SubsetClicked"/>
-                            <NativeMenuItem Header="Portuguese/Spanish" CommandParameter="5" Click="OnNativeG0SubsetClicked"/>
-                            <NativeMenuItem Header="Czech/Slovak" CommandParameter="6" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="English" CommandParameter="0" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="German" CommandParameter="1" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="Swedish/Finnish/Hungarian" CommandParameter="2" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="Italian" CommandParameter="3" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="French" CommandParameter="4" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="Portuguese/Spanish" CommandParameter="5" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
+                            <NativeMenuItem Header="Czech/Slovak" CommandParameter="6" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
                         </NativeMenu>
                     </NativeMenuItem>
                 </NativeMenu>
@@ -146,17 +149,19 @@
             <MenuItem Header="_Page">
                 <MenuItem Header="_New Page" InputGesture="Ctrl+N" Click="OnNewPageClicked" />
                 <MenuItem Header="_Delete Current Page" Click="OnDeletePageClicked" />
-                <MenuItem Header="G0 _Subset">
-                    <MenuItem Header="Auto (from header)" CommandParameter="auto" Click="OnG0SubsetClicked"/>
-                    <MenuItem Header="Default G0 + enhancements" CommandParameter="default" Click="OnG0SubsetClicked"/>
+                <MenuItem x:Name="CreateSquashedStreamMenuItem" Header="Create _Squashed Stream" IsEnabled="False" Click="OnCreateSquashedStreamClicked" />
+                <Separator/>
+                <MenuItem x:Name="G0SubsetMenuItem" Header="G0 _Subset">
+                    <MenuItem Header="Auto (from stream)" CommandParameter="auto" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="Default G0 + enhancements" CommandParameter="default" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>
                     <Separator/>
-                    <MenuItem Header="English" CommandParameter="0" Click="OnG0SubsetClicked"/>
-                    <MenuItem Header="German" CommandParameter="1" Click="OnG0SubsetClicked"/>
-                    <MenuItem Header="Swedish/Finnish/Hungarian" CommandParameter="2" Click="OnG0SubsetClicked"/>
-                    <MenuItem Header="Italian" CommandParameter="3" Click="OnG0SubsetClicked"/>
-                    <MenuItem Header="French" CommandParameter="4" Click="OnG0SubsetClicked"/>
-                    <MenuItem Header="Portuguese/Spanish" CommandParameter="5" Click="OnG0SubsetClicked"/>
-                    <MenuItem Header="Czech/Slovak" CommandParameter="6" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="English" CommandParameter="0" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="German" CommandParameter="1" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="Swedish/Finnish/Hungarian" CommandParameter="2" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="Italian" CommandParameter="3" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="French" CommandParameter="4" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="Portuguese/Spanish" CommandParameter="5" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>
+                    <MenuItem Header="Czech/Slovak" CommandParameter="6" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>
                 </MenuItem>
             </MenuItem>
             <MenuItem Header="_Options">
@@ -250,13 +255,30 @@
                                 VerticalAlignment="Top">
                             <Grid x:Name="SidebarSectionsGrid" RowDefinitions="*,*" RowSpacing="8">
                                 <Grid x:Name="X26SidebarSection" Grid.Row="0" RowDefinitions="Auto,*" RowSpacing="6">
-                                    <TextBlock x:Name="EnhancementInfoText"
-                                               Text="X/26 enhancements (0)"
-                                               Foreground="#E0E0E0"
-                                               FontWeight="SemiBold"/>
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBlock x:Name="EnhancementInfoText"
+                                                   Text="X/26 enhancements (0)"
+                                                   Foreground="#E0E0E0"
+                                                   FontWeight="SemiBold"
+                                                   VerticalAlignment="Center"/>
+                                        <Button x:Name="EnhancementClipboardButton"
+                                                Grid.Column="1"
+                                                Content="📋"
+                                                Width="28"
+                                                Height="26"
+                                                Padding="0"
+                                                Margin="4,0,0,0"
+                                                FontSize="15"
+                                                IsEnabled="False"
+                                                HorizontalContentAlignment="Center"
+                                                VerticalContentAlignment="Center"
+                                                ToolTip.Tip="Copy complete X/26 packet diagnostics"
+                                                Click="OnCopyEnhancementDiagnosticsClicked"/>
+                                    </Grid>
                                     <Border x:Name="EnhancementListBorder" Grid.Row="1" Background="#1E1E1E">
                                         <ListBox x:Name="EnhancementItemsControl"
                                                  SelectionMode="Multiple"
+                                                 SelectionChanged="OnEnhancementSelectionChanged"
                                                  FontFamily="Consolas,DejaVu Sans Mono,monospace"
                                                  FontSize="11"
                                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
@@ -266,10 +288,24 @@
                                                         <Border Background="{ReflectionBinding HighlightBackground}"
                                                                 CornerRadius="3"
                                                                 Padding="3,2">
-                                                            <TextBlock Text="{ReflectionBinding Text}"
-                                                                       Foreground="#D6D6D6"
-                                                                       TextWrapping="Wrap"
-                                                                       MaxWidth="240"/>
+                                                            <Grid ColumnDefinitions="*,Auto">
+                                                                <TextBlock Text="{ReflectionBinding Text}"
+                                                                           Foreground="#D6D6D6"
+                                                                           TextWrapping="Wrap"
+                                                                           MaxWidth="210"/>
+                                                                <Button Grid.Column="1"
+                                                                        Content="🗑️"
+                                                                        Width="26"
+                                                                        Height="24"
+                                                                        Padding="0"
+                                                                        Margin="3,0,0,0"
+                                                                        FontSize="13"
+                                                                        HorizontalContentAlignment="Center"
+                                                                        VerticalContentAlignment="Center"
+                                                                        IsVisible="{ReflectionBinding IsSelected}"
+                                                                        ToolTip.Tip="Delete this X/26 triplet"
+                                                                        Click="OnDeleteEnhancementPacketClicked"/>
+                                                            </Grid>
                                                         </Border>
                                                     </DataTemplate>
                                                 </ListBox.ItemTemplate>
@@ -372,8 +408,23 @@
                                 <Button x:Name="BroadcastJumpToSquashButton" IsEnabled="False" Content="Jump to in squash" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToSquashClicked"/>
                             </StackPanel>
                         </Border>
-                        <Border x:Name="BroadcastEditToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44">
-                            <Grid />
+                        <Border x:Name="BroadcastEditToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44"
+                                SizeChanged="OnBroadcastVersionToolbarSizeChanged">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <StackPanel x:Name="BroadcastVersionButtonsGrid"
+                                            Orientation="Horizontal"
+                                            HorizontalAlignment="Left" />
+                                <TextBlock x:Name="BroadcastFastPreviewText"
+                                           Grid.Column="1"
+                                           Text="Fast preview"
+                                           Foreground="#B8B8BC"
+                                           FontSize="12"
+                                           FontWeight="SemiBold"
+                                           Margin="12,0,4,0"
+                                           HorizontalAlignment="Right"
+                                           VerticalAlignment="Center"
+                                           IsVisible="False" />
+                            </Grid>
                         </Border>
                         <Border x:Name="BroadcastDisplayToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44">
                             <StackPanel Orientation="Horizontal" Spacing="6">

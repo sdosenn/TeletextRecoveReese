@@ -27,4 +27,10 @@ public partial class AboutWindow : Window
         await Launcher.LaunchUriAsync(new Uri("https://ko-fi.com/sinisinavideoteka"));
         e.Handled = true;
     }
+
+    private async void OnRepositoryLinkPressed(object? sender, PointerPressedEventArgs e)
+    {
+        await Launcher.LaunchUriAsync(new Uri("https://github.com/sdosenn/TeletextRecoveReese"));
+        e.Handled = true;
+    }
 }

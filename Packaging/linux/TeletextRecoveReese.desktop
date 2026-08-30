@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=TeletextRecoveReese
+Comment=Teletext recovery and restoration editor
+Exec=TeletextRecoveReese
+Icon=TeletextRecoveReese
+Terminal=false
+Categories=Graphics;Utility;

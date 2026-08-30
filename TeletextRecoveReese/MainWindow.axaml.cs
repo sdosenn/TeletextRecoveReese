@@ -97,14 +97,20 @@ public partial class MainWindow : Window
         public int SavedPosition { get; set; }
     }
 
-    private sealed class EnhancementListEntry(string text, int designationCode, int tripletNumber)
+    private sealed class EnhancementListEntry(
+        string text,
+        int designationCode,
+        int tripletNumber,
+        EnhancementPacket? packet)
         : INotifyPropertyChanged
     {
         private bool _isHoverRelated;
+        private bool _isSelected;
 
         public string Text { get; } = text;
         public int DesignationCode { get; } = designationCode;
         public int TripletNumber { get; } = tripletNumber;
+        public EnhancementPacket? Packet { get; } = packet;
         public IBrush? HighlightBackground => _isHoverRelated
             ? new SolidColorBrush(Color.Parse("#70409050"))
             : null;
@@ -117,6 +123,17 @@ public partial class MainWindow : Window
                 if (_isHoverRelated == value) return;
                 _isHoverRelated = value;
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HighlightBackground)));
+            }
+        }
+
+        public bool IsSelected
+        {
+            get => _isSelected;
+            set
+            {
+                if (_isSelected == value) return;
+                _isSelected = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected)));
             }
         }
 
@@ -223,12 +240,26 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeSuppressFlashMenuItem;
     private NativeMenuItem? _nativeExportVideoMenuItem;
     private NativeMenuItem? _nativeOpenRecentMenuItem;
+    private NativeMenuItem? _nativeG0SubsetMenuItem;
+    private NativeMenuItem? _nativeCreateSquashedStreamMenuItem;
     private readonly string? _ffmpegPath;
     private bool _showX26EnhancementsSidebar = true;
     private bool _showVideoBookmarks = true;
     private bool _updatingVideoBookmarkText;
     private bool _updatingPageBookmarkList;
     private bool _pageBookmarkNavigationPending;
+    private bool _previewingBroadcastVersion;
+    private int? _squashFileG0Subset;
+    private int? _broadcastFileG0Subset;
+    private int _pinnedTransferRowHighlight = -1;
+    private bool _suppressNextTransferRowClick;
+    private int _blockBrowseVersionIndex = -1;
+    private (int magazine, int page, int subpage)? _blockBrowseAddress;
+    private int _blockBrowseColumn = -1;
+    private int _blockBrowseRow = -1;
+    private int _blockBrowseWidth;
+    private int _blockBrowseHeight;
+    private bool _blockBrowseHasPendingEdit;
     private readonly DispatcherTimer _flashTimer;
     private bool _flashPhaseVisible = true;
     private int _fitWindowRequest;
@@ -288,12 +319,14 @@ public partial class MainWindow : Window
         ApplyVideoBookmarkSidebarVisibility(resizeWindow: false);
         SquashGrid.CellSelected += OnSquashGridCellSelected;
         SquashGrid.DiacriticMoveRequested += OnDiacriticMoveRequested;
+        SquashGrid.DiacriticDeleteRequested += OnDiacriticDeleteRequested;
         SquashGrid.EnhancementHoverChanged += OnEnhancementHoverChanged;
         BroadcastGrid.CellSelected += OnBroadcastGridCellSelected;
         InitializeBlankSquashDocument();
         // Handle keyboard navigation in the tunnel phase, before the menu can
         // consume the cursor keys for its own focus navigation.
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+        AddHandler(KeyUpEvent, OnKeyUp, RoutingStrategies.Tunnel);
         Opened += OnWindowOpened;
         Closing += OnWindowClosing;
         Closed += (_, _) => _flashTimer.Stop();
@@ -448,7 +481,7 @@ public partial class MainWindow : Window
         };
         var preview = new TextBlock
         {
-            Text = "TELETEXT PREVIEW\nABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz\n0123456789  ! ? . , : ;  ČĆŽŠĐ čćžšđ",
+            Text = "TELETEXT PREVIEW\nABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz\n0123456789  ! ? . , : ;",
             FontSize = 24,
             TextWrapping = TextWrapping.Wrap,
             Foreground = Brushes.White,
@@ -648,6 +681,10 @@ public partial class MainWindow : Window
 
         bool commandModifier = e.KeyModifiers.HasFlag(KeyModifiers.Control)
             || e.KeyModifiers.HasFlag(KeyModifiers.Meta);
+        bool shiftModifier = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+
+        if (activeGrid == SquashGrid && shiftModifier)
+            SquashGrid.RecoveryBrowseActive = true;
 
         if (commandModifier && e.Key == Key.O)
         {
@@ -720,6 +757,14 @@ public partial class MainWindow : Window
 
         // Do not turn unhandled Ctrl/Cmd shortcuts into printable characters.
         if (commandModifier) return;
+
+        if (!commandModifier && activeGrid == SquashGrid && shiftModifier
+            && e.Key is Key.Left or Key.Right)
+        {
+            e.Handled = true;
+            BrowseSelectedBlockVersion(e.Key == Key.Right ? 1 : -1);
+            return;
+        }
 
         int deltaX = e.Key == Key.Left ? -1 : e.Key == Key.Right ? 1 : 0;
         int deltaY = e.Key == Key.Up ? -1 : e.Key == Key.Down ? 1 : 0;
@@ -806,11 +851,11 @@ public partial class MainWindow : Window
                 }
 
                 if (isLevel15Diacritic
-                    && !PageAssembler.TrySetLevel15Diacritic(
+                    && !TrySetLevel15DiacriticReplacingCorruptPackets(
                         page, x, y, actualChar, diacritical, out string enhancementError))
                 {
                     PlaySystemErrorSound();
-                    await ShowMessageAsync("Cannot add diacritic", enhancementError);
+                    await ShowEnhancementErrorAsync("Cannot add diacritic", enhancementError, page);
                     return;
                 }
 
@@ -858,6 +903,102 @@ public partial class MainWindow : Window
         activeGrid.MoveSelectionTo(x, y);
     }
 
+    private bool TrySetLevel15DiacriticReplacingCorruptPackets(
+        TeletextPage page,
+        int column,
+        int row,
+        char baseCharacter,
+        int diacritical,
+        out string error)
+    {
+        error = string.Empty;
+        if (PageAssembler.TrySetLevel15Diacritic(
+                page, column, row, baseCharacter, diacritical, out error))
+            return true;
+
+        if (!error.Contains("uncorrectable triplet", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return PageAssembler.TryInsertLevel15DiacriticRawPreserving(
+            page, column, row, baseCharacter, diacritical, out error);
+    }
+
+    private void OnKeyUp(object? sender, KeyEventArgs e)
+    {
+        if (e.Key is not (Key.LeftShift or Key.RightShift)
+            && e.KeyModifiers.HasFlag(KeyModifiers.Shift)) return;
+
+        SquashGrid.RecoveryBrowseActive = false;
+        if (_blockBrowseHasPendingEdit && SquashGrid.Page is { } page)
+            CommitPageEdit(page);
+        _blockBrowseHasPendingEdit = false;
+        ResetBlockVersionBrowse();
+    }
+
+    private void BrowseSelectedBlockVersion(int direction)
+    {
+        if (SquashGrid.Page is not { } squashPage) return;
+        var address = (squashPage.Magazine, squashPage.PageNumber, squashPage.SubPage);
+        var versions = _store.GetInstances(address.Magazine, address.PageNumber, address.SubPage);
+        if (versions.Count == 0)
+        {
+            _ = SquashGrid.FlashRecoveryBoundaryAsync();
+            return;
+        }
+
+        int column = Math.Clamp(SquashGrid.SelectedColumn, 0, 39);
+        int row = Math.Clamp(SquashGrid.SelectedRow, 0, 24);
+        int width = Math.Min(Math.Max(SquashGrid.SelectionWidth, 1), 40 - column);
+        int height = Math.Min(Math.Max(SquashGrid.SelectionHeight, 1), 25 - row);
+        bool sameBlock = _blockBrowseAddress == address
+            && _blockBrowseColumn == column && _blockBrowseRow == row
+            && _blockBrowseWidth == width && _blockBrowseHeight == height;
+        if (!sameBlock)
+        {
+            _blockBrowseAddress = address;
+            _blockBrowseColumn = column;
+            _blockBrowseRow = row;
+            _blockBrowseWidth = width;
+            _blockBrowseHeight = height;
+            _blockBrowseVersionIndex = direction > 0 ? -1 : versions.Count;
+            EnsurePageHistory(squashPage);
+        }
+
+        int targetVersion = _blockBrowseVersionIndex + direction;
+        if (targetVersion < 0 || targetVersion >= versions.Count)
+        {
+            _ = SquashGrid.FlashRecoveryBoundaryAsync();
+            return;
+        }
+
+        byte[] block = CreateByteBlock(
+            versions[targetVersion].Page,
+            column,
+            row,
+            width,
+            height);
+        PasteByteBlockIntoSquash(
+            block,
+            column,
+            row,
+            updateSquashSelection: false,
+            commitEdit: false);
+        _blockBrowseVersionIndex = targetVersion;
+        _blockBrowseHasPendingEdit = true;
+        SelectBroadcastAddress(address, targetVersion, persistRecentPosition: false);
+        _ = SquashGrid.ShowSelectionStatusAsync($"v{targetVersion + 1}/{versions.Count}");
+    }
+
+    private void ResetBlockVersionBrowse()
+    {
+        _blockBrowseVersionIndex = -1;
+        _blockBrowseAddress = null;
+        _blockBrowseColumn = -1;
+        _blockBrowseRow = -1;
+        _blockBrowseWidth = 0;
+        _blockBrowseHeight = 0;
+    }
+
     private async Task<byte[]?> CopySelectionAsync(TeletextGridControl grid)
     {
         if (grid.Page is not { } page || Clipboard is null) return null;
@@ -866,6 +1007,21 @@ public partial class MainWindow : Window
         int startY = Math.Clamp(grid.SelectedRow, 0, 24);
         int width = Math.Min(Math.Max(grid.SelectionWidth, 1), 40 - startX);
         int height = Math.Min(Math.Max(grid.SelectionHeight, 1), 25 - startY);
+        byte[] block = CreateByteBlock(page, startX, startY, width, height);
+        var item = DataTransferItem.Create(TeletextClipboardFormat, block);
+        var transfer = new DataTransfer();
+        transfer.Add(item);
+        await Clipboard.SetDataAsync(transfer);
+        return block;
+    }
+
+    private static byte[] CreateByteBlock(
+        TeletextPage page,
+        int startX,
+        int startY,
+        int width,
+        int height)
+    {
         // Binary layout: "T42", version, width, height, then for every selected
         // cell a presence byte followed by the exact captured payload byte.
         var block = new byte[6 + width * height * 2];
@@ -896,10 +1052,6 @@ public partial class MainWindow : Window
             }
         }
 
-        var item = DataTransferItem.Create(TeletextClipboardFormat, block);
-        var transfer = new DataTransfer();
-        transfer.Add(item);
-        await Clipboard.SetDataAsync(transfer);
         return block;
     }
 
@@ -922,7 +1074,8 @@ public partial class MainWindow : Window
         byte[] block,
         int startX,
         int startY,
-        bool updateSquashSelection)
+        bool updateSquashSelection,
+        bool commitEdit = true)
     {
         if (SquashGrid.Page is not { } page || block.Length < 6
             || block[0] != (byte)'T' || block[1] != (byte)'4' || block[2] != (byte)'2'
@@ -971,7 +1124,8 @@ public partial class MainWindow : Window
 
         if (updateSquashSelection)
             SquashGrid.SetSelectionSize(pasteWidth, pasteHeight);
-        CommitPageEdit(page);
+        if (commitEdit)
+            CommitPageEdit(page);
         SquashGrid.InvalidateVisual();
     }
 
@@ -1173,6 +1327,7 @@ public partial class MainWindow : Window
         BroadcastGrid.ClearSelection();
         UpdateCellAwareToolbar();
         UpdateVideoBookmarkUi();
+        UpdateG0SubsetMenuChecks();
     }
 
     private void OnBroadcastGridCellSelected(object? sender, EventArgs e)
@@ -1181,6 +1336,7 @@ public partial class MainWindow : Window
         SquashGrid.IsActive = false;
         SquashGrid.ClearSelection();
         UpdateVideoBookmarkUi();
+        UpdateG0SubsetMenuChecks();
     }
 
     private async void OnDiacriticMoveRequested(object? sender, DiacriticMoveRequestedEventArgs e)
@@ -1197,9 +1353,25 @@ public partial class MainWindow : Window
                 out string error))
         {
             PlaySystemErrorSound();
-            await ShowMessageAsync("Cannot move diacritic", error);
+            await ShowEnhancementErrorAsync("Cannot move diacritic", error, page);
             return;
         }
+
+        CommitPageEdit(page);
+        UpdateEnhancementList(page);
+        SquashGrid.InvalidateVisual();
+    }
+
+    private void OnDiacriticDeleteRequested(object? sender, DiacriticDeleteRequestedEventArgs e)
+    {
+        if (sender != SquashGrid || SquashGrid.Page is not { } page) return;
+        var packet = page.EnhancementPackets.FirstOrDefault(
+            candidate => candidate.DesignationCode == e.DesignationCode
+                && candidate.Triplets.Any(triplet => triplet.TripletNumber == e.TripletNumber));
+        if (packet is null) return;
+
+        EnsurePageHistory(page);
+        if (!PageAssembler.DeleteEnhancementTriplet(page, packet, e.TripletNumber)) return;
 
         CommitPageEdit(page);
         UpdateEnhancementList(page);
@@ -1225,6 +1397,11 @@ public partial class MainWindow : Window
                 Margin = new Thickness(0, 0, 0, 1)
             };
             btn.Click += OnTransferRowClicked;
+            btn.AddHandler(
+                InputElement.PointerPressedEvent,
+                OnTransferRowPointerPressed,
+                RoutingStrategies.Tunnel,
+                handledEventsToo: true);
             btn.PointerEntered += OnTransferRowPointerEntered;
             btn.PointerExited += OnTransferRowPointerExited;
             TransferButtonsGrid.Children.Add(btn);
@@ -1240,8 +1417,31 @@ public partial class MainWindow : Window
 
     private void OnTransferRowPointerExited(object? sender, PointerEventArgs e)
     {
-        SquashGrid.SetTransferRowHighlight(-1);
-        BroadcastGrid.SetTransferRowHighlight(-1);
+        SetTransferRowHighlight(-1);
+    }
+
+    private void OnTransferRowPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Button { Tag: int row }
+            || !e.KeyModifiers.HasFlag(KeyModifiers.Shift)
+            || !e.GetCurrentPoint((Button)sender).Properties.IsLeftButtonPressed)
+            return;
+
+        _pinnedTransferRowHighlight = _pinnedTransferRowHighlight == row ? -1 : row;
+        _suppressNextTransferRowClick = true;
+        SetPinnedTransferRowHighlight(_pinnedTransferRowHighlight);
+    }
+
+    private void SetTransferRowHighlight(int row)
+    {
+        SquashGrid.SetTransferRowHighlight(row);
+        BroadcastGrid.SetTransferRowHighlight(row);
+    }
+
+    private void SetPinnedTransferRowHighlight(int row)
+    {
+        SquashGrid.SetPinnedTransferRowHighlight(row);
+        BroadcastGrid.SetPinnedTransferRowHighlight(row);
     }
 
     /// <summary>
@@ -1346,10 +1546,14 @@ public partial class MainWindow : Window
     private void OnNativeDeletePageClicked(object? sender, EventArgs e) =>
         OnDeletePageClicked(sender, new RoutedEventArgs());
 
+    private void OnNativeCreateSquashedStreamClicked(object? sender, EventArgs e) =>
+        OnCreateSquashedStreamClicked(sender, new RoutedEventArgs());
+
     private void OnNativeG0SubsetClicked(object? sender, EventArgs e)
     {
         if (sender is NativeMenuItem item)
             ApplyG0SubsetSelection(item.CommandParameter?.ToString());
+        Dispatcher.UIThread.Post(UpdateG0SubsetMenuChecks, DispatcherPriority.Background);
     }
 
     private void OnG0SubsetClicked(object? sender, RoutedEventArgs e)
@@ -1360,23 +1564,72 @@ public partial class MainWindow : Window
 
     private void ApplyG0SubsetSelection(string? selection)
     {
-        TeletextGridControl? grid = IsActiveGrid();
-        if (grid?.Page is not { } page) return;
+        TeletextGridControl? grid = GetG0TargetGrid();
+        if (grid is null) return;
 
-        int? nationalOptionOverride;
+        int? selectedSubset;
         if (string.Equals(selection, "auto", StringComparison.OrdinalIgnoreCase))
-            nationalOptionOverride = null;
+            selectedSubset = null;
         else if (string.Equals(selection, "default", StringComparison.OrdinalIgnoreCase))
-            nationalOptionOverride = -1;
+            selectedSubset = -1;
         else if (int.TryParse(selection, out int option) && option is >= 0 and <= 6)
-            nationalOptionOverride = option;
+            selectedSubset = option;
         else
             return;
 
-        PageAssembler.SetNationalOptionOverride(page, nationalOptionOverride);
+        bool broadcast = grid == BroadcastGrid;
+        if (broadcast)
+            _broadcastFileG0Subset = selectedSubset;
+        else
+            _squashFileG0Subset = selectedSubset;
+
+        if (grid.Page is { } page)
+            PageAssembler.SetNationalOptionOverride(page, selectedSubset);
         grid.InvalidateVisual();
         if (grid == SquashGrid)
-            UpdateEnhancementList(page);
+            UpdateEnhancementList(grid.Page);
+        UpdateG0SubsetMenuChecks();
+    }
+
+    private void ApplyFileG0SubsetToPage(TeletextPage page, bool broadcast)
+    {
+        int? selectedSubset = broadcast ? _broadcastFileG0Subset : _squashFileG0Subset;
+        if (page.NationalOptionOverride == selectedSubset) return;
+        PageAssembler.SetNationalOptionOverride(page, selectedSubset);
+    }
+
+    private void UpdateG0SubsetMenuChecks()
+    {
+        TeletextGridControl? grid = GetG0TargetGrid();
+        bool broadcast = grid == BroadcastGrid;
+        int? selectedSubset = broadcast ? _broadcastFileG0Subset : _squashFileG0Subset;
+
+        foreach (MenuItem item in G0SubsetMenuItem.Items.OfType<MenuItem>())
+            item.IsChecked = IsG0MenuSelectionChecked(item.CommandParameter?.ToString(), selectedSubset);
+
+        if (_nativeG0SubsetMenuItem?.Menu is { } nativeMenu)
+        {
+            foreach (NativeMenuItem item in nativeMenu.Items.OfType<NativeMenuItem>())
+                item.IsChecked = IsG0MenuSelectionChecked(item.CommandParameter?.ToString(), selectedSubset);
+        }
+    }
+
+    private static bool IsG0MenuSelectionChecked(string? selection, int? selectedSubset)
+    {
+        if (string.Equals(selection, "auto", StringComparison.OrdinalIgnoreCase))
+            return !selectedSubset.HasValue;
+        if (string.Equals(selection, "default", StringComparison.OrdinalIgnoreCase))
+            return selectedSubset == -1;
+        return int.TryParse(selection, out int option)
+            && option is >= 0 and <= 6
+            && selectedSubset == option;
+    }
+
+    private TeletextGridControl? GetG0TargetGrid()
+    {
+        if (SquashPaneGrid.IsVisible && !BroadcastPaneGrid.IsVisible) return SquashGrid;
+        if (BroadcastPaneGrid.IsVisible && !SquashPaneGrid.IsVisible) return BroadcastGrid;
+        return IsActiveGrid();
     }
 
     private void OnNativeChooseFontClicked(object? sender, EventArgs e) =>
@@ -1610,6 +1863,20 @@ public partial class MainWindow : Window
         NativeMenu? menu = NativeMenu.GetMenu(this);
         if (menu is null) return;
 
+        _nativeG0SubsetMenuItem = menu.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Page", StringComparison.Ordinal))?
+            .Menu?.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "G0 Subset", StringComparison.Ordinal));
+
+        _nativeCreateSquashedStreamMenuItem = menu.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Page", StringComparison.Ordinal))?
+            .Menu?.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Create Squashed Stream", StringComparison.Ordinal));
+
         if (menu.Items.Count > 0 && menu.Items[0] is NativeMenuItem { Menu: { } fileMenu })
         {
             _nativeOpenRecentMenuItem = fileMenu.Items
@@ -1647,6 +1914,11 @@ public partial class MainWindow : Window
     /// re-encoded from decoded text/colors).</summary>
     private void OnTransferRowClicked(object? sender, RoutedEventArgs e)
     {
+        if (_suppressNextTransferRowClick)
+        {
+            _suppressNextTransferRowClick = false;
+            return;
+        }
         if (sender is not Button btn || btn.Tag is not int row) return;
         if (row is < 0 or > 24) return; // grid only has rows 0-24 (25 rows total)
         if (BroadcastGrid.Page is not { } sourcePage) return;
@@ -1779,6 +2051,7 @@ public partial class MainWindow : Window
             if (SquashEditToolbar != null) SquashEditToolbar.IsVisible = true;
             UpdateWorkspacePaneVisibility();
             UpdateSquashAddressToolbarVisibility();
+            UpdateG0SubsetMenuChecks();
             FitWindowToContent();
         }
         finally
@@ -1831,6 +2104,7 @@ public partial class MainWindow : Window
                 SetSquashDirty(false);
                 UpdateWorkspacePaneVisibility();
                 UpdateNavigationButtons();
+                UpdateG0SubsetMenuChecks();
             }
         }
         finally
@@ -1886,6 +2160,7 @@ public partial class MainWindow : Window
             SetSquashDirty(false);
             UpdateWorkspacePaneVisibility();
             UpdateNavigationButtons();
+            UpdateG0SubsetMenuChecks();
             FitWindowToContent();
         }
         finally
@@ -1896,6 +2171,7 @@ public partial class MainWindow : Window
 
     private void ClearBroadcastPane()
     {
+        _broadcastFileG0Subset = null;
         _broadcastEnhancementsScanned.Clear();
         _suppressComboEvents = true;
         MagazineComboBox.Items.Clear();
@@ -1907,11 +2183,13 @@ public partial class MainWindow : Window
         _broadcastFilePath = null;
         _broadcastFileOpen = false;
         _suppressComboEvents = false;
+        UpdateBroadcastVersionButtons();
         UpdateNavigationButtons();
     }
 
     private void ClearSquashPane()
     {
+        _squashFileG0Subset = null;
         _suppressComboEvents = true;
         SquashMagazineComboBox.Items.Clear();
         SquashPageNumberComboBox.Items.Clear();
@@ -1921,6 +2199,7 @@ public partial class MainWindow : Window
         SquashGrid.ClearSelection();
         EnhancementItemsControl.Items.Clear();
         EnhancementInfoText.Text = "X/26 enhancements (0)";
+        EnhancementClipboardButton.IsEnabled = false;
         _pageHistories.Clear();
         _deletedSquashPacketIndices.Clear();
         _structuralDirty = false;
@@ -2161,8 +2440,10 @@ public partial class MainWindow : Window
         UpdateUndoToolbar();
     }
 
-    private static void RestorePage(TeletextPage page, PageSnapshot snapshot)
+    private void RestorePage(TeletextPage page, PageSnapshot snapshot)
     {
+        SyncEnhancementPacketDeletions(page, snapshot);
+
         // Decode the Level-1 rows without the current enhancement overlay first.
         // Otherwise a moved diacritic can be re-applied while the old raw rows are
         // being restored and leave stale display state at its former destination.
@@ -2182,6 +2463,29 @@ public partial class MainWindow : Window
             }
         }
         PageAssembler.ReplaceEnhancementPackets(page, snapshot.EnhancementPackets);
+    }
+
+    private void SyncEnhancementPacketDeletions(TeletextPage page, PageSnapshot snapshot)
+    {
+        if (!_pageHistories.TryGetValue(page, out var history)) return;
+
+        var knownPacketIndices = history.States
+            .SelectMany(state => state.EnhancementPackets)
+            .Select(packet => packet.PacketIndex)
+            .Where(index => index >= 0)
+            .ToHashSet();
+        var restoredPacketIndices = snapshot.EnhancementPackets
+            .Select(packet => packet.PacketIndex)
+            .Where(index => index >= 0)
+            .ToHashSet();
+
+        foreach (int packetIndex in knownPacketIndices)
+        {
+            if (restoredPacketIndices.Contains(packetIndex))
+                _deletedSquashPacketIndices.Remove(packetIndex);
+            else
+                _deletedSquashPacketIndices.Add(packetIndex);
+        }
     }
 
     private void UndoCurrentPage()
@@ -2823,7 +3127,10 @@ public partial class MainWindow : Window
         SelectSquashAddress(addresses[target]);
     }
 
-    private void SelectBroadcastAddress((int magazine, int page, int subpage) address, int versionIndex)
+    private void SelectBroadcastAddress(
+        (int magazine, int page, int subpage) address,
+        int versionIndex,
+        bool persistRecentPosition = true)
     {
         var instances = _store.GetInstances(address.magazine, address.page, address.subpage);
         if (instances.Count == 0) return;
@@ -2847,9 +3154,11 @@ public partial class MainWindow : Window
         PrepareBroadcastPageForDisplay(selectedPage);
         BroadcastGrid.Page = selectedPage;
         _suppressComboEvents = false;
+        UpdateBroadcastVersionButtons();
         UpdateNavigationButtons();
         UpdateVideoBookmarkUi();
-        PersistRecentFilePositions();
+        if (persistRecentPosition)
+            PersistRecentFilePositions();
     }
 
     private void SelectSquashAddress((int magazine, int page, int subpage) address)
@@ -2868,6 +3177,7 @@ public partial class MainWindow : Window
             SquashSubpageComboBox.Items.Add(FormatSubpageLabel(subpage));
         SquashSubpageComboBox.SelectedItem = FormatSubpageLabel(address.subpage);
         _squashPage = instances[0].Page;
+        ApplyFileG0SubsetToPage(_squashPage, broadcast: false);
         SquashGrid.Page = _squashPage;
         UpdateEnhancementList(_squashPage);
         _suppressComboEvents = false;
@@ -2886,9 +3196,12 @@ public partial class MainWindow : Window
         if (page is null || page.EnhancementPackets.Count == 0)
         {
             EnhancementInfoText.Text = "X/26 enhancements (0)";
+            EnhancementClipboardButton.IsEnabled = false;
             AddEnhancementListEntry("No X/26 enhancement packets on this page.");
             return;
         }
+
+        EnhancementClipboardButton.IsEnabled = true;
 
         int displayedTriplets = 0;
         int activeRow = -1;
@@ -2903,7 +3216,8 @@ public partial class MainWindow : Window
                     AddEnhancementListEntry(
                         $"d{packet.DesignationCode:X1} t{triplet.TripletNumber:00} · Hamming 24/18 decoding error",
                         packet.DesignationCode,
-                        triplet.TripletNumber);
+                        triplet.TripletNumber,
+                        packet);
                     displayedTriplets++;
                     continue;
                 }
@@ -2934,7 +3248,8 @@ public partial class MainWindow : Window
                     $"d{packet.DesignationCode:X1} t{triplet.TripletNumber:00} · {position} · " +
                     $"{DescribeEnhancementTriplet(triplet)}{correction}",
                     packet.DesignationCode,
-                    triplet.TripletNumber);
+                    triplet.TripletNumber,
+                    packet);
                 displayedTriplets++;
 
                 // The remaining packet bytes after this marker are padding, not enhancements.
@@ -2947,16 +3262,84 @@ public partial class MainWindow : Window
             $"X/26: {page.EnhancementPackets.Count} packet(s), {displayedTriplets} triplet(s)";
     }
 
+    private async void OnCopyEnhancementDiagnosticsClicked(object? sender, RoutedEventArgs e)
+    {
+        if (Clipboard is null || SquashGrid.Page is not { } page) return;
+
+        var report = new StringBuilder();
+        report.AppendLine("TeletextRecoveReese X/26 packet diagnostics");
+        report.AppendLine($"Page: {page.Magazine}{page.PageNumber:X2}");
+        report.AppendLine($"Subpage: {page.SubPage:X4}");
+        report.AppendLine($"Packets: {page.EnhancementPackets.Count}");
+        report.AppendLine($"Captured: {DateTimeOffset.Now:O}");
+        report.AppendLine();
+
+        foreach (var packet in page.EnhancementPackets.OrderBy(packet => packet.DesignationCode))
+        {
+            report.AppendLine($"PACKET designation=0x{packet.DesignationCode:X1} sourceIndex={packet.PacketIndex}");
+            report.AppendLine($"RAW42: {string.Join(' ', packet.RawPacket.Select(value => $"{value:X2}"))}");
+            foreach (var triplet in packet.Triplets.OrderBy(triplet => triplet.TripletNumber))
+            {
+                string status = triplet.UncorrectableError
+                    ? "UNCORRECTABLE"
+                    : triplet.CorrectedError ? "CORRECTED" : "OK";
+                report.AppendLine(
+                    $"  t{triplet.TripletNumber:00}: address=0x{triplet.Address:X2} " +
+                    $"mode=0x{triplet.Mode:X2} extended=0x{triplet.ExtendedMode:X2} " +
+                    $"data=0x{triplet.Data:X2} hamming={status} | {DescribeEnhancementTriplet(triplet)}");
+            }
+            report.AppendLine();
+        }
+
+        var transfer = new DataTransfer();
+        transfer.Add(DataTransferItem.CreateText(report.ToString()));
+        await Clipboard.SetDataAsync(transfer);
+
+        EnhancementClipboardButton.Content = "✓";
+        await Task.Delay(900);
+        EnhancementClipboardButton.Content = "📋";
+    }
+
     private void AddEnhancementListEntry(
         string text,
         int designationCode = -1,
-        int tripletNumber = -1)
+        int tripletNumber = -1,
+        EnhancementPacket? packet = null)
     {
-        var entry = new EnhancementListEntry(text, designationCode, tripletNumber);
+        var entry = new EnhancementListEntry(text, designationCode, tripletNumber, packet);
         _enhancementListEntries.Add(entry);
         EnhancementItemsControl.Items.Add(entry);
         if (designationCode >= 0 && tripletNumber >= 0)
             _enhancementEntriesByTriplet[(designationCode, tripletNumber)] = entry;
+    }
+
+    private void OnEnhancementSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        var selectedEntries = (EnhancementItemsControl.SelectedItems?
+            .OfType<EnhancementListEntry>() ?? Enumerable.Empty<EnhancementListEntry>())
+            .ToHashSet();
+        foreach (var entry in _enhancementListEntries)
+            entry.IsSelected = entry.Packet is not null && selectedEntries.Contains(entry);
+    }
+
+    private void OnDeleteEnhancementPacketClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_squashPage is null
+            || sender is not Button { DataContext: EnhancementListEntry entry }
+            || entry.Packet is not { } packet
+            || !_squashPage.EnhancementPackets.Contains(packet))
+            return;
+
+        EnsurePageHistory(_squashPage);
+        if (!PageAssembler.DeleteEnhancementTriplet(
+                _squashPage,
+                packet,
+                entry.TripletNumber))
+            return;
+
+        CommitPageEdit(_squashPage);
+        UpdateEnhancementList(_squashPage);
+        SquashGrid.InvalidateVisual();
     }
 
     private void OnEnhancementHoverChanged(object? sender, EnhancementHoverChangedEventArgs e)
@@ -3159,7 +3542,18 @@ public partial class MainWindow : Window
 
         SquashJumpToBroadcastButton.IsEnabled = _broadcastFileOpen;
         BroadcastJumpToSquashButton.IsEnabled = _squashFileOpen;
+        UpdateCreateSquashedStreamMenuAvailability();
         UpdateSquashAddressToolbarVisibility();
+    }
+
+    private void UpdateCreateSquashedStreamMenuAvailability()
+    {
+        bool canCreate = _broadcastFileOpen
+            && _broadcastPackets.Count > 0
+            && !_squashPaneEstablished;
+        CreateSquashedStreamMenuItem.IsEnabled = canCreate;
+        if (_nativeCreateSquashedStreamMenuItem is not null)
+            _nativeCreateSquashedStreamMenuItem.IsEnabled = canCreate;
     }
 
     private void UpdateRestorationProgress(int totalAddresses, int currentIndex)
@@ -3193,6 +3587,7 @@ public partial class MainWindow : Window
         UpdateWindowAndPaneTitles();
         ApplyX26EnhancementsSidebarVisibility(resizeWindow: false);
         ApplyVideoBookmarkSidebarVisibility(resizeWindow: false);
+        UpdateCreateSquashedStreamMenuAvailability();
         FitWindowToContent();
 
         if (broadcastOnly)
@@ -3285,6 +3680,8 @@ public partial class MainWindow : Window
 
         if (VersionComboBox.Items.Count > 0)
             VersionComboBox.SelectedIndex = 0; // cascades to OnVersionComboChanged
+        else
+            UpdateBroadcastVersionButtons();
     }
 
     private void OnVersionComboChanged(object? sender, SelectionChangedEventArgs e)
@@ -3301,13 +3698,105 @@ public partial class MainWindow : Window
         var selectedPage = instances[VersionComboBox.SelectedIndex].Page;
         PrepareBroadcastPageForDisplay(selectedPage);
         BroadcastGrid.Page = selectedPage;
+        UpdateBroadcastVersionButtons();
         UpdateNavigationButtons();
         UpdateVideoBookmarkUi();
         PersistRecentFilePositions();
     }
 
+    private void OnBroadcastVersionToolbarSizeChanged(object? sender, SizeChangedEventArgs e) =>
+        UpdateBroadcastVersionButtons();
+
+    private void UpdateBroadcastVersionButtons()
+    {
+        if (BroadcastVersionButtonsGrid is null) return;
+        BroadcastVersionButtonsGrid.Children.Clear();
+
+        int total = VersionComboBox.Items.Count;
+        int selected = VersionComboBox.SelectedIndex;
+        if (total <= 0 || selected < 0)
+        {
+            BroadcastFastPreviewText.IsVisible = false;
+            return;
+        }
+
+        double availableWidth = BroadcastEditToolbar.Bounds.Width - 12;
+        const double buttonSlotWidth = 60;
+        const double fastPreviewWidth = 105;
+        bool showFastPreview = availableWidth > 0
+            && total * buttonSlotWidth + fastPreviewWidth <= availableWidth;
+        BroadcastFastPreviewText.IsVisible = showFastPreview;
+        double buttonsAvailableWidth = showFastPreview
+            ? availableWidth - fastPreviewWidth
+            : availableWidth;
+        int visibleCount = availableWidth > 0
+            ? Math.Clamp((int)(buttonsAvailableWidth / buttonSlotWidth), 1, total)
+            : Math.Min(total, 8);
+        int first = Math.Clamp(selected - visibleCount / 2, 0, total - visibleCount);
+
+        for (int versionIndex = first; versionIndex < first + visibleCount; versionIndex++)
+        {
+            int capturedIndex = versionIndex;
+            var button = new Button
+            {
+                Content = $"v{versionIndex}",
+                Width = 58,
+                Height = 30,
+                Margin = new Thickness(1, 0),
+                Padding = new Thickness(4, 0),
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                FontSize = 12,
+                FontWeight = versionIndex == selected ? FontWeight.Bold : FontWeight.Normal,
+                Background = versionIndex == selected
+                    ? new SolidColorBrush(Color.Parse("#506FAF"))
+                    : new SolidColorBrush(Color.Parse("#3A3A3D")),
+                BorderBrush = versionIndex == selected
+                    ? new SolidColorBrush(Color.Parse("#A8C8FF"))
+                    : new SolidColorBrush(Color.Parse("#55555A")),
+            };
+            button.Click += (_, _) => VersionComboBox.SelectedIndex = capturedIndex;
+            button.PointerEntered += (_, _) => PreviewBroadcastVersion(capturedIndex);
+            button.PointerExited += (_, _) => RestoreSelectedBroadcastVersionAfterPreview();
+            BroadcastVersionButtonsGrid.Children.Add(button);
+        }
+    }
+
+    private void PreviewBroadcastVersion(int versionIndex)
+    {
+        if (!TryGetSelectedMagazine(out int magazine)
+            || !TryGetSelectedPageNumber(out int page)
+            || !TryGetSelectedSubpage(out int subpage))
+            return;
+
+        var instances = _store.GetInstances(magazine, page, subpage);
+        if (versionIndex < 0 || versionIndex >= instances.Count) return;
+        var previewPage = instances[versionIndex].Page;
+        PrepareBroadcastPageForDisplay(previewPage);
+        _previewingBroadcastVersion = true;
+        BroadcastGrid.Page = previewPage;
+    }
+
+    private void RestoreSelectedBroadcastVersionAfterPreview()
+    {
+        if (!_previewingBroadcastVersion
+            || !TryGetSelectedMagazine(out int magazine)
+            || !TryGetSelectedPageNumber(out int page)
+            || !TryGetSelectedSubpage(out int subpage))
+            return;
+
+        _previewingBroadcastVersion = false;
+        var instances = _store.GetInstances(magazine, page, subpage);
+        int selected = VersionComboBox.SelectedIndex;
+        if (selected < 0 || selected >= instances.Count) return;
+        var selectedPage = instances[selected].Page;
+        PrepareBroadcastPageForDisplay(selectedPage);
+        BroadcastGrid.Page = selectedPage;
+    }
+
     private void PrepareBroadcastPageForDisplay(TeletextPage page)
     {
+        ApplyFileG0SubsetToPage(page, broadcast: true);
         if (BroadcastGrid.ShowDiacriticMarkers)
             EnsureBroadcastEnhancementsLoaded(page);
     }
@@ -3411,6 +3900,7 @@ public partial class MainWindow : Window
             _suppressComboEvents = true;
             // No version combo for squash - just use the first instance
             _squashPage = instances[0].Page;
+            ApplyFileG0SubsetToPage(_squashPage, broadcast: false);
             SquashGrid.Page = _squashPage;
             UpdateEnhancementList(_squashPage);
             _suppressComboEvents = false;
@@ -3452,6 +3942,245 @@ public partial class MainWindow : Window
         int.TryParse(label, System.Globalization.NumberStyles.HexNumber, null, out subpage);
 
     // ---- Menu handlers -------------------------------------------------------------
+
+    private async Task<RecoverySquashOptions?> ShowRecoverySquashOptionsAsync()
+    {
+        var minimumRows = new NumericUpDown
+        {
+            Minimum = 0, Maximum = 24, Value = 3, Width = 150,
+        };
+        var limitSubpages = new CheckBox
+        {
+            Content = "Discard subpages above",
+            IsChecked = true,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var maximumSubpage = new NumericUpDown
+        {
+            Minimum = 0, Maximum = 0x1FFF, Value = 99, Width = 150,
+        };
+        var standardPages = new CheckBox
+        {
+            Content = "Standard decimal page numbers only (100–899)",
+            IsChecked = true,
+        };
+        var minimumReceptions = new NumericUpDown
+        {
+            Minimum = 1, Maximum = 1000, Value = 1, Width = 150,
+        };
+        var requireServiceHeader = new CheckBox
+        {
+            Content = "Require service-name header match",
+            IsChecked = true,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var headerSimilarity = new NumericUpDown
+        {
+            Minimum = 0, Maximum = 100, Value = 60, Width = 150,
+        };
+        var createButton = new Button
+        {
+            Content = "Create",
+            Width = 90,
+            IsDefault = true,
+        };
+        var cancelButton = new Button
+        {
+            Content = "Cancel",
+            Width = 90,
+            IsCancel = true,
+        };
+        var dialog = new Window
+        {
+            Title = "Create squashed stream",
+            SizeToContent = SizeToContent.WidthAndHeight,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Width = 590,
+                Margin = new Thickness(20),
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Recovery filters",
+                        FontWeight = FontWeight.SemiBold,
+                        FontSize = 16,
+                    },
+                    new TextBlock
+                    {
+                        Text = "Filters remove implausible page addresses before the best rows are combined. Singleton pages remain allowed by default.",
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = Brushes.LightGray,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 10,
+                        Children =
+                        {
+                            new TextBlock { Text = "Minimum distinct body rows", Width = 300, VerticalAlignment = VerticalAlignment.Center },
+                            minimumRows,
+                        },
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 10,
+                        Children = { limitSubpages, maximumSubpage, new TextBlock { Text = "(decimal)", VerticalAlignment = VerticalAlignment.Center } },
+                    },
+                    standardPages,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 10,
+                        Children =
+                        {
+                            new TextBlock { Text = "Minimum receptions of an address", Width = 300, VerticalAlignment = VerticalAlignment.Center },
+                            minimumReceptions,
+                        },
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 10,
+                        Children = { requireServiceHeader, headerSimilarity, new TextBlock { Text = "%", VerticalAlignment = VerticalAlignment.Center } },
+                    },
+                    new TextBlock
+                    {
+                        Text = "The service-name signature is learned automatically from stable header characters across the stream. Changing clocks and page numbers are ignored.",
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = Brushes.LightGray,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { cancelButton, createButton },
+                    },
+                },
+            },
+        };
+
+        limitSubpages.IsCheckedChanged += (_, _) =>
+            maximumSubpage.IsEnabled = limitSubpages.IsChecked == true;
+        requireServiceHeader.IsCheckedChanged += (_, _) =>
+            headerSimilarity.IsEnabled = requireServiceHeader.IsChecked == true;
+
+        RecoverySquashOptions? result = null;
+        createButton.Click += (_, _) =>
+        {
+            result = new RecoverySquashOptions
+            {
+                MinimumBodyRows = (int)(minimumRows.Value ?? 3),
+                MaximumSubpage = limitSubpages.IsChecked == true
+                    ? (int)(maximumSubpage.Value ?? 99)
+                    : null,
+                StandardDecimalPagesOnly = standardPages.IsChecked == true,
+                MinimumReceptions = (int)(minimumReceptions.Value ?? 1),
+                RequireServiceHeader = requireServiceHeader.IsChecked == true,
+                MinimumHeaderSimilarityPercent = (int)(headerSimilarity.Value ?? 60),
+            };
+            dialog.Close();
+        };
+        cancelButton.Click += (_, _) => dialog.Close();
+        await dialog.ShowDialog(this);
+        return result;
+    }
+
+    private async void OnCreateSquashedStreamClicked(object? sender, RoutedEventArgs e)
+    {
+        if (!_broadcastFileOpen || _broadcastPackets.Count == 0 || _squashPaneEstablished) return;
+
+        RecoverySquashOptions? options = await ShowRecoverySquashOptionsAsync();
+        if (options is null) return;
+
+        var progressBar = new ProgressBar
+        {
+            Minimum = 0,
+            Maximum = 1,
+            Width = 420,
+            Height = 18,
+        };
+        var progressText = new TextBlock { Text = "Preparing recovery…" };
+        var cancelButton = new Button
+        {
+            Content = "Cancel",
+            Width = 90,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        var dialog = new Window
+        {
+            Title = "Create squashed stream",
+            SizeToContent = SizeToContent.WidthAndHeight,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(20),
+                Spacing = 12,
+                Children = { progressText, progressBar, cancelButton },
+            },
+        };
+        using var cancellation = new CancellationTokenSource();
+        cancelButton.Click += (_, _) =>
+        {
+            cancelButton.IsEnabled = false;
+            progressText.Text = "Cancelling…";
+            cancellation.Cancel();
+        };
+
+        IProgress<(string phase, int completed, int total)> progress =
+            new Progress<(string phase, int completed, int total)>(state =>
+        {
+            progressBar.Maximum = Math.Max(state.total, 1);
+            progressBar.Value = Math.Clamp(state.completed, 0, Math.Max(state.total, 1));
+            int percent = state.total > 0 ? state.completed * 100 / state.total : 0;
+            progressText.Text = $"{state.phase}… {state.completed} / {state.total} ({percent}%)";
+        });
+
+        dialog.Show(this);
+        await Task.Yield();
+        try
+        {
+            var packets = await Task.Run(() => RecoverySquasher.Build(
+                _broadcastPackets,
+                options,
+                (phase, completed, total) => progress.Report((phase, completed, total)),
+                cancellation.Token));
+            dialog.Close();
+
+            if (packets.Count == 0)
+            {
+                await ShowMessageAsync("Create squashed stream", "No recoverable pages were found in the broadcast.");
+                return;
+            }
+
+            await using var stream = new MemoryStream(packets.Count * 42);
+            foreach (byte[] packet in packets)
+                await stream.WriteAsync(packet);
+            stream.Position = 0;
+            await LoadSquashStreamAsync(stream, filePath: null);
+            _squashFilePath = null;
+            _squashPaneEstablished = true;
+            UpdateSquashFileFooter();
+            SetSquashDirty(true);
+            UpdateWorkspacePaneVisibility();
+            FitWindowToContent();
+        }
+        catch (OperationCanceledException)
+        {
+            dialog.Close();
+        }
+        catch (Exception ex)
+        {
+            dialog.Close();
+            await ShowMessageAsync("Squash recovery failed", ex.Message);
+        }
+    }
 
     private async void OnNewPageClicked(object? sender, RoutedEventArgs e) =>
         await CreateNewPageAsync();
@@ -3716,6 +4445,80 @@ public partial class MainWindow : Window
         };
         closeButton.Click += (_, _) => dialog.Close();
         await dialog.ShowDialog(this);
+    }
+
+    private async Task ShowEnhancementErrorAsync(
+        string title,
+        string message,
+        TeletextPage page)
+    {
+        if (!message.Contains("uncorrectable triplet", StringComparison.OrdinalIgnoreCase))
+        {
+            await ShowMessageAsync(title, message);
+            return;
+        }
+
+        var corrupt = page.EnhancementPackets
+            .OrderBy(packet => packet.DesignationCode)
+            .SelectMany(packet => packet.Triplets.Select(triplet => (Packet: packet, Triplet: triplet)))
+            .FirstOrDefault(item => item.Triplet.UncorrectableError);
+        if (corrupt.Packet is null)
+        {
+            await ShowMessageAsync(title, message);
+            return;
+        }
+
+        bool deleteTriplet = false;
+        var okButton = new Button { Content = "OK", Width = 80 };
+        var deleteButton = new Button { Content = "Delete triplet", Width = 120 };
+        var dialog = new Window
+        {
+            Title = title,
+            Width = 420,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(20),
+                Spacing = 18,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = message,
+                        TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { okButton, deleteButton },
+                    },
+                },
+            },
+        };
+        okButton.Click += (_, _) => dialog.Close();
+        deleteButton.Click += (_, _) =>
+        {
+            deleteTriplet = true;
+            dialog.Close();
+        };
+        await dialog.ShowDialog(this);
+
+        if (!deleteTriplet) return;
+        EnsurePageHistory(page);
+        if (!PageAssembler.DeleteEnhancementTriplet(
+                page,
+                corrupt.Packet,
+                corrupt.Triplet.TripletNumber))
+            return;
+
+        CommitPageEdit(page);
+        UpdateEnhancementList(page);
+        SquashGrid.InvalidateVisual();
     }
 
     private void MarkSourcePacketsDeleted(TeletextPage page)

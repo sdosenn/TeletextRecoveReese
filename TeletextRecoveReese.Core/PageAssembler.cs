@@ -246,11 +246,13 @@ public class PageAssembler
                 if (triplet.UncorrectableError) continue;
 
                 int mode = triplet.ExtendedMode;
-                if (mode == 0x1F)
+                if (mode == 0x1F && (triplet.Data & 1) != 0)
                 {
                     terminated = true;
                     break;
                 }
+                if (mode == 0x1F)
+                    continue;
 
                 if (mode == 0x04)
                 {
@@ -568,6 +570,291 @@ public class PageAssembler
         return true;
     }
 
+    /// <summary>
+    /// Adds a diacritic in a new designation packet without rewriting a single byte
+    /// of the existing X/26 packets. This is the recovery-safe path for pages whose
+    /// old packets contain uncorrectable Hamming words that the user wants to retain.
+    /// </summary>
+    public static bool TryAppendLevel15DiacriticPacket(
+        TeletextPage page,
+        int targetColumn,
+        int targetRow,
+        char baseCharacter,
+        int diacritical,
+        out string error)
+    {
+        error = string.Empty;
+        if (targetColumn is < 0 or >= 40 || targetRow is < 0 or >= 25
+            || (targetRow == 0 && targetColumn < 8)
+            || baseCharacter is < '\x20' or > '\x7F'
+            || diacritical is < 1 or > 17)
+        {
+            error = "That character cannot be stored as a Level 1.5 enhancement.";
+            return false;
+        }
+
+        var termination = new EnhancementTriplet { Address = 63, Mode = 0x1F, Data = 7 };
+        EnhancementTriplet[] additions =
+        [
+            new EnhancementTriplet
+            {
+                Address = targetRow == 0 ? 63 : targetRow == 24 ? 40 : targetRow + 40,
+                Mode = targetRow == 0 ? 0x07 : 0x04,
+                Data = targetColumn,
+            },
+            new EnhancementTriplet
+            {
+                Address = targetColumn,
+                Mode = diacritical is 16 or 17 ? 0x0F : 0x10 + diacritical,
+                Data = diacritical == 16 ? 0x62 : diacritical == 17 ? 0x72 : baseCharacter,
+            },
+            termination,
+        ];
+
+        // If an existing packet has ordinary termination padding, use that padding
+        // in place. Every preceding raw triplet remains byte-for-byte identical.
+        var terminal = page.EnhancementPackets
+            .OrderBy(packet => packet.DesignationCode)
+            .SelectMany(packet => packet.Triplets.Select(triplet => (Packet: packet, Triplet: triplet)))
+            .FirstOrDefault(item => !item.Triplet.UncorrectableError
+                && item.Triplet.ExtendedMode == 0x1F
+                && (item.Triplet.Data & 1) != 0);
+        if (terminal.Packet is not null && terminal.Triplet.TripletNumber <= 10)
+        {
+            byte[] patchedRaw = (byte[])terminal.Packet.RawPacket.Clone();
+            for (int index = 0; index < additions.Length; index++)
+                EncodeEnhancementTripletAt(
+                    patchedRaw,
+                    terminal.Triplet.TripletNumber + index,
+                    additions[index]);
+            EnhancementPacket? patched = DecodeEnhancementPacket(
+                patchedRaw, terminal.Packet.PacketIndex);
+            if (patched is null)
+            {
+                error = "The new X/26 packet could not be encoded.";
+                return false;
+            }
+            int packetIndex = page.EnhancementPackets.IndexOf(terminal.Packet);
+            page.EnhancementPackets[packetIndex] = patched;
+            ApplyLevel15Enhancements(page);
+            return true;
+        }
+
+        int designation = page.EnhancementPackets
+            .Select(packet => packet.DesignationCode)
+            .DefaultIfEmpty(-1)
+            .Max() + 1;
+        if (designation > 15)
+        {
+            error = "There is no free X/26 designation packet for this diacritic.";
+            return false;
+        }
+
+        // A terminal marker in one of the last two slots cannot hold all three new
+        // triplets. Turn only that marker into a continuation and append a packet;
+        // no character or positioning triplet is touched.
+        if (terminal.Packet is not null)
+        {
+            byte[] continuedRaw = (byte[])terminal.Packet.RawPacket.Clone();
+            EncodeEnhancementTripletAt(
+                continuedRaw,
+                terminal.Triplet.TripletNumber,
+                new EnhancementTriplet { Address = 63, Mode = 0x1F, Data = 0 });
+            EnhancementPacket? continued = DecodeEnhancementPacket(
+                continuedRaw, terminal.Packet.PacketIndex);
+            if (continued is null)
+            {
+                error = "The X/26 continuation marker could not be encoded.";
+                return false;
+            }
+            int packetIndex = page.EnhancementPackets.IndexOf(terminal.Packet);
+            page.EnhancementPackets[packetIndex] = continued;
+        }
+
+        byte[] raw = CreateStandaloneEnhancementPacket(
+            page.Magazine, designation, additions, termination);
+        EnhancementPacket? packet = DecodeEnhancementPacket(raw, packetIndex: -1);
+        if (packet is null)
+        {
+            error = "The new X/26 packet could not be encoded.";
+            return false;
+        }
+
+        page.EnhancementPackets.Add(packet);
+        ApplyLevel15Enhancements(page);
+        return true;
+    }
+
+    /// <summary>
+    /// Inserts a new position/character pair into the logical row order while
+    /// copying every existing Hamming 24/18 codeword as the original three bytes.
+    /// Corrupt codewords therefore remain corrupt in exactly the same way instead
+    /// of being decoded, guessed, dropped, or freshly encoded.
+    /// </summary>
+    public static bool TryInsertLevel15DiacriticRawPreserving(
+        TeletextPage page,
+        int targetColumn,
+        int targetRow,
+        char baseCharacter,
+        int diacritical,
+        out string error)
+    {
+        error = string.Empty;
+        if (targetColumn is < 0 or >= 40 || targetRow is < 0 or >= 25
+            || (targetRow == 0 && targetColumn < 8)
+            || baseCharacter is < '\x20' or > '\x7F'
+            || diacritical is < 1 or > 17)
+        {
+            error = "That character cannot be stored as a Level 1.5 enhancement.";
+            return false;
+        }
+
+        var orderedPackets = page.EnhancementPackets
+            .OrderBy(packet => packet.DesignationCode)
+            .ToList();
+        if (orderedPackets.Count >= 16)
+        {
+            error = "There is no free X/26 designation packet for this diacritic.";
+            return false;
+        }
+
+        var rawTriplets = new List<byte[]>(orderedPackets.Count * 13 + 3);
+        var decodedSlots = new List<(EnhancementTriplet Triplet, int Slot, int ActiveRow)>();
+        int activeRow = -1;
+        int? firstTerminalSlot = null;
+        foreach (EnhancementPacket packet in orderedPackets)
+        {
+            for (int tripletNumber = 0; tripletNumber < 13; tripletNumber++)
+            {
+                int offset = 3 + tripletNumber * 3;
+                rawTriplets.Add(packet.RawPacket.AsSpan(offset, 3).ToArray());
+                EnhancementTriplet triplet = packet.Triplets[tripletNumber];
+                int slot = rawTriplets.Count - 1;
+                if (!triplet.UncorrectableError)
+                {
+                    if (triplet.ExtendedMode == 0x04)
+                        activeRow = triplet.Address == 40 ? 24 : triplet.Address - 40;
+                    else if (triplet.ExtendedMode == 0x07 && triplet.Address == 63)
+                        activeRow = 0;
+                    if (triplet.ExtendedMode == 0x1F && (triplet.Data & 1) != 0)
+                        firstTerminalSlot ??= slot;
+                }
+                decodedSlots.Add((triplet, slot, activeRow));
+            }
+        }
+
+        int insertionSlot = firstTerminalSlot ?? rawTriplets.Count;
+        var sameRowCharacters = decodedSlots
+            .Where(item => !item.Triplet.UncorrectableError
+                && IsLevel15Character(item.Triplet)
+                && item.ActiveRow == targetRow
+                && (!firstTerminalSlot.HasValue || item.Slot < firstTerminalSlot.Value))
+            .ToList();
+        if (sameRowCharacters.Count > 0)
+        {
+            var following = sameRowCharacters.FirstOrDefault(item => item.Triplet.Address > targetColumn);
+            insertionSlot = following.Triplet is null
+                ? sameRowCharacters[^1].Slot + 1
+                : following.Slot;
+        }
+        else
+        {
+            var laterRow = decodedSlots.FirstOrDefault(item =>
+                !item.Triplet.UncorrectableError
+                && item.Triplet.ExtendedMode is 0x04 or 0x07
+                && item.ActiveRow > targetRow
+                && (!firstTerminalSlot.HasValue || item.Slot < firstTerminalSlot.Value));
+            if (laterRow.Triplet is not null)
+                insertionSlot = laterRow.Slot;
+        }
+        if (firstTerminalSlot.HasValue)
+            insertionSlot = Math.Min(insertionSlot, firstTerminalSlot.Value);
+
+        var activePosition = new EnhancementTriplet
+        {
+            Address = targetRow == 0 ? 63 : targetRow == 24 ? 40 : targetRow + 40,
+            Mode = targetRow == 0 ? 0x07 : 0x04,
+            Data = targetColumn,
+        };
+        var character = new EnhancementTriplet
+        {
+            Address = targetColumn,
+            Mode = diacritical is 16 or 17 ? 0x0F : 0x10 + diacritical,
+            Data = diacritical == 16 ? 0x62 : diacritical == 17 ? 0x72 : baseCharacter,
+        };
+        rawTriplets.Insert(insertionSlot++, EncodeEnhancementTriplet(activePosition));
+        rawTriplets.Insert(insertionSlot, EncodeEnhancementTriplet(character));
+        if (!firstTerminalSlot.HasValue)
+        {
+            rawTriplets.Add(EncodeEnhancementTriplet(
+                new EnhancementTriplet { Address = 63, Mode = 0x1F, Data = 7 }));
+        }
+
+        int packetCount = (rawTriplets.Count + 12) / 13;
+        if (packetCount > 16)
+        {
+            error = "There is no room for the inserted X/26 triplets.";
+            return false;
+        }
+
+        var existingIndices = orderedPackets
+            .GroupBy(packet => packet.DesignationCode)
+            .ToDictionary(group => group.Key, group => group.First().PacketIndex);
+        byte[] terminalBytes = EncodeEnhancementTriplet(
+            new EnhancementTriplet { Address = 63, Mode = 0x1F, Data = 7 });
+        page.EnhancementPackets.Clear();
+        for (int designation = 0; designation < packetCount; designation++)
+        {
+            byte[] raw = CreateEmptyEnhancementPacket(page.Magazine, designation);
+            for (int tripletNumber = 0; tripletNumber < 13; tripletNumber++)
+            {
+                int sourceIndex = designation * 13 + tripletNumber;
+                byte[] bytes = sourceIndex < rawTriplets.Count
+                    ? rawTriplets[sourceIndex]
+                    : terminalBytes;
+                bytes.CopyTo(raw, 3 + tripletNumber * 3);
+            }
+            EnhancementPacket? decoded = DecodeEnhancementPacket(
+                raw, existingIndices.GetValueOrDefault(designation, -1));
+            if (decoded is not null)
+                page.EnhancementPackets.Add(decoded);
+        }
+
+        ApplyLevel15Enhancements(page);
+        return true;
+    }
+
+    private static byte[] EncodeEnhancementTriplet(EnhancementTriplet triplet)
+    {
+        int value = triplet.Address | (triplet.Mode << 6) | (triplet.Data << 11);
+        int encoded = Hamming.Encode24_18(value);
+        return [(byte)encoded, (byte)(encoded >> 8), (byte)(encoded >> 16)];
+    }
+
+    private static byte[] CreateEmptyEnhancementPacket(int magazine, int designation)
+    {
+        var raw = new byte[42];
+        int magazineBits = magazine == 8 ? 0 : magazine & 0x07;
+        int address = magazineBits | (26 << 3);
+        raw[0] = Hamming.Encode84(address & 0x0F);
+        raw[1] = Hamming.Encode84((address >> 4) & 0x0F);
+        raw[2] = Hamming.Encode84(designation);
+        return raw;
+    }
+
+    private static void EncodeEnhancementTripletAt(
+        byte[] rawPacket,
+        int tripletNumber,
+        EnhancementTriplet triplet)
+    {
+        int value = triplet.Address | (triplet.Mode << 6) | (triplet.Data << 11);
+        int encoded = Hamming.Encode24_18(value);
+        int offset = 3 + tripletNumber * 3;
+        rawPacket[offset] = (byte)encoded;
+        rawPacket[offset + 1] = (byte)(encoded >> 8);
+        rawPacket[offset + 2] = (byte)(encoded >> 16);
+    }
+
     private static bool IsDiacritical(EnhancementTriplet triplet) =>
         triplet.ExtendedMode is >= 0x30 and <= 0x3F;
 
@@ -582,6 +869,115 @@ public class PageAssembler
         Mode = triplet.Mode,
         Data = triplet.Data,
     };
+
+    public static bool DeleteEnhancementTriplet(
+        TeletextPage page,
+        EnhancementPacket sourcePacket,
+        int sourceTripletNumber)
+    {
+        if (!page.EnhancementPackets.Contains(sourcePacket)) return false;
+
+        var remaining = new List<EnhancementTriplet>();
+        bool found = false;
+        bool terminated = false;
+        foreach (var packet in page.EnhancementPackets.OrderBy(packet => packet.DesignationCode))
+        {
+            foreach (var triplet in packet.Triplets)
+            {
+                if (ReferenceEquals(packet, sourcePacket)
+                    && triplet.TripletNumber == sourceTripletNumber)
+                {
+                    found = true;
+                    continue;
+                }
+
+                if (!triplet.UncorrectableError
+                    && triplet.ExtendedMode == 0x1F
+                    && (triplet.Data & 1) != 0)
+                {
+                    terminated = true;
+                    break;
+                }
+
+                remaining.Add(CloneTriplet(triplet));
+            }
+
+            if (terminated) break;
+        }
+
+        if (!found) return false;
+        RebuildEnhancementPackets(page, remaining);
+        ApplyLevel15Enhancements(page);
+        return true;
+    }
+
+    /// <summary>
+    /// Sanitizes triplets that Hamming 24/18 could not correct. Correct and
+    /// single-bit-corrected triplets from the same packets are retained. Plausible
+    /// active-position values are re-encoded; characters depending on an impossible
+    /// active position are omitted until the next trustworthy position.
+    /// </summary>
+    public static int RemoveUncorrectableEnhancementTriplets(TeletextPage page)
+    {
+        var remaining = new List<EnhancementTriplet>();
+        int removed = 0;
+        int repaired = 0;
+        bool activePositionKnown = false;
+        bool terminated = false;
+        foreach (var packet in page.EnhancementPackets.OrderBy(packet => packet.DesignationCode))
+        {
+            foreach (var triplet in packet.Triplets)
+            {
+                if (triplet.UncorrectableError)
+                {
+                    // A damaged Set Active Position sometimes still decodes to a
+                    // completely plausible row/column. Retaining and freshly
+                    // encoding it preserves the following good characters. If its
+                    // decoded position is impossible, discard dependent characters
+                    // until the next trustworthy position instead of moving them to
+                    // the preceding row by accident.
+                    if (IsPlausibleActivePosition(triplet))
+                    {
+                        remaining.Add(CloneTriplet(triplet));
+                        activePositionKnown = true;
+                        repaired++;
+                        continue;
+                    }
+                    if (triplet.ExtendedMode is 0x04 or 0x07)
+                        activePositionKnown = false;
+                    removed++;
+                    continue;
+                }
+
+                if (triplet.ExtendedMode == 0x1F)
+                {
+                    terminated = true;
+                    break;
+                }
+
+                if (triplet.ExtendedMode is 0x04 or 0x07)
+                    activePositionKnown = true;
+                else if (IsLevel15Character(triplet) && !activePositionKnown)
+                {
+                    removed++;
+                    continue;
+                }
+
+                remaining.Add(CloneTriplet(triplet));
+            }
+            if (terminated) break;
+        }
+
+        int changes = removed + repaired;
+        if (changes == 0) return 0;
+        RebuildEnhancementPackets(page, remaining);
+        ApplyLevel15Enhancements(page);
+        return changes;
+    }
+
+    private static bool IsPlausibleActivePosition(EnhancementTriplet triplet) =>
+        (triplet.ExtendedMode == 0x04 && triplet.Address is >= 40 and <= 63 && triplet.Data is >= 0 and < 40)
+        || (triplet.ExtendedMode == 0x07 && triplet.Address == 63 && triplet.Data is >= 0 and < 40);
 
     private static void RebuildEnhancementPackets(
         TeletextPage page,
@@ -637,6 +1033,34 @@ public class PageAssembler
         {
             int index = designation * 13 + tripletNumber;
             var triplet = index < triplets.Count ? triplets[index] : termination;
+            int value = triplet.Address | (triplet.Mode << 6) | (triplet.Data << 11);
+            int encoded = Hamming.Encode24_18(value);
+            int offset = 3 + tripletNumber * 3;
+            raw[offset] = (byte)encoded;
+            raw[offset + 1] = (byte)(encoded >> 8);
+            raw[offset + 2] = (byte)(encoded >> 16);
+        }
+        return raw;
+    }
+
+    private static byte[] CreateStandaloneEnhancementPacket(
+        int magazine,
+        int designation,
+        IReadOnlyList<EnhancementTriplet> triplets,
+        EnhancementTriplet termination)
+    {
+        var raw = new byte[42];
+        int magazineBits = magazine == 8 ? 0 : magazine & 0x07;
+        int address = magazineBits | (26 << 3);
+        raw[0] = Hamming.Encode84(address & 0x0F);
+        raw[1] = Hamming.Encode84((address >> 4) & 0x0F);
+        raw[2] = Hamming.Encode84(designation);
+
+        for (int tripletNumber = 0; tripletNumber < 13; tripletNumber++)
+        {
+            EnhancementTriplet triplet = tripletNumber < triplets.Count
+                ? triplets[tripletNumber]
+                : termination;
             int value = triplet.Address | (triplet.Mode << 6) | (triplet.Data << 11);
             int encoded = Hamming.Encode24_18(value);
             int offset = 3 + tripletNumber * 3;

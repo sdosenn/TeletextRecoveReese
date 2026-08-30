@@ -7,6 +7,7 @@
         SizeToContent="WidthAndHeight"
         WindowStartupLocation="CenterOwner"
         CanResize="False"
+        Icon="/Assets/Icons/app-icon.png"
         Title="About">
     
     <StackPanel Margin="20" Spacing="10" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -23,18 +24,42 @@
                Margin="0,5,0,5"/>
         
         <!-- Author / Copyright / Support -->
-        <TextBlock Text="Created by: Siniša Došen" HorizontalAlignment="Center"/>
-        <TextBlock Text="© 2026" Foreground="Gray" HorizontalAlignment="Center"/>
-        <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Center">
-            <TextBlock Text="Support:" Foreground="Gray" VerticalAlignment="Center"/>
-            <TextBlock Text="ko-fi.com/sinisinavideoteka"
-                       Foreground="#4DA3FF"
-                       TextDecorations="Underline"
-                       Cursor="Hand"
-                       PointerPressed="OnSupportLinkPressed"/>
-        </StackPanel>
-
-        <!-- Close Button -->
-        <Button Content="Close" Click="CloseButton_Click" HorizontalAlignment="Center" Margin="0,5,0,0" Width="80" HorizontalContentAlignment="Center"/>
+        <TextBlock Text="Created by: Siniša Došen  © 2026" HorizontalAlignment="Center"/>
+        <Grid ColumnDefinitions="*,Auto" Margin="0,5,0,0" HorizontalAlignment="Stretch">
+            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Left">
+                <Button Height="32"
+                        Padding="10,3"
+                        Cursor="Hand"
+                        ToolTip.Tip="https://github.com/sdosenn/TeletextRecoveReese"
+                        PointerPressed="OnRepositoryLinkPressed">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock Text="{}{ C# }"
+                                   FontFamily="Consolas,DejaVu Sans Mono,monospace"
+                                   FontSize="13"
+                                   FontWeight="Bold"
+                                   Foreground="#A978E8"
+                                   VerticalAlignment="Center"/>
+                        <TextBlock Text="GitHub" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button Height="32"
+                        Padding="10,3"
+                        Cursor="Hand"
+                        ToolTip.Tip="https://ko-fi.com/sinisinavideoteka"
+                        PointerPressed="OnSupportLinkPressed">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock Text="☕" FontSize="16" VerticalAlignment="Center"/>
+                        <TextBlock Text="Ko-fi" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+            <Button Grid.Column="1"
+                    Content="Close"
+                    Click="CloseButton_Click"
+                    HorizontalAlignment="Right"
+                    Width="80"
+                    Height="32"
+                    HorizontalContentAlignment="Center"/>
+        </Grid>
     </StackPanel>
 </Window>
