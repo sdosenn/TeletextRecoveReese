@@ -58,7 +58,6 @@ jobs:
           name: windows-x64
           path: ${{ runner.temp }}/TeletextRecoveReese-${{ env.RELEASE_TAG }}-win-x64.zip
           if-no-files-found: error
-          archive: false
 
   linux:
     name: Linux x64 AppImage
@@ -116,7 +115,6 @@ jobs:
           name: linux-x64
           path: ${{ runner.temp }}/TeletextRecoveReese-${{ env.RELEASE_TAG }}-linux-x64.AppImage
           if-no-files-found: error
-          archive: false
 
   macos:
     name: macOS ${{ matrix.architecture }}
@@ -181,7 +179,6 @@ jobs:
           name: ${{ matrix.package_suffix }}
           path: ${{ runner.temp }}/TeletextRecoveReese-${{ env.RELEASE_TAG }}-${{ matrix.package_suffix }}.zip
           if-no-files-found: error
-          archive: false
 
   release:
     name: Attach packages to GitHub Release
