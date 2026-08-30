@@ -3,12 +3,19 @@ name: Build release packages
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing GitHub Release tag to rebuild
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 env:
   PROJECT_FILE: TeletextRecoveReese/TeletextRecoveReese.csproj
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
@@ -41,8 +48,6 @@ jobs:
 
       - name: Create ZIP package
         shell: pwsh
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           $package = "$env:RUNNER_TEMP/TeletextRecoveReese-$env:RELEASE_TAG-win-x64.zip"
           Compress-Archive -Path "$env:RUNNER_TEMP/publish/*" -DestinationPath $package
@@ -51,13 +56,13 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: windows-x64
-          path: ${{ runner.temp }}/TeletextRecoveReese-${{ github.event.release.tag_name }}-win-x64.zip
+          path: ${{ runner.temp }}/TeletextRecoveReese-${{ env.RELEASE_TAG }}-win-x64.zip
           if-no-files-found: error
           archive: false
 
   linux:
     name: Linux x64 AppImage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Check out source
@@ -75,8 +80,8 @@ jobs:
           --runtime linux-x64
           --self-contained true
           --output "$RUNNER_TEMP/publish"
-          -p:PublishSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:PublishSingleFile=false
+          -p:PublishReadyToRun=true
           -p:DebugType=None
           -p:DebugSymbols=false
 
@@ -95,8 +100,6 @@ jobs:
           chmod +x "$app_dir/usr/bin/TeletextRecoveReese"
 
       - name: Build AppImage
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           tool="$RUNNER_TEMP/appimagetool-x86_64.AppImage"
           output="$RUNNER_TEMP/TeletextRecoveReese-$RELEASE_TAG-linux-x64.AppImage"
@@ -111,7 +114,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: linux-x64
-          path: ${{ runner.temp }}/TeletextRecoveReese-${{ github.event.release.tag_name }}-linux-x64.AppImage
+          path: ${{ runner.temp }}/TeletextRecoveReese-${{ env.RELEASE_TAG }}-linux-x64.AppImage
           if-no-files-found: error
           archive: false
 
@@ -153,8 +156,6 @@ jobs:
           -p:DebugSymbols=false
 
       - name: Create application bundle
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           app="$RUNNER_TEMP/TeletextRecoveReese.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -164,10 +165,10 @@ jobs:
           chmod +x "$app/Contents/MacOS/TeletextRecoveReese"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $RELEASE_TAG" "$app/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" "$app/Contents/Info.plist"
+          codesign --force --deep --sign - "$app"
 
       - name: Create ZIP package
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
           PACKAGE_SUFFIX: ${{ matrix.package_suffix }}
         run: |
           cd "$RUNNER_TEMP"
@@ -178,7 +179,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.package_suffix }}
-          path: ${{ runner.temp }}/TeletextRecoveReese-${{ github.event.release.tag_name }}-${{ matrix.package_suffix }}.zip
+          path: ${{ runner.temp }}/TeletextRecoveReese-${{ env.RELEASE_TAG }}-${{ matrix.package_suffix }}.zip
           if-no-files-found: error
           archive: false
 
@@ -197,5 +198,4 @@ jobs:
       - name: Attach packages
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: gh release upload "$RELEASE_TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
