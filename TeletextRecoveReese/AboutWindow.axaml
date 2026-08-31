@@ -31,7 +31,7 @@
                         Padding="10,3"
                         Cursor="Hand"
                         ToolTip.Tip="https://github.com/sdosenn/TeletextRecoveReese"
-                        PointerPressed="OnRepositoryLinkPressed">
+                        Click="OnRepositoryLinkClicked">
                     <StackPanel Orientation="Horizontal" Spacing="6">
                         <TextBlock Text="{}{ C# }"
                                    FontFamily="Consolas,DejaVu Sans Mono,monospace"
@@ -46,7 +46,7 @@
                         Padding="10,3"
                         Cursor="Hand"
                         ToolTip.Tip="https://ko-fi.com/sinisinavideoteka"
-                        PointerPressed="OnSupportLinkPressed">
+                        Click="OnSupportLinkClicked">
                     <StackPanel Orientation="Horizontal" Spacing="6">
                         <TextBlock Text="☕" FontSize="16" VerticalAlignment="Center"/>
                         <TextBlock Text="Ko-fi" VerticalAlignment="Center"/>

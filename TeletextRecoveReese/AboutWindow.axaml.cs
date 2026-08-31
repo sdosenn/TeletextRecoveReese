@@ -1,7 +1,6 @@
 using System;
 using Avalonia.Interactivity;
 using Avalonia.Controls;
-using Avalonia.Input;
 
 namespace TeletextRecoveReese;
 
@@ -22,15 +21,13 @@ public partial class AboutWindow : Window
         Close();
     }
 
-    private async void OnSupportLinkPressed(object? sender, PointerPressedEventArgs e)
+    private async void OnSupportLinkClicked(object? sender, RoutedEventArgs e)
     {
         await Launcher.LaunchUriAsync(new Uri("https://ko-fi.com/sinisinavideoteka"));
-        e.Handled = true;
     }
 
-    private async void OnRepositoryLinkPressed(object? sender, PointerPressedEventArgs e)
+    private async void OnRepositoryLinkClicked(object? sender, RoutedEventArgs e)
     {
         await Launcher.LaunchUriAsync(new Uri("https://github.com/sdosenn/TeletextRecoveReese"));
-        e.Handled = true;
     }
 }

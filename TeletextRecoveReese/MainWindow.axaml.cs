@@ -167,6 +167,7 @@ public partial class MainWindow : Window
         public bool? ShowSquashDiacritics { get; set; }
         public bool? ShowBroadcastDiacritics { get; set; }
         public bool? SuppressFlash { get; set; }
+        public bool? ToolbarOnBottom { get; set; }
         public string? VideoEncoder { get; set; }
         public double? VideoSecondsPerPage { get; set; }
         public bool? VideoAnimateFlash { get; set; }
@@ -238,6 +239,7 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeX26EnhancementsMenuItem;
     private NativeMenuItem? _nativeVideoBookmarksMenuItem;
     private NativeMenuItem? _nativeSuppressFlashMenuItem;
+    private NativeMenuItem? _nativeToolbarOnBottomMenuItem;
     private NativeMenuItem? _nativeExportVideoMenuItem;
     private NativeMenuItem? _nativeOpenRecentMenuItem;
     private NativeMenuItem? _nativeG0SubsetMenuItem;
@@ -261,7 +263,12 @@ public partial class MainWindow : Window
     private int _blockBrowseHeight;
     private bool _blockBrowseHasPendingEdit;
     private readonly DispatcherTimer _flashTimer;
+    private readonly DispatcherTimer _flashRollTimer;
     private bool _flashPhaseVisible = true;
+    private bool _flashRollActive;
+    private int _flashRollStartVersion;
+    private int _flashRollOffset;
+    private (int magazine, int page, int subpage)? _flashRollAddress;
     private int _fitWindowRequest;
 
     private static readonly DataFormat<byte[]> TeletextClipboardFormat =
@@ -302,6 +309,10 @@ public partial class MainWindow : Window
             BroadcastGrid.FlashPhaseVisible = _flashPhaseVisible;
         };
         _flashTimer.Start();
+        _flashRollTimer = new DispatcherTimer(
+            TimeSpan.FromMilliseconds(50),
+            DispatcherPriority.Render,
+            OnFlashRollTick);
         SetX26EnhancementsSidebarVisibility(
             _sessionState.ShowX26EnhancementsSidebar ?? true,
             resizeWindow: false);
@@ -1502,6 +1513,39 @@ public partial class MainWindow : Window
         SaveSessionState();
     }
 
+    private void OnToolbarOnBottomClicked(object? sender, RoutedEventArgs e) =>
+        SetToolbarOnBottom(ToolbarOnBottomMenuItem.IsChecked, saveSession: true);
+
+    private void OnNativeToolbarOnBottomClicked(object? sender, EventArgs e)
+    {
+        bool onBottom = !(_sessionState.ToolbarOnBottom ?? false);
+        SetToolbarOnBottom(onBottom, saveSession: true);
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_nativeToolbarOnBottomMenuItem is not null)
+                _nativeToolbarOnBottomMenuItem.IsChecked = onBottom;
+        }, DispatcherPriority.Background);
+    }
+
+    private void SetToolbarOnBottom(bool onBottom, bool saveSession)
+    {
+        Grid.SetRow(SquashToolbarsStack, onBottom ? 2 : 1);
+        Grid.SetRow(SquashContentGrid, onBottom ? 1 : 2);
+        Grid.SetRow(BroadcastToolbarsStack, onBottom ? 2 : 1);
+        Grid.SetRow(BroadcastContentGrid, onBottom ? 1 : 2);
+
+        ToolbarOnBottomMenuItem.IsChecked = onBottom;
+        if (_nativeToolbarOnBottomMenuItem is not null)
+            _nativeToolbarOnBottomMenuItem.IsChecked = onBottom;
+
+        _sessionState.ToolbarOnBottom = onBottom;
+        if (saveSession)
+            SaveSessionState();
+
+        FitWindowToContent();
+    }
+
     private void OnNativeOpenSquashedClicked(object? sender, EventArgs e) =>
         OnOpenSquashedClicked(sender, new RoutedEventArgs());
 
@@ -1902,6 +1946,8 @@ public partial class MainWindow : Window
                 .FirstOrDefault(item => item.Header?.ToString() == "Page Bookmarks Sidebar");
             _nativeSuppressFlashMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
                 .FirstOrDefault(item => item.Header?.ToString() == "Suppress Flash");
+            _nativeToolbarOnBottomMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
+                .FirstOrDefault(item => item.Header?.ToString() == "Toolbar on Bottom");
         }
     }
 
@@ -2171,6 +2217,7 @@ public partial class MainWindow : Window
 
     private void ClearBroadcastPane()
     {
+        StopFlashRoll();
         _broadcastFileG0Subset = null;
         _broadcastEnhancementsScanned.Clear();
         _suppressComboEvents = true;
@@ -2681,6 +2728,8 @@ public partial class MainWindow : Window
         SuppressFlashMenuItem.IsChecked = suppressFlash;
         if (_nativeSuppressFlashMenuItem is not null)
             _nativeSuppressFlashMenuItem.IsChecked = suppressFlash;
+
+        SetToolbarOnBottom(_sessionState.ToolbarOnBottom ?? false, saveSession: false);
     }
 
     private void OnColorClicked(object? sender, RoutedEventArgs e)
@@ -3063,6 +3112,7 @@ public partial class MainWindow : Window
         _sessionState.ShowSquashDiacritics = SquashGrid.ShowDiacriticMarkers;
         _sessionState.ShowBroadcastDiacritics = BroadcastGrid.ShowDiacriticMarkers;
         _sessionState.SuppressFlash = SquashGrid.SuppressFlash;
+        _sessionState.ToolbarOnBottom = ToolbarOnBottomMenuItem.IsChecked;
 
         if (!string.IsNullOrWhiteSpace(_squashFilePath)
             && TryGetSquashAddress(out var squashAddress))
@@ -3132,6 +3182,7 @@ public partial class MainWindow : Window
         int versionIndex,
         bool persistRecentPosition = true)
     {
+        StopFlashRoll();
         var instances = _store.GetInstances(address.magazine, address.page, address.subpage);
         if (instances.Count == 0) return;
         versionIndex = Math.Clamp(versionIndex, 0, instances.Count - 1);
@@ -3635,6 +3686,7 @@ public partial class MainWindow : Window
     private void OnMagazineComboChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_suppressComboEvents) return;
+        StopFlashRoll();
         if (!TryGetSelectedMagazine(out var magazine)) return;
 
         _suppressComboEvents = true;
@@ -3650,6 +3702,7 @@ public partial class MainWindow : Window
     private void OnPageNumberComboChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_suppressComboEvents) return;
+        StopFlashRoll();
         if (!TryGetSelectedMagazine(out var magazine)) return;
         if (!TryGetSelectedPageNumber(out var page)) return;
 
@@ -3666,6 +3719,7 @@ public partial class MainWindow : Window
     private void OnSubpageComboChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_suppressComboEvents) return;
+        StopFlashRoll();
         if (!TryGetSelectedMagazine(out var magazine)) return;
         if (!TryGetSelectedPageNumber(out var page)) return;
         if (!TryGetSelectedSubpage(out var subpage)) return;
@@ -3687,6 +3741,7 @@ public partial class MainWindow : Window
     private void OnVersionComboChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_suppressComboEvents) return;
+        StopFlashRoll();
         if (!TryGetSelectedMagazine(out var magazine)) return;
         if (!TryGetSelectedPageNumber(out var page)) return;
         if (!TryGetSelectedSubpage(out var subpage)) return;
@@ -3713,6 +3768,7 @@ public partial class MainWindow : Window
         BroadcastVersionButtonsGrid.Children.Clear();
 
         int total = VersionComboBox.Items.Count;
+        BroadcastFlashRollButton.IsEnabled = total > 1;
         int selected = VersionComboBox.SelectedIndex;
         if (total <= 0 || selected < 0)
         {
@@ -3764,6 +3820,7 @@ public partial class MainWindow : Window
 
     private void PreviewBroadcastVersion(int versionIndex)
     {
+        if (_flashRollActive) return;
         if (!TryGetSelectedMagazine(out int magazine)
             || !TryGetSelectedPageNumber(out int page)
             || !TryGetSelectedSubpage(out int subpage))
@@ -3779,6 +3836,7 @@ public partial class MainWindow : Window
 
     private void RestoreSelectedBroadcastVersionAfterPreview()
     {
+        if (_flashRollActive) return;
         if (!_previewingBroadcastVersion
             || !TryGetSelectedMagazine(out int magazine)
             || !TryGetSelectedPageNumber(out int page)
@@ -3792,6 +3850,93 @@ public partial class MainWindow : Window
         var selectedPage = instances[selected].Page;
         PrepareBroadcastPageForDisplay(selectedPage);
         BroadcastGrid.Page = selectedPage;
+    }
+
+    private void OnBroadcastFlashRollClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_flashRollActive)
+        {
+            StopFlashRoll();
+            return;
+        }
+
+        if (!TryGetBroadcastAddress(out var address)) return;
+        var instances = _store.GetInstances(address.magazine, address.page, address.subpage);
+        int selected = VersionComboBox.SelectedIndex;
+        if (instances.Count < 2 || selected < 0 || selected >= instances.Count) return;
+
+        RestoreSelectedBroadcastVersionAfterPreview();
+        _flashRollAddress = address;
+        _flashRollStartVersion = selected;
+        _flashRollOffset = 0;
+        _flashRollActive = true;
+        _previewingBroadcastVersion = true;
+        UpdateFlashRollButton();
+        _flashRollTimer.Start();
+    }
+
+    private void OnFlashRollTick(object? sender, EventArgs e)
+    {
+        if (!_flashRollActive
+            || _flashRollAddress is not { } address
+            || !TryGetBroadcastAddress(out var currentAddress)
+            || currentAddress != address)
+        {
+            StopFlashRoll();
+            return;
+        }
+
+        var instances = _store.GetInstances(address.magazine, address.page, address.subpage);
+        if (instances.Count < 2 || _flashRollStartVersion >= instances.Count)
+        {
+            StopFlashRoll();
+            return;
+        }
+
+        _flashRollOffset = (_flashRollOffset + 1) % instances.Count;
+        int versionIndex = (_flashRollStartVersion + _flashRollOffset) % instances.Count;
+        var page = instances[versionIndex].Page;
+        PrepareBroadcastPageForDisplay(page);
+        BroadcastGrid.Page = page;
+    }
+
+    private void StopFlashRoll()
+    {
+        if (!_flashRollActive)
+        {
+            _flashRollTimer?.Stop();
+            UpdateFlashRollButton();
+            return;
+        }
+
+        _flashRollTimer.Stop();
+        _flashRollActive = false;
+        _flashRollAddress = null;
+        _flashRollOffset = 0;
+        _previewingBroadcastVersion = false;
+
+        if (TryGetBroadcastAddress(out var address))
+        {
+            var instances = _store.GetInstances(address.magazine, address.page, address.subpage);
+            int selected = VersionComboBox.SelectedIndex;
+            if (selected >= 0 && selected < instances.Count)
+            {
+                var selectedPage = instances[selected].Page;
+                PrepareBroadcastPageForDisplay(selectedPage);
+                BroadcastGrid.Page = selectedPage;
+            }
+        }
+
+        UpdateFlashRollButton();
+    }
+
+    private void UpdateFlashRollButton()
+    {
+        if (BroadcastFlashRollButton is null) return;
+        BroadcastFlashRollButton.Content = _flashRollActive ? "Roll: On" : "Roll: Off";
+        BroadcastFlashRollButton.Background = _flashRollActive
+            ? new SolidColorBrush(Color.Parse("#8A5B20"))
+            : null;
     }
 
     private void PrepareBroadcastPageForDisplay(TeletextPage page)
@@ -4126,11 +4271,18 @@ public partial class MainWindow : Window
             },
         };
         using var cancellation = new CancellationTokenSource();
+        bool operationFinished = false;
         cancelButton.Click += (_, _) =>
         {
             cancelButton.IsEnabled = false;
             progressText.Text = "Cancelling…";
             cancellation.Cancel();
+            dialog.Close();
+        };
+        dialog.Closing += (_, _) =>
+        {
+            if (!operationFinished)
+                cancellation.Cancel();
         };
 
         IProgress<(string phase, int completed, int total)> progress =
@@ -4151,6 +4303,7 @@ public partial class MainWindow : Window
                 options,
                 (phase, completed, total) => progress.Report((phase, completed, total)),
                 cancellation.Token));
+            operationFinished = true;
             dialog.Close();
 
             if (packets.Count == 0)
@@ -4173,10 +4326,12 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException)
         {
+            operationFinished = true;
             dialog.Close();
         }
         catch (Exception ex)
         {
+            operationFinished = true;
             dialog.Close();
             await ShowMessageAsync("Squash recovery failed", ex.Message);
         }
