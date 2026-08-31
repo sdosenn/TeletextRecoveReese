@@ -1219,10 +1219,14 @@ public class PageAssembler
 
                 cell.Foreground = currentFg;
             }
-            else if (mosaicMode)
+            else if (mosaicMode && raw is not (>= 0x40 and <= 0x5F))
             {
-                // Mosaic mode: always decode as sixel (blast-through alphanumeric disabled)
-                byte pattern = (byte)((raw >= 0x20 && raw <= 0x3F) ? (raw - 0x20) : (raw >= 0x60 && raw <= 0x7F) ? (32 + (raw - 0x60)) : (raw >= 0x40 && raw <= 0x5F) ? (raw - 0x40 + 32) : 0);
+                // In graphics mode only G1 columns 2, 3, 6 and 7 are mosaics.
+                // Columns 4 and 5 (0x40-0x5F) are handled by the text branch below
+                // as EN 300 706 "blast-through" G0 alphanumerics.
+                byte pattern = (byte)(raw <= 0x3F
+                    ? raw - 0x20
+                    : 32 + (raw - 0x60));
                 cell.IsMosaic = true;
                 cell.MosaicPattern = pattern;
                 cell.MosaicHeld = false;
