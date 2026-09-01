@@ -17,6 +17,8 @@ using Avalonia.Input.Platform;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Fonts;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using TeletextRecoveReese.Core;
@@ -203,6 +205,10 @@ public partial class MainWindow : Window
         public List<CaptureCardPreset> CustomCaptureCardPresets { get; set; } = new();
         public string? LastCaptureCardPresetName { get; set; }
         public string? LastLiveCaptureInterface { get; set; }
+        public int? LastLiveCaptureInput { get; set; }
+        public ulong? LastLiveCaptureStandard { get; set; }
+        public bool? ShowRawVbiPreview { get; set; }
+        public bool? ShowVideoCapturePreview { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
     }
 
@@ -219,9 +225,80 @@ public partial class MainWindow : Window
         public int FieldLines { get; set; }
         public int FieldRangeStart { get; set; }
         public int FieldRangeEnd { get; set; }
+        public float StandardDeviationThreshold { get; set; } = 14;
+        public float SignalLevelThreshold { get; set; } = 64;
+        public float CriFcRangeThreshold { get; set; } = 28;
+        public double CriFcConfidenceThreshold { get; set; } = 0.35;
         public bool IsBuiltIn { get; set; }
 
         public override string ToString() => IsBuiltIn ? Name : $"{Name} (Custom)";
+    }
+
+    private sealed class ToggleableDeconvolutionControl(bool enabled) : IVbiDeconvolutionControl
+    {
+        private int _enabled = enabled ? 1 : 0;
+        private readonly int[] _clockSearchOffsets = new int[5];
+        public bool Enabled
+        {
+            get => Volatile.Read(ref _enabled) != 0;
+            set => Volatile.Write(ref _enabled, value ? 1 : 0);
+        }
+
+        public int ClockSearchLinePeriod { get; init; } = 1;
+
+        public int GetClockSearchOffset(int fieldLine)
+        {
+            int lineWithinField = fieldLine % Math.Max(ClockSearchLinePeriod, 1);
+            return lineWithinField < _clockSearchOffsets.Length
+                ? Volatile.Read(ref _clockSearchOffsets[lineWithinField])
+                : 0;
+        }
+
+        public void SetClockSearchOffset(int lineWithinField, int samples)
+        {
+            if ((uint)lineWithinField < (uint)_clockSearchOffsets.Length)
+                Volatile.Write(ref _clockSearchOffsets[lineWithinField], samples);
+        }
+    }
+
+    private enum LiveCaptureCompletionChoice
+    {
+        Discard,
+        OpenDecoded,
+    }
+
+    private sealed class RecordingReadStream(Stream source, Stream recording) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            int count = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (count > 0)
+                await recording.WriteAsync(buffer[..count], cancellationToken).ConfigureAwait(false);
+            return count;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            int read = source.Read(buffer, offset, count);
+            if (read > 0) recording.Write(buffer, offset, read);
+            return read;
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private static readonly CaptureCardPreset[] BuiltInCaptureCardPresets =
@@ -404,24 +481,61 @@ public partial class MainWindow : Window
     private async void OnWindowOpened(object? sender, EventArgs e)
     {
         Opened -= OnWindowOpened;
-        InitializeInstalledFonts();
+        InitializeStartupFontChoices(_sessionState.GridFontFamily);
         ApplyGridFont(_sessionState.GridFontFamily, persist: false);
         if (_loadLastSession)
             await RestoreSessionFilesAsync();
     }
 
-    private void InitializeInstalledFonts()
+    private void InitializeStartupFontChoices(string? requestedFamilyName)
     {
         _installedFontFamilies.Clear();
-        _installedFontFamilies.AddRange(FontManager.Current.SystemFonts
-            .Where(font => !string.IsNullOrWhiteSpace(font.Name))
-            .GroupBy(font => font.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group => new FontChoice(group.Key, group.First()))
-            .Where(choice => CanResolveSystemFont(choice.Family)));
+
+        // Resolving every installed typeface is surprisingly expensive on Linux
+        // systems with large Fontconfig catalogs. The complete list is only needed
+        // by the font picker, so startup probes just the saved font, our preferred
+        // fonts and Avalonia's default font.
+        IEnumerable<string> candidates = new[] { requestedFamilyName }
+            .Concat(PreferredGridFontNames)
+            .Append(FontManager.Current.DefaultFontFamily.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name!)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string name in candidates)
+        {
+            var family = new FontFamily(name);
+            if (CanResolveSystemFont(family))
+                _installedFontFamilies.Add(new FontChoice(name, family));
+        }
+
+        if (_installedFontFamilies.Count == 0)
+        {
+            FontFamily family = FontManager.Current.DefaultFontFamily;
+            _installedFontFamilies.Add(new FontChoice(family.Name, family));
+        }
+    }
+
+    private void InitializeInstalledFonts(CancellationToken cancellationToken = default)
+    {
+        var installedFonts = new List<FontChoice>();
+        var knownNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (FontFamily family in FontManager.Current.SystemFonts)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(family.Name) || !knownNames.Add(family.Name))
+                continue;
+            if (CanResolveSystemFont(family))
+                installedFonts.Add(new FontChoice(family.Name, family));
+        }
+
+        _installedFontFamilies.Clear();
+        _installedFontFamilies.AddRange(installedFonts);
 
         if (OperatingSystem.IsMacOS())
-            LoadMacFontsMissingFromSystemCatalog();
+            LoadMacFontsMissingFromSystemCatalog(cancellationToken);
 
+        cancellationToken.ThrowIfCancellationRequested();
         _installedFontFamilies.Sort((left, right) =>
             StringComparer.CurrentCultureIgnoreCase.Compare(left.Name, right.Name));
     }
@@ -438,10 +552,11 @@ public partial class MainWindow : Window
         }
     }
 
-    private void LoadMacFontsMissingFromSystemCatalog()
+    private void LoadMacFontsMissingFromSystemCatalog(CancellationToken cancellationToken)
     {
         foreach ((string name, FontFamily family) in _loadedMacFontFamilies)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!_installedFontFamilies.Any(choice =>
                     string.Equals(choice.Name, name, StringComparison.OrdinalIgnoreCase)))
                 _installedFontFamilies.Add(new FontChoice(name, family));
@@ -469,6 +584,7 @@ public partial class MainWindow : Window
 
             foreach (string path in fontFiles)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 string extension = Path.GetExtension(path);
                 if (!extension.Equals(".ttf", StringComparison.OrdinalIgnoreCase) &&
                     !extension.Equals(".otf", StringComparison.OrdinalIgnoreCase) &&
@@ -517,7 +633,16 @@ public partial class MainWindow : Window
 
     private async void OnChooseFontClicked(object? sender, RoutedEventArgs e)
     {
-        InitializeInstalledFonts();
+        try
+        {
+            if (!await LoadInstalledFontsWithProgressAsync())
+                return;
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Could not load fonts", ex.Message);
+            return;
+        }
 
         FontChoice? choice = await ShowFontPickerAsync();
         if (choice is null) return;
@@ -528,6 +653,101 @@ public partial class MainWindow : Window
             await SaveSessionStateAsync();
         }
         catch { }
+    }
+
+    private async Task<bool> LoadInstalledFontsWithProgressAsync()
+    {
+        using var cancellation = new CancellationTokenSource();
+        List<FontChoice> previousChoices = _installedFontFamilies.ToList();
+        var progress = new ProgressBar
+        {
+            IsIndeterminate = true,
+            Width = 300,
+            Height = 8,
+        };
+        var abortButton = new Button
+        {
+            Content = "Abort",
+            Width = 90,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        var dialog = new Window
+        {
+            Title = "Loading fonts",
+            Width = 380,
+            Height = 190,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(24),
+                Spacing = 16,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Loading installed fonts…",
+                        FontSize = 16,
+                        FontWeight = FontWeight.SemiBold,
+                    },
+                    new TextBlock
+                    {
+                        Text = "This can take a moment on systems with many fonts.",
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    progress,
+                    abortButton,
+                },
+            },
+        };
+
+        Exception? loadError = null;
+        bool aborted = false;
+        bool loading = true;
+        abortButton.Click += (_, _) =>
+        {
+            abortButton.IsEnabled = false;
+            abortButton.Content = "Aborting…";
+            cancellation.Cancel();
+        };
+        dialog.Closing += (_, e) =>
+        {
+            if (loading)
+                e.Cancel = true;
+        };
+        dialog.Opened += async (_, _) =>
+        {
+            // Let Avalonia render the dialog before starting the expensive scan.
+            await Task.Yield();
+            try
+            {
+                await Task.Run(
+                    () => InitializeInstalledFonts(cancellation.Token),
+                    cancellation.Token);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+                aborted = true;
+                _installedFontFamilies.Clear();
+                _installedFontFamilies.AddRange(previousChoices);
+            }
+            catch (Exception ex)
+            {
+                loadError = ex;
+            }
+            finally
+            {
+                loading = false;
+                dialog.Close();
+            }
+        };
+
+        await dialog.ShowDialog(this);
+        if (loadError is not null)
+            throw new InvalidOperationException(
+                $"The installed font list could not be loaded: {loadError.Message}",
+                loadError);
+        return !aborted;
     }
 
     private async void OnCaptureCardPresetsClicked(object? sender, RoutedEventArgs e) =>
@@ -577,7 +797,11 @@ public partial class MainWindow : Window
                 $"Line start range  {preset.LineStart}–{preset.LineStartEnd} (end exclusive)\n" +
                 $"Sample type       {preset.SampleType}\n" +
                 $"Field lines       {preset.FieldLines}\n" +
-                $"Field range       {preset.FieldRangeStart}–{preset.FieldRangeEnd} (end exclusive)\n\n" +
+                $"Field range       {preset.FieldRangeStart}–{preset.FieldRangeEnd} (end exclusive)\n" +
+                $"Std-dev threshold {preset.StandardDeviationThreshold:0.##}\n" +
+                $"Signal threshold  {preset.SignalLevelThreshold:0.##}\n" +
+                $"CRI/FC range      {preset.CriFcRangeThreshold:0.##}\n" +
+                $"CRI/FC confidence {preset.CriFcConfidenceThreshold:0.##}\n\n" +
                 (preset.IsBuiltIn ? "Built-in preset" : "User preset — stored in session.json");
             deleteButton.IsEnabled = !preset.IsBuiltIn;
         }
@@ -666,6 +890,14 @@ public partial class MainWindow : Window
         var fieldLines = new NumericUpDown { Width = 250, Minimum = 1, Maximum = 10000, Value = 17 };
         var fieldRangeStart = new NumericUpDown { Width = 115, Minimum = 0, Maximum = 10000, Value = 0 };
         var fieldRangeEnd = new NumericUpDown { Width = 115, Minimum = 1, Maximum = 10000, Value = 16 };
+        var stdDevThreshold = new NumericUpDown { Width = 250, Minimum = 0, Maximum = 255, Value = 14, Increment = 1 };
+        var signalThreshold = new NumericUpDown { Width = 250, Minimum = 0, Maximum = 255, Value = 64, Increment = 1 };
+        var criFcRangeThreshold = new NumericUpDown { Width = 250, Minimum = 0, Maximum = 255, Value = 28, Increment = 1 };
+        var criFcConfidenceThreshold = new NumericUpDown
+        {
+            Width = 250, Minimum = 0, Maximum = 1, Value = 0.35m,
+            Increment = 0.01m, FormatString = "0.00",
+        };
         var error = new TextBlock { Foreground = Brushes.OrangeRed, TextWrapping = TextWrapping.Wrap };
         var saveButton = new Button { Content = "Save", Width = 90, IsDefault = true };
         var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
@@ -673,7 +905,7 @@ public partial class MainWindow : Window
         var form = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("190,Auto"),
-            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"),
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"),
             RowSpacing = 9,
             ColumnSpacing = 12,
         };
@@ -701,6 +933,10 @@ public partial class MainWindow : Window
         AddField(6, "Sample type", sampleType);
         AddField(7, "Lines per field", fieldLines);
         AddField(8, "Field range", RangeControls(fieldRangeStart, fieldRangeEnd));
+        AddField(9, "Std-dev threshold", stdDevThreshold);
+        AddField(10, "Signal level threshold", signalThreshold);
+        AddField(11, "CRI/FC range threshold", criFcRangeThreshold);
+        AddField(12, "CRI/FC confidence", criFcConfidenceThreshold);
 
         var dialog = new Window
         {
@@ -760,6 +996,10 @@ public partial class MainWindow : Window
                     FieldLines = lines,
                     FieldRangeStart = rangeStart,
                     FieldRangeEnd = rangeEnd,
+                    StandardDeviationThreshold = (float)(stdDevThreshold.Value ?? 14),
+                    SignalLevelThreshold = (float)(signalThreshold.Value ?? 64),
+                    CriFcRangeThreshold = (float)(criFcRangeThreshold.Value ?? 28),
+                    CriFcConfidenceThreshold = (double)(criFcConfidenceThreshold.Value ?? 0.35m),
                 };
                 dialog.Close();
             }
@@ -2363,19 +2603,53 @@ public partial class MainWindow : Window
         List<CaptureCardPreset> presets = BuiltInCaptureCardPresets
             .Concat(_sessionState.CustomCaptureCardPresets)
             .ToList();
-        var presetCombo = new ComboBox { Width = 440, ItemsSource = presets };
+        var interfaceCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
+        var cardNameText = new TextBlock
+        {
+            Text = "Capture card: —",
+            Foreground = Brushes.LightGray,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var inputCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, IsEnabled = false };
+        var standardCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, IsEnabled = false };
+        var presetCombo = new ComboBox
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ItemsSource = presets,
+            IsEnabled = false,
+        };
         presetCombo.SelectedItem = presets.FirstOrDefault(p =>
                                        string.Equals(p.Name, _sessionState.LastCaptureCardPresetName, StringComparison.OrdinalIgnoreCase))
                                    ?? presets.FirstOrDefault();
-        var interfaceCombo = new ComboBox { Width = 440 };
         var statusText = new TextBlock
         {
             Width = 440,
             Foreground = Brushes.LightGray,
             TextWrapping = TextWrapping.Wrap,
         };
+        var previewImage = new Image { Stretch = Stretch.Uniform };
+        var previewStatusText = new TextBlock
+        {
+            Text = _ffmpegPath is null
+                ? "FFmpeg is required to display the live video preview."
+                : "Video preview will appear after a VBI interface is selected.",
+            Foreground = Brushes.LightGray,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var previewBorder = new Border
+        {
+            Width = 440,
+            // PAL/NTSC analogue video uses non-square stored pixels. Present the
+            // preview at its normal 4:3 display aspect instead of the raw 720x576
+            // (5:4) storage aspect or the previous 16:9-shaped preview area.
+            Height = 330,
+            Background = Brushes.Black,
+            BorderBrush = new SolidColorBrush(Color.Parse("#3f3f46")),
+            BorderThickness = new Thickness(1),
+            Child = previewImage,
+        };
         var refreshButton = new Button { Content = "Refresh", Width = 90 };
-        var useButton = new Button { Content = "Use interface", Width = 110, IsDefault = true };
+        var useButton = new Button { Content = "Start capture", Width = 110, IsDefault = true };
         var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
         var dialog = new Window
         {
@@ -2390,11 +2664,64 @@ public partial class MainWindow : Window
                 Spacing = 12,
                 Children =
                 {
-                    new TextBlock { Text = "Capture card configuration", FontWeight = FontWeight.SemiBold },
-                    presetCombo,
-                    new TextBlock { Text = "Capture interface", FontWeight = FontWeight.SemiBold },
-                    interfaceCombo,
+                    new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("*,*"),
+                        ColumnSpacing = 12,
+                        Children =
+                        {
+                            new StackPanel
+                            {
+                                Spacing = 6,
+                                Children =
+                                {
+                                    new TextBlock { Text = "VBI interface", FontWeight = FontWeight.SemiBold },
+                                    interfaceCombo,
+                                    cardNameText,
+                                },
+                            },
+                            new StackPanel
+                            {
+                                [Grid.ColumnProperty] = 1,
+                                Spacing = 6,
+                                Children =
+                                {
+                                    new TextBlock { Text = "Capture card preset", FontWeight = FontWeight.SemiBold },
+                                    presetCombo,
+                                },
+                            },
+                        },
+                    },
+                    new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("*,*"),
+                        ColumnSpacing = 12,
+                        Children =
+                        {
+                            new StackPanel
+                            {
+                                Spacing = 6,
+                                Children =
+                                {
+                                    new TextBlock { Text = "Video input", FontWeight = FontWeight.SemiBold },
+                                    inputCombo,
+                                },
+                            },
+                            new StackPanel
+                            {
+                                [Grid.ColumnProperty] = 1,
+                                Spacing = 6,
+                                Children =
+                                {
+                                    new TextBlock { Text = "Video standard", FontWeight = FontWeight.SemiBold },
+                                    standardCombo,
+                                },
+                            },
+                        },
+                    },
                     statusText,
+                    previewBorder,
+                    previewStatusText,
                     new Grid
                     {
                         ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"),
@@ -2408,6 +2735,207 @@ public partial class MainWindow : Window
         Grid.SetColumn(cancelButton, 2);
         Grid.SetColumn(useButton, 3);
 
+        LinuxV4l2DeviceInfo? selectedDevice = null;
+        string? selectedVideoInterface = null;
+        Process? previewProcess = null;
+        CancellationTokenSource? previewCancellation = null;
+        int previewGeneration = 0;
+        bool suppressInterfaceSelection = false;
+        bool suppressPreviewRestart = false;
+
+        void ClearPreviewImage()
+        {
+            if (previewImage.Source is IDisposable source)
+                source.Dispose();
+            previewImage.Source = null;
+        }
+
+        void StopPreview()
+        {
+            previewCancellation?.Cancel();
+            previewCancellation?.Dispose();
+            previewCancellation = null;
+            if (previewProcess is { HasExited: false })
+            {
+                try { previewProcess.Kill(entireProcessTree: true); } catch { }
+            }
+            previewProcess?.Dispose();
+            previewProcess = null;
+            previewGeneration++;
+        }
+
+        async Task RestartPreviewAsync()
+        {
+            if (suppressPreviewRestart) return;
+            StopPreview();
+            ClearPreviewImage();
+            if (!OperatingSystem.IsLinux()
+                || selectedDevice is null
+                || selectedVideoInterface is null
+                || inputCombo.SelectedItem is not LinuxV4l2Input selectedInput
+                || standardCombo.SelectedItem is not LinuxV4l2Standard selectedStandard)
+                return;
+
+            if (_ffmpegPath is null)
+            {
+                previewStatusText.Text = "FFmpeg was not found; live video preview is unavailable.";
+                return;
+            }
+
+            int generation = ++previewGeneration;
+            previewStatusText.Text = $"Opening preview from {selectedVideoInterface}…";
+            try
+            {
+                await Task.Run(() => LinuxVbiCaptureStream.ConfigureDevice(
+                    selectedDevice.Path, selectedInput.Index, selectedStandard.Id));
+                if (generation != previewGeneration) return;
+
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = _ffmpegPath,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                };
+                foreach (string argument in new[]
+                         {
+                             "-hide_banner", "-loglevel", "error", "-nostdin",
+                             "-f", "video4linux2", "-i", selectedVideoInterface,
+                             "-vf", "yadif=0:-1:0,fps=25,scale=440:330,setsar=1",
+                             "-f", "image2pipe",
+                             "-vcodec", "mjpeg", "pipe:1",
+                         })
+                    startInfo.ArgumentList.Add(argument);
+
+                previewProcess = Process.Start(startInfo)
+                    ?? throw new InvalidOperationException("Could not start FFmpeg video preview.");
+                previewProcess.BeginErrorReadLine();
+                previewCancellation = new CancellationTokenSource();
+                CancellationToken token = previewCancellation.Token;
+                previewStatusText.Text = $"Live preview · 4:3 · 25 fps · {selectedVideoInterface} · {selectedInput.Name} · {selectedStandard.Name}";
+                _ = ReadMjpegFramesAsync(previewProcess.StandardOutput.BaseStream, token, frame =>
+                {
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (generation != previewGeneration) return;
+                        try
+                        {
+                            using var stream = new MemoryStream(frame, writable: false);
+                            var bitmap = new Bitmap(stream);
+                            if (previewImage.Source is IDisposable oldSource)
+                                oldSource.Dispose();
+                            previewImage.Source = bitmap;
+                        }
+                        catch { }
+                    }, DispatcherPriority.Background);
+                });
+            }
+            catch (Exception ex)
+            {
+                if (generation == previewGeneration)
+                    previewStatusText.Text = $"Video preview unavailable: {ex.Message}";
+            }
+        }
+
+        void UpdateStartButton()
+        {
+            bool linuxSelectionComplete = !OperatingSystem.IsLinux()
+                || selectedDevice is not null
+                && inputCombo.SelectedItem is LinuxV4l2Input
+                && standardCombo.SelectedItem is LinuxV4l2Standard;
+            useButton.IsEnabled = interfaceCombo.SelectedItem is LiveCaptureInterface
+                                  && presetCombo.SelectedItem is CaptureCardPreset
+                                  && linuxSelectionComplete;
+        }
+
+        async Task LoadSelectedVbiDeviceAsync()
+        {
+            selectedDevice = null;
+            selectedVideoInterface = null;
+            StopPreview();
+            ClearPreviewImage();
+            cardNameText.Text = "Capture card: —";
+            inputCombo.ItemsSource = null;
+            standardCombo.ItemsSource = null;
+            inputCombo.IsEnabled = false;
+            standardCombo.IsEnabled = false;
+            presetCombo.IsEnabled = false;
+            UpdateStartButton();
+            if (interfaceCombo.SelectedItem is not LiveCaptureInterface captureInterface)
+                return;
+
+            if (!OperatingSystem.IsLinux())
+            {
+                presetCombo.IsEnabled = true;
+                UpdateStartButton();
+                return;
+            }
+
+            statusText.Text = $"Reading {captureInterface.Path}…";
+            cardNameText.Text = "Capture card: reading…";
+            try
+            {
+                LinuxV4l2DeviceInfo device = await Task.Run(() =>
+                    LinuxVbiCaptureStream.QueryDevice(captureInterface.Path));
+                if (interfaceCombo.SelectedItem is not LiveCaptureInterface current
+                    || !string.Equals(current.Path, captureInterface.Path, StringComparison.Ordinal))
+                    return;
+
+                selectedDevice = device;
+                selectedVideoInterface = await Task.Run(() => FindRelatedLinuxVideoInterface(device.BusInfo));
+                cardNameText.Text = $"Capture card: {device.Card}";
+                suppressPreviewRestart = true;
+                List<LinuxV4l2Input> inputs = device.Inputs.ToList();
+                inputCombo.ItemsSource = inputs;
+                inputCombo.SelectedItem = inputs.FirstOrDefault(input =>
+                                               input.Index == _sessionState.LastLiveCaptureInput)
+                                           ?? inputs.FirstOrDefault(input => input.Index == device.CurrentInputIndex)
+                                           ?? inputs.FirstOrDefault();
+                inputCombo.IsEnabled = inputs.Count > 0;
+                RefreshStandardsForInput();
+                suppressPreviewRestart = false;
+                presetCombo.IsEnabled = true;
+                statusText.Text = selectedVideoInterface is null
+                    ? $"{device.Driver} · no related video interface was found."
+                    : $"{device.Driver} · video interface {selectedVideoInterface}";
+                if (selectedVideoInterface is null)
+                    previewStatusText.Text = "No video interface belonging to this VBI device was found.";
+                await RestartPreviewAsync();
+            }
+            catch (Exception ex)
+            {
+                cardNameText.Text = "Capture card: unavailable";
+                statusText.Text = $"Could not inspect {captureInterface.Path}: {ex.Message}";
+            }
+            UpdateStartButton();
+        }
+
+        void RefreshStandardsForInput()
+        {
+            if (selectedDevice is null || inputCombo.SelectedItem is not LinuxV4l2Input input)
+            {
+                standardCombo.ItemsSource = null;
+                standardCombo.IsEnabled = false;
+                UpdateStartButton();
+                return;
+            }
+
+            List<LinuxV4l2Standard> standards = selectedDevice.Standards
+                .Where(standard => (standard.Id & input.SupportedStandards) != 0)
+                .ToList();
+            standardCombo.ItemsSource = standards;
+            standardCombo.SelectedItem = standards.FirstOrDefault(standard =>
+                                                 standard.Id == _sessionState.LastLiveCaptureStandard)
+                                             ?? standards.FirstOrDefault(standard =>
+                                                 standard.Id == selectedDevice.CurrentStandardId)
+                                             ?? standards.FirstOrDefault(standard =>
+                                                 (standard.Id & selectedDevice.CurrentStandardId) != 0)
+                                             ?? standards.FirstOrDefault();
+            standardCombo.IsEnabled = standards.Count > 0;
+            UpdateStartButton();
+        }
+
         async Task RefreshInterfacesAsync()
         {
             refreshButton.IsEnabled = false;
@@ -2415,10 +2943,11 @@ public partial class MainWindow : Window
             statusText.Text = "Searching for capture interfaces…";
             List<LiveCaptureInterface> interfaces = await DiscoverLiveCaptureInterfacesAsync();
             interfaceCombo.ItemsSource = interfaces;
+            suppressInterfaceSelection = true;
             interfaceCombo.SelectedItem = interfaces.FirstOrDefault(item =>
                                                   string.Equals(item.Path, _sessionState.LastLiveCaptureInterface, StringComparison.Ordinal))
                                               ?? interfaces.FirstOrDefault();
-            useButton.IsEnabled = interfaces.Count > 0 && presetCombo.SelectedItem is CaptureCardPreset;
+            suppressInterfaceSelection = false;
             statusText.Text = interfaces.Count > 0
                 ? OperatingSystem.IsMacOS()
                     ? $"Found {interfaces.Count} serial interface(s). The device must provide raw VBI samples using the selected card configuration."
@@ -2431,14 +2960,25 @@ public partial class MainWindow : Window
                         ? "No /dev/vbi* devices were found. Check the capture driver and device permissions."
                         : "No DirectShow capture interfaces were found. FFmpeg must be available for device discovery.";
             refreshButton.IsEnabled = true;
+            await LoadSelectedVbiDeviceAsync();
         }
 
-        presetCombo.SelectionChanged += (_, _) =>
-            useButton.IsEnabled = interfaceCombo.SelectedItem is LiveCaptureInterface
-                                  && presetCombo.SelectedItem is CaptureCardPreset;
-        interfaceCombo.SelectionChanged += (_, _) =>
-            useButton.IsEnabled = interfaceCombo.SelectedItem is LiveCaptureInterface
-                                  && presetCombo.SelectedItem is CaptureCardPreset;
+        presetCombo.SelectionChanged += (_, _) => UpdateStartButton();
+        inputCombo.SelectionChanged += async (_, _) =>
+        {
+            RefreshStandardsForInput();
+            await RestartPreviewAsync();
+        };
+        standardCombo.SelectionChanged += async (_, _) =>
+        {
+            UpdateStartButton();
+            await RestartPreviewAsync();
+        };
+        interfaceCombo.SelectionChanged += async (_, _) =>
+        {
+            if (!suppressInterfaceSelection)
+                await LoadSelectedVbiDeviceAsync();
+        };
         refreshButton.Click += async (_, _) => await RefreshInterfacesAsync();
         cancelButton.Click += (_, _) => dialog.Close();
         useButton.Click += async (_, _) =>
@@ -2446,30 +2986,50 @@ public partial class MainWindow : Window
             if (presetCombo.SelectedItem is not CaptureCardPreset preset
                 || interfaceCombo.SelectedItem is not LiveCaptureInterface captureInterface)
                 return;
+            LinuxV4l2Input? captureInput = inputCombo.SelectedItem as LinuxV4l2Input;
+            LinuxV4l2Standard? captureStandard = standardCombo.SelectedItem as LinuxV4l2Standard;
+            if (OperatingSystem.IsLinux() && (captureInput is null || captureStandard is null))
+                return;
             _sessionState.LastCaptureCardPresetName = preset.Name;
             _sessionState.LastLiveCaptureInterface = captureInterface.Path;
+            _sessionState.LastLiveCaptureInput = captureInput?.Index;
+            _sessionState.LastLiveCaptureStandard = captureStandard?.Id;
             SaveSessionState();
+            StopPreview();
             dialog.Close();
             if (OperatingSystem.IsLinux())
-                await StartLinuxLiveVbiCaptureAsync(captureInterface, preset);
+                await StartLinuxLiveVbiCaptureAsync(
+                    captureInterface, captureInput!, captureStandard!, preset,
+                    selectedVideoInterface);
             else
                 await ShowMessageAsync(
                     "Live VBI capture",
                     $"Selected {captureInterface.Name} with {preset.Name}.\n\nLive transport for this platform is not connected yet.");
         };
 
+        dialog.Closed += (_, _) =>
+        {
+            StopPreview();
+            ClearPreviewImage();
+        };
         dialog.Opened += async (_, _) => await RefreshInterfacesAsync();
         await dialog.ShowDialog(this);
     }
 
     private async Task StartLinuxLiveVbiCaptureAsync(
         LiveCaptureInterface captureInterface,
-        CaptureCardPreset preset)
+        LinuxV4l2Input captureInput,
+        LinuxV4l2Standard captureStandard,
+        CaptureCardPreset preset,
+        string? videoInterfacePath)
     {
         LinuxVbiCaptureStream? input = null;
         try
         {
-            input = new LinuxVbiCaptureStream(captureInterface.Path);
+            input = new LinuxVbiCaptureStream(
+                captureInterface.Path,
+                captureInput.Index,
+                captureStandard.Id);
         }
         catch (Exception ex)
         {
@@ -2488,10 +3048,17 @@ public partial class MainWindow : Window
                 IsUInt16: false,
                 FieldLines: input.LinesPerFrame,
                 FieldRangeStart: 0,
-                FieldRangeEnd: input.LinesPerFrame);
+                FieldRangeEnd: input.LinesPerFrame,
+                StandardDeviationThreshold: preset.StandardDeviationThreshold,
+                SignalLevelThreshold: preset.SignalLevelThreshold,
+                CriFcRangeThreshold: preset.CriFcRangeThreshold,
+                CriFcConfidenceThreshold: preset.CriFcConfidenceThreshold);
             string temporaryOutput = Path.Combine(
                 Path.GetTempPath(), $"TeletextRecoveReese-live-{Guid.NewGuid():N}.t42");
+            string temporaryRawCapture = Path.Combine(
+                Path.GetTempPath(), $"TeletextRecoveReese-live-{Guid.NewGuid():N}.vbi");
             using var cancellation = new CancellationTokenSource();
+            using var videoPreviewCancellation = new CancellationTokenSource();
             var phaseText = new TextBlock
             {
                 Text = $"Opening {captureInterface.Name}…",
@@ -2499,13 +3066,196 @@ public partial class MainWindow : Window
             };
             var detailText = new TextBlock { Foreground = Brushes.LightGray };
             var timingText = new TextBlock { Foreground = Brushes.LightGray };
-            var progressBar = new ProgressBar { Width = 500, IsIndeterminate = true };
+            var progressBar = new ProgressBar
+            {
+                Width = 500,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                IsIndeterminate = true,
+            };
+            int rawPreviewSamples = Math.Min(
+                input.SamplesPerLine,
+                (int)Math.Ceiling(input.SamplingRate / 6_937_500.0 * 368)
+                + Math.Max(preset.LineStartEnd, 0) + 32);
+            int rawPreviewWidth = rawPreviewSamples;
+            int rawPreviewHeight = input.FirstFieldLines * 10;
+            var rawPreviewBitmap = new WriteableBitmap(
+                new PixelSize(rawPreviewWidth, rawPreviewHeight),
+                new Vector(96, 96),
+                PixelFormats.Bgra8888,
+                AlphaFormat.Premul);
+            var rawPreviewImage = new Image
+            {
+                Source = rawPreviewBitmap,
+                Width = 500,
+                Height = 135,
+                Stretch = Stretch.Fill,
+            };
+            var rawPreviewTitle = new TextBlock
+            {
+                Text = "Raw VBI input",
+                FontWeight = FontWeight.SemiBold,
+            };
+            var rawPreviewBorder = new Border
+            {
+                Background = Brushes.Black,
+                BorderBrush = new SolidColorBrush(Color.Parse("#3f3f46")),
+                BorderThickness = new Thickness(1),
+                Child = rawPreviewImage,
+            };
+            var rawPreviewInfoText = new TextBlock
+            {
+                Text = "Waiting for the first raw VBI frame…",
+                Foreground = Brushes.LightGray,
+                TextWrapping = TextWrapping.Wrap,
+            };
+            const int videoPreviewWidth = 240;
+            const int videoPreviewHeight = 180;
+            var videoPreviewBitmap = new WriteableBitmap(
+                new PixelSize(videoPreviewWidth, videoPreviewHeight),
+                new Vector(96, 96),
+                PixelFormats.Bgra8888,
+                AlphaFormat.Premul);
+            var videoPreviewImage = new Image
+            {
+                Source = videoPreviewBitmap,
+                Width = videoPreviewWidth,
+                Height = videoPreviewHeight,
+                Stretch = Stretch.Uniform,
+            };
+            var videoPreviewBorder = new Border
+            {
+                Width = 240,
+                Height = 180,
+                Background = Brushes.Black,
+                BorderBrush = new SolidColorBrush(Color.Parse("#3f3f46")),
+                BorderThickness = new Thickness(1),
+                Child = videoPreviewImage,
+            };
+            var videoPreviewInfoText = new TextBlock
+            {
+                Text = videoInterfacePath is null
+                    ? "No related video interface was found."
+                    : "Waiting for the first raw YUV video frame…",
+                Foreground = Brushes.LightGray,
+                TextWrapping = TextWrapping.Wrap,
+            };
+            var showRawPreviewCheckBox = new CheckBox
+            {
+                Content = "Live raw VBI preview",
+                IsChecked = _sessionState.ShowRawVbiPreview ?? true,
+            };
+            bool showRawPreview = showRawPreviewCheckBox.IsChecked == true;
+            int rawPreviewEnabled = showRawPreview ? 1 : 0;
+            var showVideoPreviewCheckBox = new CheckBox
+            {
+                Content = "Live video preview (every 5 seconds)",
+                IsChecked = _sessionState.ShowVideoCapturePreview ?? true,
+                IsEnabled = videoInterfacePath is not null,
+            };
+            int videoPreviewEnabled = showVideoPreviewCheckBox.IsChecked == true ? 1 : 0;
             var showLiveCheckBox = new CheckBox
             {
                 Content = "Show deconvolved page",
                 IsChecked = _sessionState.ShowLiveDeconvolvedPage ?? true,
             };
-            var stopButton = new Button { Content = "Stop capture", Width = 110 };
+            var runDeconvolutionCheckBox = new CheckBox
+            {
+                Content = "Live deconvolution",
+                IsChecked = true,
+            };
+            var deconvolutionControl = new ToggleableDeconvolutionControl(true)
+            {
+                ClockSearchLinePeriod = Math.Max(input.FirstFieldLines, 1),
+            };
+            var autoSearchButton = new Button
+            {
+                Content = "Auto search",
+                Width = 105,
+                IsEnabled = !VbiDeconvolutionEngine.UseLegacyFixedDetectionForTest,
+            };
+            var autoSearchStatus = new TextBlock
+            {
+                Text = VbiDeconvolutionEngine.UseLegacyFixedDetectionForTest
+                    ? "Test mode: fixed 64 / 28 / 0.35 thresholds; line offsets are ignored."
+                    : "Adjust manually or detect from the next VBI frame.",
+                Foreground = Brushes.Gray,
+                TextWrapping = TextWrapping.Wrap,
+            };
+            var clockOffsetSliders = new Slider[5];
+            var clockOffsetsPanel = new StackPanel
+            {
+                Width = 500,
+                Spacing = 3,
+                Children =
+                {
+                    new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                        Children =
+                        {
+                            new TextBlock
+                            {
+                                Text = "Clock run-in search offsets — VBI lines 1–5",
+                                Foreground = Brushes.LightGray,
+                                VerticalAlignment = VerticalAlignment.Center,
+                            },
+                            autoSearchButton,
+                        },
+                    },
+                    new TextBlock
+                    {
+                        Text = $"Preset thresholds: std-dev {preset.StandardDeviationThreshold:0.##} · signal {preset.SignalLevelThreshold:0.##} · CRI/FC range {preset.CriFcRangeThreshold:0.##} · confidence {preset.CriFcConfidenceThreshold:0.##}",
+                        Foreground = Brushes.Gray,
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    autoSearchStatus,
+                },
+            };
+            clockOffsetsPanel.IsEnabled =
+                !VbiDeconvolutionEngine.UseLegacyFixedDetectionForTest;
+            Grid.SetColumn(autoSearchButton, 1);
+            for (int index = 0; index < 5; index++)
+            {
+                int lineIndex = index;
+                var valueText = new TextBlock
+                {
+                    Text = $"Line {lineIndex + 1}: 0",
+                    Width = 82,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                var slider = new Slider
+                {
+                    Minimum = -300,
+                    Maximum = 300,
+                    Value = 0,
+                    TickFrequency = 1,
+                    IsSnapToTickEnabled = true,
+                };
+                clockOffsetSliders[lineIndex] = slider;
+                slider.PropertyChanged += (_, args) =>
+                {
+                    if (args.Property != Slider.ValueProperty) return;
+                    int samples = (int)Math.Round(slider.Value);
+                    deconvolutionControl.SetClockSearchOffset(lineIndex, samples);
+                    valueText.Text = $"Line {lineIndex + 1}: {samples:+0;-0;0}";
+                };
+                var row = new Grid
+                {
+                    ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+                    ColumnSpacing = 8,
+                    Children = { valueText, slider },
+                };
+                Grid.SetColumn(slider, 1);
+                clockOffsetsPanel.Children.Add(row);
+            }
+            long fpsBaselineFrames = 0;
+            long fpsBaselineTimestamp = Stopwatch.GetTimestamp();
+            var stopButton = new Button
+            {
+                Content = "Stop capture",
+                Width = 110,
+                HorizontalAlignment = HorizontalAlignment.Right,
+            };
             var dialog = new Window
             {
                 Title = "Live VBI capture",
@@ -2514,28 +3264,254 @@ public partial class MainWindow : Window
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Content = new StackPanel
                 {
-                    Width = 520,
+                    Width = 790,
                     Margin = new Thickness(18),
                     Spacing = 12,
                     Children =
                     {
+                        new Grid
+                        {
+                            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                            ColumnSpacing = 14,
+                            Children =
+                            {
+                                new StackPanel
+                                {
+                                    Spacing = 8,
+                                    Children =
+                                    {
+                                        rawPreviewTitle,
+                                        rawPreviewBorder,
+                                        rawPreviewInfoText,
+                                        clockOffsetsPanel,
+                                    },
+                                },
+                                new StackPanel
+                                {
+                                    [Grid.ColumnProperty] = 1,
+                                    Width = 240,
+                                    Spacing = 8,
+                                    Children =
+                                    {
+                                        new TextBlock
+                                        {
+                                            Text = "Video input",
+                                            FontWeight = FontWeight.SemiBold,
+                                        },
+                                        videoPreviewBorder,
+                                        videoPreviewInfoText,
+                                        showRawPreviewCheckBox,
+                                        showVideoPreviewCheckBox,
+                                        runDeconvolutionCheckBox,
+                                        showLiveCheckBox,
+                                    },
+                                },
+                            },
+                        },
                         phaseText,
                         progressBar,
                         detailText,
                         timingText,
-                        new Grid
-                        {
-                            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-                            Children = { showLiveCheckBox, stopButton },
-                        },
+                        stopButton,
                     },
                 },
             };
-            Grid.SetColumn(stopButton, 1);
             bool allowClose = false;
+            bool rawPreviewActive = true;
+            bool videoPreviewActive = true;
+            long lastRawPreviewTimestamp = 0;
+            long rawPreviewFrameNumber = 0;
+            int rawPreviewHasFrame = 0;
+            int rawPreviewWorkerBusy = 0;
+            int autoSearchRequested = 0;
+            int videoSnapshotNumber = 0;
+            CancellationTokenSource? videoPreviewPipeCancellation = null;
+            input.RawFrameCaptured = rawFrame =>
+            {
+                if (!rawPreviewActive) return;
+                bool runAutoSearch = Interlocked.Exchange(ref autoSearchRequested, 0) != 0;
+                bool liveUpdate = Volatile.Read(ref rawPreviewEnabled) != 0;
+                bool renderPreview = liveUpdate || Volatile.Read(ref rawPreviewHasFrame) == 0;
+                if (!renderPreview && !runAutoSearch) return;
+
+                if (renderPreview)
+                {
+                    long now = Stopwatch.GetTimestamp();
+                    long previous = Interlocked.Read(ref lastRawPreviewTimestamp);
+                    if (now - previous < Stopwatch.Frequency / 10
+                        || Interlocked.CompareExchange(ref lastRawPreviewTimestamp, now, previous) != previous)
+                        renderPreview = false;
+                }
+                if (!renderPreview && !runAutoSearch) return;
+
+                if (Interlocked.CompareExchange(ref rawPreviewWorkerBusy, 1, 0) != 0)
+                {
+                    if (runAutoSearch) Interlocked.Exchange(ref autoSearchRequested, 1);
+                    return;
+                }
+
+                // LinuxVbiCaptureStream reuses its frame buffer. Copy it quickly,
+                // then do all analysis and bitmap scaling away from the VBI reader.
+                byte[] snapshot = (byte[])rawFrame.Clone();
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        if (runAutoSearch)
+                        {
+                            int?[] detectedOffsets = VbiDeconvolutionEngine.FindClockRunInOffsets(
+                                snapshot, options, Math.Min(5, input.FirstFieldLines));
+                            Dispatcher.UIThread.Post(() =>
+                            {
+                                if (!rawPreviewActive) return;
+                                int found = 0;
+                                for (int line = 0; line < detectedOffsets.Length; line++)
+                                {
+                                    if (detectedOffsets[line] is not int offset) continue;
+                                    clockOffsetSliders[line].Value = offset;
+                                    found++;
+                                }
+                                autoSearchStatus.Text = found > 0
+                                    ? $"Auto search found clock run-in on {found} of 5 lines."
+                                    : "Auto search did not find a valid clock run-in in this frame.";
+                                autoSearchButton.IsEnabled = true;
+                            });
+                        }
+
+                        if (!renderPreview) return;
+                        int[] clockSearchOffsets = Enumerable.Range(0, 5)
+                            .Select(deconvolutionControl.GetClockSearchOffset)
+                            .ToArray();
+                        byte[] pixels = BuildRawVbiPreview(
+                            snapshot, input.SamplesPerLine, input.FirstFieldLines,
+                            rawPreviewSamples, rawPreviewWidth, rawPreviewHeight,
+                            preset.LineStart, preset.LineStartEnd,
+                            clockSearchOffsets,
+                            out byte minimumSample, out byte maximumSample);
+                        long frameNumber = Interlocked.Increment(ref rawPreviewFrameNumber);
+                        Volatile.Write(ref rawPreviewHasFrame, 1);
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            if (!rawPreviewActive) return;
+                            try
+                            {
+                                UpdateBgraBitmap(rawPreviewBitmap, pixels, rawPreviewWidth, rawPreviewHeight);
+                                rawPreviewImage.InvalidateVisual();
+                                rawPreviewInfoText.Text =
+                                    $"Raw frame {frameNumber:N0} · Field 1 · sample range {minimumSample}–{maximumSample}"
+                                    + $" · clock run-in search {preset.LineStart}–{preset.LineStartEnd}"
+                                    + (clockSearchOffsets.All(offset => offset == 0)
+                                        ? string.Empty
+                                        : " · custom line offsets")
+                                    + (Volatile.Read(ref rawPreviewEnabled) == 0 ? " · paused" : string.Empty);
+                            }
+                            catch (Exception ex)
+                            {
+                                rawPreviewInfoText.Text = $"Raw VBI preview render failed: {ex.Message}";
+                            }
+                        }, DispatcherPriority.Render);
+                    }
+                    catch (Exception ex)
+                    {
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            if (!rawPreviewActive) return;
+                            rawPreviewInfoText.Text = $"Raw VBI preview processing failed: {ex.Message}";
+                            if (runAutoSearch) autoSearchButton.IsEnabled = true;
+                        });
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref rawPreviewWorkerBusy, 0);
+                    }
+                });
+            };
+            autoSearchButton.Click += (_, _) =>
+            {
+                autoSearchButton.IsEnabled = false;
+                autoSearchStatus.Text = "Waiting for the next VBI frame…";
+                Interlocked.Exchange(ref autoSearchRequested, 1);
+            };
+            void StopVideoPreviewPipe()
+            {
+                CancellationTokenSource? pipe = Interlocked.Exchange(
+                    ref videoPreviewPipeCancellation, null);
+                if (pipe is null) return;
+                try { pipe.Cancel(); } catch (ObjectDisposedException) { }
+                pipe.Dispose();
+            }
+            void StartVideoPreviewPipe()
+            {
+                if (videoInterfacePath is null || !videoPreviewActive
+                    || videoPreviewCancellation.IsCancellationRequested)
+                    return;
+
+                StopVideoPreviewPipe();
+                var pipe = CancellationTokenSource.CreateLinkedTokenSource(
+                    videoPreviewCancellation.Token);
+                CancellationToken pipeToken = pipe.Token;
+                Interlocked.Exchange(ref videoPreviewPipeCancellation, pipe);
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await LinuxVbiCaptureStream.CaptureVideoFramesAsync(
+                            videoInterfacePath,
+                            TimeSpan.FromSeconds(5),
+                            frame =>
+                            {
+                                byte[] pixels = BuildVideoPreviewBgra(
+                                    frame, videoPreviewWidth, videoPreviewHeight);
+                                int frameNumber = Interlocked.Increment(ref videoSnapshotNumber);
+                                Dispatcher.UIThread.Post(() =>
+                                {
+                                    if (!videoPreviewActive) return;
+                                    try
+                                    {
+                                        UpdateBgraBitmap(
+                                            videoPreviewBitmap, pixels,
+                                            videoPreviewWidth, videoPreviewHeight);
+                                        videoPreviewImage.InvalidateVisual();
+                                        videoPreviewInfoText.Text =
+                                            $"Raw video snapshot {frameNumber:N0} · {frame.Width}×{frame.Height} · {FourCc(frame.PixelFormat)} · {VideoFieldName(frame.Field)}"
+                                            + (Volatile.Read(ref videoPreviewEnabled) == 0 ? " · paused" : string.Empty);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        videoPreviewInfoText.Text = $"Video preview render failed: {ex.Message}";
+                                    }
+                                }, DispatcherPriority.Render);
+
+                                // When initially disabled, keep the requested first
+                                // frozen frame and immediately close /dev/video.
+                                return Volatile.Read(ref videoPreviewEnabled) != 0;
+                            },
+                            pipeToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (pipeToken.IsCancellationRequested)
+                    {
+                    }
+                    catch (Exception ex)
+                    {
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            if (videoPreviewActive && !pipeToken.IsCancellationRequested)
+                                videoPreviewInfoText.Text = $"Video preview unavailable: {ex.Message}";
+                        });
+                    }
+                    finally
+                    {
+                        if (ReferenceEquals(Interlocked.CompareExchange(
+                                ref videoPreviewPipeCancellation, null, pipe), pipe))
+                            pipe.Dispose();
+                    }
+                }, pipeToken);
+            }
             void StopCapture()
             {
                 cancellation.Cancel();
+                videoPreviewCancellation.Cancel();
+                StopVideoPreviewPipe();
                 // A V4L2 read can be blocked waiting for the next complete frame;
                 // closing the device guarantees that Stop does not wait forever.
                 try { input.Dispose(); } catch { }
@@ -2549,6 +3525,59 @@ public partial class MainWindow : Window
                 StopCapture();
             };
             stopButton.Click += (_, _) => StopCapture();
+            showRawPreviewCheckBox.IsCheckedChanged += (_, _) =>
+            {
+                bool enabled = showRawPreviewCheckBox.IsChecked == true;
+                Volatile.Write(ref rawPreviewEnabled, enabled ? 1 : 0);
+                if (enabled)
+                    rawPreviewInfoText.Text = rawPreviewInfoText.Text?.Replace(" · paused", string.Empty);
+                else if (!string.IsNullOrWhiteSpace(rawPreviewInfoText.Text)
+                         && !rawPreviewInfoText.Text.EndsWith(" · paused", StringComparison.Ordinal))
+                    rawPreviewInfoText.Text += " · paused";
+                _sessionState.ShowRawVbiPreview = enabled;
+                SaveSessionState();
+            };
+            showVideoPreviewCheckBox.IsCheckedChanged += (_, _) =>
+            {
+                bool enabled = showVideoPreviewCheckBox.IsChecked == true;
+                Volatile.Write(ref videoPreviewEnabled, enabled ? 1 : 0);
+                if (enabled)
+                {
+                    videoPreviewInfoText.Text = videoPreviewInfoText.Text?.Replace(" · paused", string.Empty);
+                    StartVideoPreviewPipe();
+                }
+                else
+                {
+                    if (videoPreviewImage.Source is not null
+                        && !videoPreviewInfoText.Text.EndsWith(" · paused", StringComparison.Ordinal))
+                        videoPreviewInfoText.Text += " · paused";
+                    StopVideoPreviewPipe();
+                }
+                _sessionState.ShowVideoCapturePreview = enabled;
+                SaveSessionState();
+            };
+            runDeconvolutionCheckBox.IsCheckedChanged += (_, _) =>
+            {
+                // This controls only CPU/OpenCL work. Video preview has its own
+                // independent pipe controlled by showVideoPreviewCheckBox.
+                deconvolutionControl.Enabled = runDeconvolutionCheckBox.IsChecked == true;
+                Interlocked.Exchange(ref fpsBaselineFrames, input.CapturedFrames);
+                Interlocked.Exchange(ref fpsBaselineTimestamp, Stopwatch.GetTimestamp());
+            };
+            dialog.Closed += (_, _) =>
+            {
+                rawPreviewActive = false;
+                videoPreviewActive = false;
+                videoPreviewCancellation.Cancel();
+                StopVideoPreviewPipe();
+                input.RawFrameCaptured = null;
+                rawPreviewBitmap.Dispose();
+                videoPreviewImage.Source = null;
+                videoPreviewBitmap.Dispose();
+            };
+
+            if (videoInterfacePath is not null)
+                StartVideoPreviewPipe();
 
             PageAssembler? liveAssembler = null;
             int livePacketIndex = 0;
@@ -2579,7 +3608,7 @@ public partial class MainWindow : Window
                     {
                         _broadcastPackets.Add(packet);
                         liveAssembler!.Feed(packet, livePacketIndex++);
-                        latestPage = liveAssembler.LastUpdatedPage ?? latestPage;
+                        latestPage = liveAssembler.LastFinalizedPage ?? latestPage;
                     }
                     if (latestPage is null) return;
                     ApplyFileG0SubsetToPage(latestPage, broadcast: true);
@@ -2606,8 +3635,23 @@ public partial class MainWindow : Window
             var reporter = new Progress<VbiDeconvolutionProgress>(value =>
             {
                 lastProgress = value;
-                phaseText.Text = $"Live deconvolution — {value.CaptureFramesPerSecond:0.0} fps";
-                detailText.Text = $"Frames {value.ProcessedLines / Math.Max(input.LinesPerFrame, 1):N0}   Lines {value.ProcessedLines:N0}   Teletext {value.TeletextLines:N0}   Packets {value.PacketsWritten:N0}";
+                long baselineFrames = Interlocked.Read(ref fpsBaselineFrames);
+                long baselineTimestamp = Interlocked.Read(ref fpsBaselineTimestamp);
+                double fpsElapsedSeconds = Stopwatch.GetElapsedTime(baselineTimestamp).TotalSeconds;
+                double captureFps = fpsElapsedSeconds > 0
+                    ? (input.CapturedFrames - baselineFrames) / fpsElapsedSeconds
+                    : 0;
+                phaseText.Text = deconvolutionControl.Enabled
+                    ? $"Live deconvolution — {captureFps:0.0} fps"
+                    : $"Capture only — {captureFps:0.0} fps";
+                string headerDiagnostics = liveAssembler is null
+                    ? "Headers waiting…"
+                    : $"Headers {liveAssembler.HeaderPacketsAccepted:N0} ok / {liveAssembler.HeaderPacketsRejected:N0} rejected   " +
+                      $"MRAG rejected {liveAssembler.AddressPacketsRejected:N0}   " +
+                      $"Orphan rows {liveAssembler.OrphanedBodyRows:N0}   Repeated rows {liveAssembler.RepeatedBodyRows:N0}";
+                detailText.Text =
+                    $"Frames {value.ProcessedLines / Math.Max(input.LinesPerFrame, 1):N0}   Lines {value.ProcessedLines:N0}   Teletext {value.TeletextLines:N0}   Packets {value.PacketsWritten:N0}\n" +
+                    headerDiagnostics;
                 timingText.Text = $"Elapsed {FormatVbiDuration(elapsed.Elapsed)}   Device {input.SamplingRate:N0} Hz · {input.SamplesPerLine} samples/line · {input.LinesPerFrame} lines/frame";
             });
             Exception? failure = null;
@@ -2615,12 +3659,18 @@ public partial class MainWindow : Window
             {
                 try
                 {
+                    await using var rawOutput = new FileStream(
+                        temporaryRawCapture, FileMode.CreateNew, FileAccess.Write,
+                        FileShare.None, 1024 * 1024,
+                        FileOptions.Asynchronous | FileOptions.SequentialScan);
                     await using var output = new FileStream(
                         temporaryOutput, FileMode.CreateNew, FileAccess.Write,
                         FileShare.None, 1024 * 1024,
                         FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    var recordingInput = new RecordingReadStream(input, rawOutput);
                     await VbiDeconvolutionEngine.DeconvolveAsync(
-                        input, output, options, reporter, packetReporter, cancellation.Token);
+                        recordingInput, output, options, reporter, packetReporter, cancellation.Token,
+                        deconvolutionControl);
                 }
                 catch (Exception ex) { failure = ex; }
                 await Dispatcher.UIThread.InvokeAsync(() =>
@@ -2636,6 +3686,12 @@ public partial class MainWindow : Window
                 long packetCount = File.Exists(temporaryOutput)
                     ? new FileInfo(temporaryOutput).Length / 42
                     : lastProgress.PacketsWritten;
+                LiveCaptureCompletionChoice completionChoice =
+                    await ShowLiveCaptureCompletionDialogAsync(
+                        temporaryRawCapture, packetCount);
+                if (completionChoice == LiveCaptureCompletionChoice.Discard)
+                    return;
+
                 if (failure is not null
                     && failure is not OperationCanceledException
                     && !cancellation.IsCancellationRequested)
@@ -2648,33 +3704,22 @@ public partial class MainWindow : Window
                     await ShowMessageAsync("Live VBI capture", "Capture stopped without recovering any Teletext packets.");
                     return;
                 }
-                if (!await ConfirmOpenPartialVbiAsync(packetCount)) return;
 
-                IStorageFile? saved = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-                {
-                    Title = "Save live deconvolved T42 capture (Cancel to open without saving)",
-                    SuggestedFileName = $"live-{DateTime.Now:yyyyMMdd-HHmmss}.t42",
-                    DefaultExtension = "t42",
-                    FileTypeChoices = new[]
-                    {
-                        new FilePickerFileType("Raw Teletext packet stream") { Patterns = new[] { "*.t42" } },
-                    },
-                });
-                string? savedPath = saved?.Path.IsFile == true ? saved.Path.LocalPath : null;
-                if (saved is not null && savedPath is null)
-                {
-                    await ShowMessageAsync("Save live capture", "The selected destination is not a local file.");
-                    return;
-                }
-                if (savedPath is not null) File.Copy(temporaryOutput, savedPath, overwrite: true);
-                string decodedPath = savedPath ?? temporaryOutput;
-                await using var decoded = File.OpenRead(decodedPath);
-                await LoadBroadcastStreamAsync(decoded, savedPath);
-                if (savedPath is not null) await RememberFileAsync(savedPath, broadcast: true);
+                // Open first as an untitled full broadcast. Saving afterwards only
+                // assigns a path to this already-open document.
+                await using (var decoded = File.OpenRead(temporaryOutput))
+                    await LoadBroadcastStreamAsync(decoded, filePath: null);
+                _sessionState.BroadcastFilePath = null;
+                UpdateWindowAndPaneTitles();
+                SaveSessionState();
+
+                if (await ConfirmSaveLiveDecodedCaptureAsync(packetCount))
+                    await SaveOpenedLiveDecodedCaptureAsync(temporaryOutput);
             }
             finally
             {
                 try { if (File.Exists(temporaryOutput)) File.Delete(temporaryOutput); } catch { }
+                try { if (File.Exists(temporaryRawCapture)) File.Delete(temporaryRawCapture); } catch { }
             }
         }
     }
@@ -2730,6 +3775,325 @@ public partial class MainWindow : Window
         catch
         {
             return new List<LiveCaptureInterface>();
+        }
+    }
+
+    private static string? FindRelatedLinuxVideoInterface(string busInfo)
+    {
+        if (!OperatingSystem.IsLinux() || string.IsNullOrWhiteSpace(busInfo)) return null;
+        IEnumerable<string> paths;
+        try
+        {
+            paths = Directory.EnumerateFiles("/dev", "video*", SearchOption.TopDirectoryOnly)
+                .OrderBy(path => path, StringComparer.Ordinal)
+                .ToArray();
+        }
+        catch
+        {
+            return null;
+        }
+
+        foreach (string path in paths)
+        {
+            try
+            {
+                LinuxV4l2DeviceIdentity identity = LinuxVbiCaptureStream.QueryIdentity(path);
+                if ((identity.DeviceCapabilities & 0x00000001) != 0
+                    && string.Equals(identity.BusInfo, busInfo, StringComparison.OrdinalIgnoreCase))
+                    return path;
+            }
+            catch
+            {
+                // An unrelated or inaccessible video node must not hide the VBI device.
+            }
+        }
+        return null;
+    }
+
+    private static async Task ReadMjpegFramesAsync(
+        Stream input,
+        CancellationToken cancellationToken,
+        Action<byte[]> reportFrame)
+    {
+        var readBuffer = new byte[32 * 1024];
+        MemoryStream? frame = null;
+        bool previousWasFf = false;
+        try
+        {
+            while (true)
+            {
+                int count = await input.ReadAsync(readBuffer, cancellationToken).ConfigureAwait(false);
+                if (count == 0) break;
+                for (int index = 0; index < count; index++)
+                {
+                    byte value = readBuffer[index];
+                    if (frame is null)
+                    {
+                        if (previousWasFf && value == 0xD8)
+                        {
+                            frame = new MemoryStream(256 * 1024);
+                            frame.WriteByte(0xFF);
+                            frame.WriteByte(0xD8);
+                            previousWasFf = false;
+                        }
+                        else
+                        {
+                            previousWasFf = value == 0xFF;
+                        }
+                        continue;
+                    }
+
+                    frame.WriteByte(value);
+                    if (previousWasFf && value == 0xD9)
+                    {
+                        reportFrame(frame.ToArray());
+                        frame.Dispose();
+                        frame = null;
+                        previousWasFf = false;
+                    }
+                    else
+                    {
+                        previousWasFf = value == 0xFF;
+                        if (frame.Length > 8 * 1024 * 1024)
+                        {
+                            frame.Dispose();
+                            frame = null;
+                            previousWasFf = false;
+                        }
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (IOException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (IOException)
+        {
+            // FFmpeg closed its image pipe or the capture device stopped producing frames.
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            frame?.Dispose();
+        }
+    }
+
+    private static byte[] BuildVideoPreviewBgra(
+        LinuxV4l2VideoFrame frame,
+        int outputWidth,
+        int outputHeight)
+    {
+        const uint Yu12 = 0x32315559;
+        const uint Yv12 = 0x32315659;
+        const uint Yuyv = 0x56595559;
+        const uint Uyvy = 0x59565955;
+        const uint Grey = 0x59455247;
+        var output = new byte[checked(outputWidth * outputHeight * 4)];
+        int yStride = frame.BytesPerLine > 0
+            ? frame.BytesPerLine
+            : frame.PixelFormat is Yuyv or Uyvy
+                ? checked(frame.Width * 2)
+                : frame.Width;
+        int chromaStride = Math.Max(yStride / 2, 1);
+        int yPlaneSize = checked(yStride * frame.Height);
+        int chromaPlaneSize = checked(chromaStride * ((frame.Height + 1) / 2));
+
+        for (int outputY = 0; outputY < outputHeight; outputY++)
+        for (int outputX = 0; outputX < outputWidth; outputX++)
+        {
+            int sourceX = Math.Min(outputX * frame.Width / outputWidth, frame.Width - 1);
+            int sourceY = Math.Min(outputY * frame.Height / outputHeight, frame.Height - 1);
+            bool interlaced = frame.Field is 4 or 8 or 9;
+            if (interlaced)
+            {
+                // Bob-deinterlace from the first field. The preview is meant for
+                // identifying the source, and displaying both temporally distinct
+                // fields directly creates combing on VHS motion.
+                sourceY &= ~1;
+            }
+            int y, u = 128, v = 128;
+            switch (frame.PixelFormat)
+            {
+                case Yu12:
+                case Yv12:
+                    y = frame.Data[sourceY * yStride + sourceX];
+                    int chromaRow = interlaced
+                        ? (sourceY / 4) * 2 + sourceY % 2
+                        : sourceY / 2;
+                    int chromaIndex = chromaRow * chromaStride + sourceX / 2;
+                    int firstChromaOffset = yPlaneSize;
+                    int secondChromaOffset = yPlaneSize + chromaPlaneSize;
+                    u = frame.Data[(frame.PixelFormat == Yu12 ? firstChromaOffset : secondChromaOffset) + chromaIndex];
+                    v = frame.Data[(frame.PixelFormat == Yu12 ? secondChromaOffset : firstChromaOffset) + chromaIndex];
+                    break;
+                case Yuyv:
+                {
+                    int pair = sourceY * yStride + (sourceX & ~1) * 2;
+                    y = frame.Data[pair + (sourceX & 1) * 2];
+                    u = frame.Data[pair + 1];
+                    v = frame.Data[pair + 3];
+                    break;
+                }
+                case Uyvy:
+                {
+                    int pair = sourceY * yStride + (sourceX & ~1) * 2;
+                    u = frame.Data[pair];
+                    y = frame.Data[pair + 1 + (sourceX & 1) * 2];
+                    v = frame.Data[pair + 2];
+                    break;
+                }
+                case Grey:
+                    y = frame.Data[sourceY * yStride + sourceX];
+                    break;
+                default:
+                    throw new NotSupportedException(
+                        $"Video preview does not support pixel format {FourCc(frame.PixelFormat)}.");
+            }
+
+            int c = Math.Max(y - 16, 0);
+            int d = u - 128;
+            int e = v - 128;
+            byte red = (byte)Math.Clamp((298 * c + 409 * e + 128) >> 8, 0, 255);
+            byte green = (byte)Math.Clamp((298 * c - 100 * d - 208 * e + 128) >> 8, 0, 255);
+            byte blue = (byte)Math.Clamp((298 * c + 516 * d + 128) >> 8, 0, 255);
+            int target = (outputY * outputWidth + outputX) * 4;
+            output[target] = blue;
+            output[target + 1] = green;
+            output[target + 2] = red;
+            output[target + 3] = 255;
+        }
+        return output;
+    }
+
+    private static string FourCc(uint value) => new string(new[]
+    {
+        (char)(value & 0xFF),
+        (char)((value >> 8) & 0xFF),
+        (char)((value >> 16) & 0xFF),
+        (char)((value >> 24) & 0xFF),
+    });
+
+    private static string VideoFieldName(uint field) => field switch
+    {
+        1 => "progressive",
+        2 => "top field",
+        3 => "bottom field",
+        4 => "interlaced",
+        5 => "sequential top/bottom",
+        6 => "sequential bottom/top",
+        7 => "alternating fields",
+        8 => "interlaced top-first",
+        9 => "interlaced bottom-first",
+        _ => $"field {field}",
+    };
+
+    private static byte[] BuildRawVbiPreview(
+        byte[] rawFrame,
+        int samplesPerLine,
+        int lineCount,
+        int displayedSamples,
+        int outputWidth,
+        int outputHeight,
+        int clockSearchStart,
+        int clockSearchEnd,
+        IReadOnlyList<int> clockSearchOffsets,
+        out byte minimumSample,
+        out byte maximumSample)
+    {
+        var pixels = new byte[checked(outputWidth * outputHeight * 4)];
+        minimumSample = 0;
+        maximumSample = 0;
+        if (samplesPerLine <= 0 || lineCount <= 0 || displayedSamples <= 0
+            || rawFrame.Length < samplesPerLine * lineCount)
+            return pixels;
+
+        displayedSamples = Math.Min(displayedSamples, samplesPerLine);
+
+        minimumSample = 255;
+        maximumSample = 0;
+        for (int line = 0; line < lineCount; line++)
+        for (int sample = 0; sample < displayedSamples; sample++)
+        {
+            byte value = rawFrame[line * samplesPerLine + sample];
+            minimumSample = Math.Min(minimumSample, value);
+            maximumSample = Math.Max(maximumSample, value);
+        }
+        int sampleRange = Math.Max(maximumSample - minimumSample, 1);
+
+        for (int outputY = 0; outputY < outputHeight; outputY++)
+        {
+            int sourceLine = Math.Min(outputY * lineCount / outputHeight, lineCount - 1);
+            int sourceLineOffset = sourceLine * samplesPerLine;
+            int outputOffset = outputY * outputWidth * 4;
+            for (int outputX = 0; outputX < outputWidth; outputX++)
+            {
+                int pixelOffset = outputOffset + outputX * 4;
+                int start = outputX * displayedSamples / outputWidth;
+                int end = Math.Max((outputX + 1) * displayedSamples / outputWidth, start + 1);
+                int sum = 0;
+                for (int sample = start; sample < end; sample++)
+                    sum += rawFrame[sourceLineOffset + sample];
+                int sampleValue = sum / (end - start);
+                byte displayed = (byte)((sampleValue - minimumSample) * 255 / sampleRange);
+                pixels[pixelOffset] = displayed;
+                pixels[pixelOffset + 1] = displayed;
+                pixels[pixelOffset + 2] = displayed;
+                pixels[pixelOffset + 3] = 255;
+            }
+        }
+
+        // Mark the preset's raw-sample window used to locate the clock run-in.
+        DrawSearchMarker(clockSearchStart, 0x00, 0xA5, 0xFF); // orange (BGRA)
+        DrawSearchMarker(clockSearchEnd, 0xFF, 0xD7, 0x00);   // cyan (BGRA)
+        return pixels;
+
+        void DrawSearchMarker(int baseSample, byte blue, byte green, byte red)
+        {
+            // The bitmap is scaled down to the 500 px preview. Keep each marker
+            // two visible pixels wide after that scaling.
+            int markerWidth = Math.Max(
+                1, (int)Math.Round(outputWidth / 500.0 * 2));
+            for (int y = 0; y < outputHeight; y++)
+            {
+            int sourceLine = Math.Min(y * lineCount / outputHeight, lineCount - 1);
+            int lineCorrection = sourceLine < clockSearchOffsets.Count
+                ? clockSearchOffsets[sourceLine]
+                : 0;
+            int sample = baseSample + lineCorrection;
+            if (sample < 0 || sample >= displayedSamples) continue;
+            int x = (int)Math.Round(sample * (outputWidth - 1.0) / displayedSamples);
+            for (int dx = 0; dx < markerWidth && x + dx < outputWidth; dx++)
+            {
+                int offset = (y * outputWidth + x + dx) * 4;
+                pixels[offset] = blue;
+                pixels[offset + 1] = green;
+                pixels[offset + 2] = red;
+                pixels[offset + 3] = 255;
+            }
+            }
+        }
+    }
+
+    private static void UpdateBgraBitmap(
+        WriteableBitmap bitmap,
+        byte[] pixels,
+        int width,
+        int height)
+    {
+        using ILockedFramebuffer framebuffer = bitmap.Lock();
+        int rowBytes = width * 4;
+        for (int row = 0; row < height; row++)
+        {
+            Marshal.Copy(
+                pixels,
+                row * rowBytes,
+                IntPtr.Add(framebuffer.Address, row * framebuffer.RowBytes),
+                rowBytes);
         }
     }
 
@@ -2874,7 +4238,7 @@ public partial class MainWindow : Window
             {
                 _broadcastPackets.Add(packet);
                 liveAssembler!.Feed(packet, livePacketIndex++);
-                latestPage = liveAssembler.LastUpdatedPage ?? latestPage;
+                latestPage = liveAssembler.LastFinalizedPage ?? latestPage;
             }
             if (latestPage is not null)
             {
@@ -2931,7 +4295,10 @@ public partial class MainWindow : Window
                 var options = new VbiCaptureOptions(
                     preset.Name, preset.SampleRate, preset.LineLength, preset.LineStart,
                     preset.LineStartEnd, preset.SampleType == "UInt16", preset.FieldLines,
-                    preset.FieldRangeStart, preset.FieldRangeEnd);
+                    preset.FieldRangeStart, preset.FieldRangeEnd,
+                    preset.StandardDeviationThreshold,
+                    preset.SignalLevelThreshold, preset.CriFcRangeThreshold,
+                    preset.CriFcConfidenceThreshold);
                 result = await VbiDeconvolutionEngine.DeconvolveAsync(
                     input, output, options, reporter, packetReporter, cancellation.Token);
             }
@@ -3086,7 +4453,10 @@ public partial class MainWindow : Window
         void UpdateDetails()
         {
             if (combo.SelectedItem is not CaptureCardPreset p) return;
-            details.Text = $"{p.SampleRate:N0} Hz · {p.LineLength} samples · {p.SampleType}\nLine start {p.LineStart}–{p.LineStartEnd} · field {p.FieldRangeStart}–{p.FieldRangeEnd} of {p.FieldLines}";
+            details.Text =
+                $"{p.SampleRate:N0} Hz · {p.LineLength} samples · {p.SampleType}\n" +
+                $"Line start {p.LineStart}–{p.LineStartEnd} · field {p.FieldRangeStart}–{p.FieldRangeEnd} of {p.FieldLines}\n" +
+                $"Thresholds: std-dev {p.StandardDeviationThreshold:0.##} · signal {p.SignalLevelThreshold:0.##} · CRI/FC range {p.CriFcRangeThreshold:0.##} · confidence {p.CriFcConfidenceThreshold:0.##}";
         }
         combo.SelectionChanged += (_, _) => UpdateDetails();
         var openButton = new Button { Content = "Deconvolve", Width = 105, IsDefault = true };
@@ -5724,6 +7094,189 @@ public partial class MainWindow : Window
         openButton.Click += (_, _) => { open = true; dialog.Close(); };
         await dialog.ShowDialog(this);
         return open;
+    }
+
+    private async Task<LiveCaptureCompletionChoice> ShowLiveCaptureCompletionDialogAsync(
+        string rawCapturePath,
+        long packetCount)
+    {
+        LiveCaptureCompletionChoice choice = LiveCaptureCompletionChoice.Discard;
+        var saveRawButton = new Button { Content = "Save VBI file…", Width = 120 };
+        var discardButton = new Button
+        {
+            Content = "Discard all",
+            Width = 100,
+            Background = new SolidColorBrush(Color.Parse("#B42318")),
+            Foreground = Brushes.White,
+        };
+        var openButton = new Button
+        {
+            Content = "Open decoded .t42",
+            Width = 145,
+            IsEnabled = packetCount > 0,
+        };
+        var dialog = new Window
+        {
+            Title = "Live VBI capture complete",
+            Width = 560,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(22),
+                Spacing = 18,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = packetCount > 0
+                            ? $"Recovered {packetCount:N0} Teletext packets. You can save the raw VBI capture, then open the decoded stream or discard everything."
+                            : "No Teletext packets were recovered. You can still save the raw VBI capture for later analysis.",
+                        TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"),
+                        ColumnSpacing = 8,
+                        Children = { saveRawButton, discardButton, openButton },
+                    },
+                },
+            },
+        };
+        Grid.SetColumn(discardButton, 2);
+        Grid.SetColumn(openButton, 3);
+
+        saveRawButton.Click += async (_, _) =>
+        {
+            saveRawButton.IsEnabled = false;
+            try
+            {
+                IStorageFile? destination = await StorageProvider.SaveFilePickerAsync(
+                    new FilePickerSaveOptions
+                    {
+                        Title = "Save raw VBI capture",
+                        SuggestedFileName = $"live-{DateTime.Now:yyyyMMdd-HHmmss}.vbi",
+                        DefaultExtension = "vbi",
+                        FileTypeChoices = new[]
+                        {
+                            new FilePickerFileType("Raw VBI sample stream")
+                            {
+                                Patterns = new[] { "*.vbi", "*.bin" },
+                            },
+                        },
+                    });
+                string? destinationPath = destination?.Path.IsFile == true
+                    ? destination.Path.LocalPath
+                    : null;
+                if (destination is not null && destinationPath is null)
+                {
+                    await ShowMessageAsync("Save raw VBI capture", "The selected destination is not a local file.");
+                    return;
+                }
+                if (destinationPath is not null)
+                {
+                    File.Copy(rawCapturePath, destinationPath, overwrite: true);
+                    saveRawButton.Content = "Save VBI again…";
+                }
+            }
+            catch (Exception ex)
+            {
+                await ShowMessageAsync("Could not save raw VBI capture", ex.Message);
+            }
+            finally
+            {
+                saveRawButton.IsEnabled = true;
+            }
+        };
+        discardButton.Click += (_, _) => dialog.Close();
+        openButton.Click += (_, _) =>
+        {
+            choice = LiveCaptureCompletionChoice.OpenDecoded;
+            dialog.Close();
+        };
+        await dialog.ShowDialog(this);
+        return choice;
+    }
+
+    private async Task<bool> ConfirmSaveLiveDecodedCaptureAsync(long packetCount)
+    {
+        bool save = false;
+        var noButton = new Button { Content = "No, keep Untitled", Width = 140 };
+        var yesButton = new Button { Content = "Save decoded .t42…", Width = 150 };
+        var dialog = new Window
+        {
+            Title = "Save decoded live capture?",
+            Width = 500,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(22),
+                Spacing = 18,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = $"The decoded full stream is open as Untitled ({packetCount:N0} packets). Save it as a .t42 file?",
+                        TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { noButton, yesButton },
+                    },
+                },
+            },
+        };
+        noButton.Click += (_, _) => dialog.Close();
+        yesButton.Click += (_, _) => { save = true; dialog.Close(); };
+        await dialog.ShowDialog(this);
+        return save;
+    }
+
+    private async Task SaveOpenedLiveDecodedCaptureAsync(string temporaryOutput)
+    {
+        IStorageFile? destination = await StorageProvider.SaveFilePickerAsync(
+            new FilePickerSaveOptions
+            {
+                Title = "Save decoded live capture",
+                SuggestedFileName = $"live-{DateTime.Now:yyyyMMdd-HHmmss}.t42",
+                DefaultExtension = "t42",
+                FileTypeChoices = new[]
+                {
+                    new FilePickerFileType("Raw Teletext packet stream")
+                    {
+                        Patterns = new[] { "*.t42" },
+                    },
+                },
+            });
+        string? destinationPath = destination?.Path.IsFile == true
+            ? destination.Path.LocalPath
+            : null;
+        if (destination is not null && destinationPath is null)
+        {
+            await ShowMessageAsync("Save decoded live capture", "The selected destination is not a local file.");
+            return;
+        }
+        if (destinationPath is null) return;
+
+        try
+        {
+            File.Copy(temporaryOutput, destinationPath, overwrite: true);
+            _broadcastFilePath = destinationPath;
+            BroadcastFilePathText.Text = FormatFileFooter(
+                destinationPath, _store.TotalInstanceCount);
+            UpdateWindowAndPaneTitles();
+            await RememberFileAsync(destinationPath, broadcast: true);
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Could not save decoded live capture", ex.Message);
+        }
     }
 
     private async Task ShowEnhancementErrorAsync(

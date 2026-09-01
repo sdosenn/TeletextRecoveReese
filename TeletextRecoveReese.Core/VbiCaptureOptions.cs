@@ -9,7 +9,11 @@ public sealed record VbiCaptureOptions(
     bool IsUInt16,
     int FieldLines,
     int FieldRangeStart,
-    int FieldRangeEnd);
+    int FieldRangeEnd,
+    float StandardDeviationThreshold = 14,
+    float SignalLevelThreshold = 64,
+    float CriFcRangeThreshold = 28,
+    double CriFcConfidenceThreshold = 0.35);
 
 public readonly record struct VbiDeconvolutionProgress(
     long ProcessedLines,
@@ -30,4 +34,10 @@ public sealed record VbiDeconvolutionResult(
 public interface IVbiDecodedPacketProgress : IProgress<IReadOnlyList<byte[]>>
 {
     bool IsEnabled { get; }
+}
+
+public interface IVbiDeconvolutionControl
+{
+    bool Enabled { get; }
+    int GetClockSearchOffset(int fieldLine);
 }

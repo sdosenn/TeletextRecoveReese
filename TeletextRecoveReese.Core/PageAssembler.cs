@@ -18,6 +18,12 @@ public class PageAssembler
     private readonly Dictionary<int, PageInstance> _inProgress = new();
 
     public TeletextPage? LastUpdatedPage { get; private set; }
+    public TeletextPage? LastFinalizedPage { get; private set; }
+    public long HeaderPacketsAccepted { get; private set; }
+    public long HeaderPacketsRejected { get; private set; }
+    public long AddressPacketsRejected { get; private set; }
+    public long OrphanedBodyRows { get; private set; }
+    public long RepeatedBodyRows { get; private set; }
 
     public PageAssembler(PageStore store, bool decodeEnhancements = true)
     {
@@ -35,10 +41,15 @@ public class PageAssembler
     public void Feed(byte[] raw42, int packetIndex = -1)
     {
         LastUpdatedPage = null;
+        LastFinalizedPage = null;
         if (raw42.Length != 42) return;
 
         var (mrag, mragBad) = DecodeNibblePair(raw42[0], raw42[1]);
-        if (mragBad) return;
+        if (mragBad)
+        {
+            AddressPacketsRejected++;
+            return;
+        }
 
         int row = (mrag >> 3) & 0x1F;
         int magazineBits = mrag & 0x07;
@@ -67,7 +78,16 @@ public class PageAssembler
 
         var unitsR = Hamming.Decode84(payload[0]);
         var tensR = Hamming.Decode84(payload[1]);
-        if (unitsR.UncorrectableError || tensR.UncorrectableError) return;
+        if (unitsR.UncorrectableError || tensR.UncorrectableError)
+        {
+            HeaderPacketsRejected++;
+            // We still know this is a row-0 boundary for this magazine. Complete
+            // the preceding page, but do not let rows belonging to the unknown new
+            // page overwrite it while waiting for the next valid header.
+            FinalizeInProgress(magazine);
+            return;
+        }
+        HeaderPacketsAccepted++;
 
         int pageNumber = unitsR.Value | (tensR.Value << 4);
 
@@ -99,10 +119,15 @@ public class PageAssembler
         // A body row with no header seen yet for this magazine is orphaned - we don't
         // know which page it belongs to (see earlier discussion on why teletext
         // doesn't repeat the page number in every packet).
-        if (!_inProgress.TryGetValue(magazine, out var instance)) return;
+        if (!_inProgress.TryGetValue(magazine, out var instance))
+        {
+            OrphanedBodyRows++;
+            return;
+        }
 
+        if (!instance.RowsReceived.Add(row))
+            RepeatedBodyRows++;
         ApplyRow(instance.Page, row, raw42, packetIndex);
-        instance.RowsReceived.Add(row);
     }
 
     private void HandleEnhancementPacket(int magazine, byte[] raw42, int packetIndex)
@@ -1261,6 +1286,7 @@ public class PageAssembler
         {
             _store.AddInstance(instance);
             _inProgress.Remove(magazine);
+            LastFinalizedPage = instance.Page;
         }
     }
 

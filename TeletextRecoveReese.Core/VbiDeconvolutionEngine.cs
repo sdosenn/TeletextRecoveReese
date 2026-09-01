@@ -5,11 +5,56 @@ namespace TeletextRecoveReese.Core;
 public static class VbiDeconvolutionEngine
 {
     private const double TeletextBitRate = 6_937_500.0;
+    public static readonly bool UseLegacyFixedDetectionForTest = false;
 
     public static string ValidateOpenClBackend()
     {
         using var matcher = new OpenClVhsPatternMatcher();
         return matcher.DeviceDescription;
+    }
+
+    public static int?[] FindClockRunInOffsets(
+        byte[] rawFrame,
+        VbiCaptureOptions options,
+        int lineCount,
+        int maximumOffsetSamples = 300)
+    {
+        int sampleBytes = options.IsUInt16 ? 2 : 1;
+        int lineBytes = checked(options.LineLength * sampleBytes);
+        int availableLines = Math.Min(lineCount, rawFrame.Length / lineBytes);
+        var offsets = new int?[lineCount];
+        if (availableLines <= 0) return offsets;
+
+        VbiResamplePlan plan = CreateResamplePlan(options);
+        // PrepareLine reports the beginning of the CRI/FC pattern. That position
+        // corresponds to the orange (start) marker, not the cyan end marker.
+        int targetPosition = options.LineStart;
+        for (int line = 0; line < availableLines; line++)
+        {
+            byte[] rawLine = rawFrame.AsSpan(line * lineBytes, lineBytes).ToArray();
+            foreach (int searchOffset in EnumerateSearchOffsets(maximumOffsetSamples))
+            {
+                float[]? prepared = PrepareLine(
+                    rawLine, options, plan, searchOffset, out int detectedStartSample);
+                if (prepared is null) continue;
+                offsets[line] = Math.Clamp(
+                    detectedStartSample - targetPosition,
+                    -maximumOffsetSamples,
+                    maximumOffsetSamples);
+                break;
+            }
+        }
+        return offsets;
+
+        static IEnumerable<int> EnumerateSearchOffsets(int maximum)
+        {
+            yield return 0;
+            for (int offset = 10; offset <= maximum; offset += 10)
+            {
+                yield return offset;
+                yield return -offset;
+            }
+        }
     }
 
     public static async Task<VbiDeconvolutionResult> DeconvolveAsync(
@@ -18,7 +63,8 @@ public static class VbiDeconvolutionEngine
         VbiCaptureOptions options,
         IProgress<VbiDeconvolutionProgress>? progress,
         IVbiDecodedPacketProgress? decodedPackets,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IVbiDeconvolutionControl? deconvolutionControl = null)
     {
         bool liveInput = !input.CanSeek;
         int sampleBytes = options.IsUInt16 ? 2 : 1;
@@ -53,9 +99,9 @@ public static class VbiDeconvolutionEngine
         if (!liveInput) input.Position = 0;
         var captureTimer = System.Diagnostics.Stopwatch.StartNew();
 
-        async Task<List<byte[]>> ReadBatchAsync()
+        async Task<List<CapturedLine>> ReadBatchAsync()
         {
-            var lines = new List<byte[]>(batchSize);
+            var lines = new List<CapturedLine>(batchSize);
             while (lines.Count < batchSize && !endOfInput)
             {
                 var raw = new byte[lineBytes];
@@ -64,16 +110,20 @@ public static class VbiDeconvolutionEngine
                     endOfInput = true;
                     break;
                 }
-                bool selected = fieldLine >= options.FieldRangeStart && fieldLine < options.FieldRangeEnd;
+                int capturedFieldLine = fieldLine;
+                bool selected = capturedFieldLine >= options.FieldRangeStart
+                    && capturedFieldLine < options.FieldRangeEnd;
                 fieldLine = (fieldLine + 1) % options.FieldLines;
-                if (selected) lines.Add(raw);
+                if (selected) lines.Add(new CapturedLine(raw, capturedFieldLine));
             }
             return lines;
         }
 
-        Task<float[]?[]> PrepareBatchAsync(IReadOnlyList<byte[]> lines) => Task.Run(() =>
+        Task<float[]?[]> PrepareBatchAsync(IReadOnlyList<CapturedLine> lines) => Task.Run(() =>
         {
             var prepared = new float[]?[lines.Count];
+            if (deconvolutionControl?.Enabled == false)
+                return prepared;
             Parallel.For(
                 0,
                 lines.Count,
@@ -82,11 +132,19 @@ public static class VbiDeconvolutionEngine
                     CancellationToken = cancellationToken,
                     MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1),
                 },
-                index => prepared[index] = PrepareLine(lines[index], options, resamplePlan));
+                index =>
+                {
+                    CapturedLine line = lines[index];
+                    int searchOffset = 0;
+                    if (deconvolutionControl is not null)
+                        searchOffset = deconvolutionControl.GetClockSearchOffset(line.FieldLine);
+                    prepared[index] = PrepareLine(
+                        line.Raw, options, resamplePlan, searchOffset);
+                });
             return prepared;
         }, cancellationToken);
 
-        List<byte[]> currentLines = await ReadBatchAsync().ConfigureAwait(false);
+        List<CapturedLine> currentLines = await ReadBatchAsync().ConfigureAwait(false);
         Task<float[]?[]>? currentPreparation = currentLines.Count > 0
             ? PrepareBatchAsync(currentLines)
             : null;
@@ -95,7 +153,7 @@ public static class VbiDeconvolutionEngine
             float[]?[] preparedLines = await currentPreparation.ConfigureAwait(false);
             // Start CPU preparation of the next batch before matching this batch on
             // OpenCL. This keeps the CPU and GPU busy at the same time.
-            List<byte[]> nextLines = await ReadBatchAsync().ConfigureAwait(false);
+            List<CapturedLine> nextLines = await ReadBatchAsync().ConfigureAwait(false);
             Task<float[]?[]>? nextPreparation = nextLines.Count > 0
                 ? PrepareBatchAsync(nextLines)
                 : null;
@@ -224,6 +282,7 @@ public static class VbiDeconvolutionEngine
         Array.Copy(source, 0, destination, offset, Math.Min(source.Length, destination.Length - offset));
 
     private sealed record VbiResamplePlan(int Length, int[] Left, float[] Fraction);
+    private sealed record CapturedLine(byte[] Raw, int FieldLine);
 
     private static VbiResamplePlan CreateResamplePlan(VbiCaptureOptions options)
     {
@@ -244,8 +303,18 @@ public static class VbiDeconvolutionEngine
     private static float[]? PrepareLine(
         byte[] raw,
         VbiCaptureOptions options,
-        VbiResamplePlan plan)
+        VbiResamplePlan plan,
+        int searchOffsetSamples = 0)
+        => PrepareLine(raw, options, plan, searchOffsetSamples, out _);
+
+    private static float[]? PrepareLine(
+        byte[] raw,
+        VbiCaptureOptions options,
+        VbiResamplePlan plan,
+        int searchOffsetSamples,
+        out int detectedStartSample)
     {
+        detectedStartSample = -1;
         float[] resampled = ArrayPool<float>.Shared.Rent(plan.Length);
         try
         {
@@ -271,9 +340,34 @@ public static class VbiDeconvolutionEngine
             }
 
         double bitWidth = options.SampleRate / TeletextBitRate;
-        int searchStart = Math.Max(0, (int)Math.Floor(options.LineStart * 8 / bitWidth));
-        int searchEnd = Math.Min(plan.Length - 24 * 8 - 1, (int)Math.Ceiling(options.LineStartEnd * 8 / bitWidth));
+        int effectiveSearchOffset = UseLegacyFixedDetectionForTest
+            ? 0
+            : searchOffsetSamples;
+        int shiftedStart = options.LineStart + effectiveSearchOffset;
+        int shiftedEnd = options.LineStartEnd + effectiveSearchOffset;
+        int searchStart = Math.Max(0, (int)Math.Floor(shiftedStart * 8 / bitWidth));
+        int searchEnd = Math.Min(plan.Length - 24 * 8 - 1, (int)Math.Ceiling(shiftedEnd * 8 / bitWidth));
         if (searchEnd <= searchStart) return null;
+
+        if (!UseLegacyFixedDetectionForTest)
+        {
+            int varianceEnd = Math.Min(plan.Length, searchEnd + 368 * 8);
+            double sampleSum = 0;
+            double squareSum = 0;
+            int varianceCount = varianceEnd - searchStart;
+            for (int sample = searchStart; sample < varianceEnd; sample++)
+            {
+                double value = resampled[sample];
+                sampleSum += value;
+                squareSum += value * value;
+            }
+            double mean = sampleSum / Math.Max(varianceCount, 1);
+            double standardDeviation = Math.Sqrt(Math.Max(
+                0, squareSum / Math.Max(varianceCount, 1) - mean * mean));
+            if (standardDeviation < options.StandardDeviationThreshold)
+                return null;
+        }
+
         ReadOnlySpan<byte> reference = VbiPatternResources.ObservedCriFc;
 
         // Match vhs-teletext's staged lock instead of exhaustively comparing the
@@ -295,7 +389,10 @@ public static class VbiDeconvolutionEngine
             smoothed[i] = value;
             signalMax = Math.Max(signalMax, value);
         }
-        if (signalMax < 64) return null;
+        float signalLevelThreshold = UseLegacyFixedDetectionForTest
+            ? 64
+            : options.SignalLevelThreshold;
+        if (signalMax < signalLevelThreshold) return null;
 
         float accumulatedMax = smoothed[0];
         float previousAccumulated = accumulatedMax;
@@ -384,7 +481,10 @@ public static class VbiDeconvolutionEngine
             criFcMaximum = Math.Max(criFcMaximum, average);
         }
         float criFcRange = criFcMaximum - criFcMinimum;
-        if (criFcRange < 28) return null;
+        float criFcRangeThreshold = UseLegacyFixedDetectionForTest
+            ? 28
+            : options.CriFcRangeThreshold;
+        if (criFcRange < criFcRangeThreshold) return null;
         float criFcMidpoint = (criFcMinimum + criFcMaximum) * 0.5f;
         double signedCorrelation = 0;
         double absoluteEnergy = 0;
@@ -398,7 +498,10 @@ public static class VbiDeconvolutionEngine
         double criFcConfidence = absoluteEnergy > 0
             ? signedCorrelation / absoluteEnergy
             : 0;
-        if (criFcConfidence < 0.35) return null;
+        double criFcConfidenceThreshold = UseLegacyFixedDetectionForTest
+            ? 0.35
+            : options.CriFcConfidenceThreshold;
+        if (criFcConfidence < criFcConfidenceThreshold) return null;
 
         var bits = new float[368];
         float bitsMin = float.MaxValue, bitsMax = float.MinValue;
@@ -411,6 +514,7 @@ public static class VbiDeconvolutionEngine
         }
         float range = Math.Max(bitsMax - bitsMin, 1);
         for (int i = 0; i < bits.Length; i++) bits[i] = Math.Clamp((bits[i] - bitsMin) * 255f / range, 0, 255);
+        detectedStartSample = (int)Math.Round(bestStart * bitWidth / 8.0);
         return bits;
         }
         finally
