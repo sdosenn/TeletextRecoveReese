@@ -202,6 +202,7 @@ public partial class MainWindow : Window
         public List<RecentFileEntry> RecentFiles { get; set; } = new();
         public List<CaptureCardPreset> CustomCaptureCardPresets { get; set; } = new();
         public string? LastCaptureCardPresetName { get; set; }
+        public string? LastLiveCaptureInterface { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
     }
 
@@ -1693,10 +1694,11 @@ public partial class MainWindow : Window
         {
             var btn = new Button
             {
-                Content = "◀",
+                Content = "◀︎",
                 Width = 32,
                 Height = 23,
-                FontSize = 10,
+                FontSize = 12,
+                FontFamily = new FontFamily("Menlo,DejaVu Sans Mono,monospace"),
                 Padding = new Thickness(0),
                 HorizontalContentAlignment = HorizontalAlignment.Center,
                 VerticalContentAlignment = VerticalAlignment.Center,
@@ -1850,6 +1852,9 @@ public partial class MainWindow : Window
 
     private void OnNativeOpenVbiCaptureClicked(object? sender, EventArgs e) =>
         OnOpenVbiCaptureClicked(sender, new RoutedEventArgs());
+
+    private void OnNativeOpenLiveVbiCaptureClicked(object? sender, EventArgs e) =>
+        OnOpenLiveVbiCaptureClicked(sender, new RoutedEventArgs());
 
     private void OnNativeSaveClicked(object? sender, EventArgs e) =>
         OnSaveClicked(sender, new RoutedEventArgs());
@@ -2347,6 +2352,412 @@ public partial class MainWindow : Window
         await RememberFileAsync(file.Path.IsFile ? file.Path.LocalPath : null, broadcast: true);
     }
 
+    private sealed record LiveCaptureInterface(string Name, string Path, string Kind)
+    {
+        public override string ToString() => Name;
+    }
+
+    private async void OnOpenLiveVbiCaptureClicked(object? sender, RoutedEventArgs e)
+    {
+        _sessionState.CustomCaptureCardPresets ??= new List<CaptureCardPreset>();
+        List<CaptureCardPreset> presets = BuiltInCaptureCardPresets
+            .Concat(_sessionState.CustomCaptureCardPresets)
+            .ToList();
+        var presetCombo = new ComboBox { Width = 440, ItemsSource = presets };
+        presetCombo.SelectedItem = presets.FirstOrDefault(p =>
+                                       string.Equals(p.Name, _sessionState.LastCaptureCardPresetName, StringComparison.OrdinalIgnoreCase))
+                                   ?? presets.FirstOrDefault();
+        var interfaceCombo = new ComboBox { Width = 440 };
+        var statusText = new TextBlock
+        {
+            Width = 440,
+            Foreground = Brushes.LightGray,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var refreshButton = new Button { Content = "Refresh", Width = 90 };
+        var useButton = new Button { Content = "Use interface", Width = 110, IsDefault = true };
+        var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
+        var dialog = new Window
+        {
+            Title = "Live VBI capture",
+            SizeToContent = SizeToContent.WidthAndHeight,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Width = 480,
+                Margin = new Thickness(20),
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock { Text = "Capture card configuration", FontWeight = FontWeight.SemiBold },
+                    presetCombo,
+                    new TextBlock { Text = "Capture interface", FontWeight = FontWeight.SemiBold },
+                    interfaceCombo,
+                    statusText,
+                    new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"),
+                        ColumnSpacing = 8,
+                        Children = { refreshButton, cancelButton, useButton },
+                    },
+                },
+            },
+        };
+        Grid.SetColumn(refreshButton, 0);
+        Grid.SetColumn(cancelButton, 2);
+        Grid.SetColumn(useButton, 3);
+
+        async Task RefreshInterfacesAsync()
+        {
+            refreshButton.IsEnabled = false;
+            useButton.IsEnabled = false;
+            statusText.Text = "Searching for capture interfaces…";
+            List<LiveCaptureInterface> interfaces = await DiscoverLiveCaptureInterfacesAsync();
+            interfaceCombo.ItemsSource = interfaces;
+            interfaceCombo.SelectedItem = interfaces.FirstOrDefault(item =>
+                                                  string.Equals(item.Path, _sessionState.LastLiveCaptureInterface, StringComparison.Ordinal))
+                                              ?? interfaces.FirstOrDefault();
+            useButton.IsEnabled = interfaces.Count > 0 && presetCombo.SelectedItem is CaptureCardPreset;
+            statusText.Text = interfaces.Count > 0
+                ? OperatingSystem.IsMacOS()
+                    ? $"Found {interfaces.Count} serial interface(s). The device must provide raw VBI samples using the selected card configuration."
+                    : OperatingSystem.IsLinux()
+                        ? $"Found {interfaces.Count} Linux VBI device(s)."
+                        : $"Found {interfaces.Count} DirectShow video capture device(s). VBI-pin validation occurs when the live transport is opened."
+                : OperatingSystem.IsMacOS()
+                    ? "No serial interfaces were found under /dev/cu.* or /dev/tty.*."
+                    : OperatingSystem.IsLinux()
+                        ? "No /dev/vbi* devices were found. Check the capture driver and device permissions."
+                        : "No DirectShow capture interfaces were found. FFmpeg must be available for device discovery.";
+            refreshButton.IsEnabled = true;
+        }
+
+        presetCombo.SelectionChanged += (_, _) =>
+            useButton.IsEnabled = interfaceCombo.SelectedItem is LiveCaptureInterface
+                                  && presetCombo.SelectedItem is CaptureCardPreset;
+        interfaceCombo.SelectionChanged += (_, _) =>
+            useButton.IsEnabled = interfaceCombo.SelectedItem is LiveCaptureInterface
+                                  && presetCombo.SelectedItem is CaptureCardPreset;
+        refreshButton.Click += async (_, _) => await RefreshInterfacesAsync();
+        cancelButton.Click += (_, _) => dialog.Close();
+        useButton.Click += async (_, _) =>
+        {
+            if (presetCombo.SelectedItem is not CaptureCardPreset preset
+                || interfaceCombo.SelectedItem is not LiveCaptureInterface captureInterface)
+                return;
+            _sessionState.LastCaptureCardPresetName = preset.Name;
+            _sessionState.LastLiveCaptureInterface = captureInterface.Path;
+            SaveSessionState();
+            dialog.Close();
+            if (OperatingSystem.IsLinux())
+                await StartLinuxLiveVbiCaptureAsync(captureInterface, preset);
+            else
+                await ShowMessageAsync(
+                    "Live VBI capture",
+                    $"Selected {captureInterface.Name} with {preset.Name}.\n\nLive transport for this platform is not connected yet.");
+        };
+
+        dialog.Opened += async (_, _) => await RefreshInterfacesAsync();
+        await dialog.ShowDialog(this);
+    }
+
+    private async Task StartLinuxLiveVbiCaptureAsync(
+        LiveCaptureInterface captureInterface,
+        CaptureCardPreset preset)
+    {
+        LinuxVbiCaptureStream? input = null;
+        try
+        {
+            input = new LinuxVbiCaptureStream(captureInterface.Path);
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Could not open live VBI capture", ex.Message);
+            return;
+        }
+
+        await using (input)
+        {
+            var options = new VbiCaptureOptions(
+                preset.Name,
+                input.SamplingRate,
+                input.SamplesPerLine,
+                preset.LineStart,
+                preset.LineStartEnd,
+                IsUInt16: false,
+                FieldLines: input.LinesPerFrame,
+                FieldRangeStart: 0,
+                FieldRangeEnd: input.LinesPerFrame);
+            string temporaryOutput = Path.Combine(
+                Path.GetTempPath(), $"TeletextRecoveReese-live-{Guid.NewGuid():N}.t42");
+            using var cancellation = new CancellationTokenSource();
+            var phaseText = new TextBlock
+            {
+                Text = $"Opening {captureInterface.Name}…",
+                TextWrapping = TextWrapping.Wrap,
+            };
+            var detailText = new TextBlock { Foreground = Brushes.LightGray };
+            var timingText = new TextBlock { Foreground = Brushes.LightGray };
+            var progressBar = new ProgressBar { Width = 500, IsIndeterminate = true };
+            var showLiveCheckBox = new CheckBox
+            {
+                Content = "Show deconvolved page",
+                IsChecked = _sessionState.ShowLiveDeconvolvedPage ?? true,
+            };
+            var stopButton = new Button { Content = "Stop capture", Width = 110 };
+            var dialog = new Window
+            {
+                Title = "Live VBI capture",
+                SizeToContent = SizeToContent.WidthAndHeight,
+                CanResize = false,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Content = new StackPanel
+                {
+                    Width = 520,
+                    Margin = new Thickness(18),
+                    Spacing = 12,
+                    Children =
+                    {
+                        phaseText,
+                        progressBar,
+                        detailText,
+                        timingText,
+                        new Grid
+                        {
+                            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                            Children = { showLiveCheckBox, stopButton },
+                        },
+                    },
+                },
+            };
+            Grid.SetColumn(stopButton, 1);
+            bool allowClose = false;
+            void StopCapture()
+            {
+                cancellation.Cancel();
+                // A V4L2 read can be blocked waiting for the next complete frame;
+                // closing the device guarantees that Stop does not wait forever.
+                try { input.Dispose(); } catch { }
+                stopButton.IsEnabled = false;
+                phaseText.Text = "Stopping live capture…";
+            }
+            dialog.Closing += (_, args) =>
+            {
+                if (allowClose) return;
+                args.Cancel = true;
+                StopCapture();
+            };
+            stopButton.Click += (_, _) => StopCapture();
+
+            PageAssembler? liveAssembler = null;
+            int livePacketIndex = 0;
+            void InitializeLivePreview()
+            {
+                if (liveAssembler is not null) return;
+                _store.Clear();
+                _broadcastPackets.Clear();
+                ClearBroadcastPane();
+                _broadcastFileOpen = true;
+                BroadcastPaneGrid.IsVisible = true;
+                BroadcastGrid.IsActive = true;
+                SquashGrid.IsActive = false;
+                BroadcastInfoText.Text = $"Live VBI — {captureInterface.Name}";
+                BroadcastFilePathText.Text = $"{captureInterface.Path} — live capture";
+                UpdateWorkspacePaneVisibility();
+                UpdateG0SubsetMenuChecks();
+                FitWindowToContent();
+                liveAssembler = new PageAssembler(_store, decodeEnhancements: false);
+            }
+            var packetReporter = new ToggleablePacketProgress(
+                showLiveCheckBox.IsChecked == true,
+                packets =>
+                {
+                    if (liveAssembler is null) InitializeLivePreview();
+                    TeletextPage? latestPage = null;
+                    foreach (byte[] packet in packets)
+                    {
+                        _broadcastPackets.Add(packet);
+                        liveAssembler!.Feed(packet, livePacketIndex++);
+                        latestPage = liveAssembler.LastUpdatedPage ?? latestPage;
+                    }
+                    if (latestPage is null) return;
+                    ApplyFileG0SubsetToPage(latestPage, broadcast: true);
+                    BroadcastGrid.Page = latestPage;
+                    BroadcastGrid.InvalidateVisual();
+                });
+            if (packetReporter.Enabled) InitializeLivePreview();
+            showLiveCheckBox.IsCheckedChanged += (_, _) =>
+            {
+                bool enabled = showLiveCheckBox.IsChecked == true;
+                if (enabled && !packetReporter.Enabled)
+                {
+                    liveAssembler = null;
+                    livePacketIndex = 0;
+                    InitializeLivePreview();
+                }
+                packetReporter.Enabled = enabled;
+                _sessionState.ShowLiveDeconvolvedPage = enabled;
+                SaveSessionState();
+            };
+
+            var elapsed = Stopwatch.StartNew();
+            VbiDeconvolutionProgress lastProgress = default;
+            var reporter = new Progress<VbiDeconvolutionProgress>(value =>
+            {
+                lastProgress = value;
+                phaseText.Text = $"Live deconvolution — {value.CaptureFramesPerSecond:0.0} fps";
+                detailText.Text = $"Frames {value.ProcessedLines / Math.Max(input.LinesPerFrame, 1):N0}   Lines {value.ProcessedLines:N0}   Teletext {value.TeletextLines:N0}   Packets {value.PacketsWritten:N0}";
+                timingText.Text = $"Elapsed {FormatVbiDuration(elapsed.Elapsed)}   Device {input.SamplingRate:N0} Hz · {input.SamplesPerLine} samples/line · {input.LinesPerFrame} lines/frame";
+            });
+            Exception? failure = null;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await using var output = new FileStream(
+                        temporaryOutput, FileMode.CreateNew, FileAccess.Write,
+                        FileShare.None, 1024 * 1024,
+                        FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    await VbiDeconvolutionEngine.DeconvolveAsync(
+                        input, output, options, reporter, packetReporter, cancellation.Token);
+                }
+                catch (Exception ex) { failure = ex; }
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    allowClose = true;
+                    dialog.Close();
+                });
+            });
+            await dialog.ShowDialog(this);
+
+            try
+            {
+                long packetCount = File.Exists(temporaryOutput)
+                    ? new FileInfo(temporaryOutput).Length / 42
+                    : lastProgress.PacketsWritten;
+                if (failure is not null
+                    && failure is not OperationCanceledException
+                    && !cancellation.IsCancellationRequested)
+                {
+                    await ShowMessageAsync("Live VBI capture failed", failure.Message);
+                    return;
+                }
+                if (packetCount <= 0)
+                {
+                    await ShowMessageAsync("Live VBI capture", "Capture stopped without recovering any Teletext packets.");
+                    return;
+                }
+                if (!await ConfirmOpenPartialVbiAsync(packetCount)) return;
+
+                IStorageFile? saved = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+                {
+                    Title = "Save live deconvolved T42 capture (Cancel to open without saving)",
+                    SuggestedFileName = $"live-{DateTime.Now:yyyyMMdd-HHmmss}.t42",
+                    DefaultExtension = "t42",
+                    FileTypeChoices = new[]
+                    {
+                        new FilePickerFileType("Raw Teletext packet stream") { Patterns = new[] { "*.t42" } },
+                    },
+                });
+                string? savedPath = saved?.Path.IsFile == true ? saved.Path.LocalPath : null;
+                if (saved is not null && savedPath is null)
+                {
+                    await ShowMessageAsync("Save live capture", "The selected destination is not a local file.");
+                    return;
+                }
+                if (savedPath is not null) File.Copy(temporaryOutput, savedPath, overwrite: true);
+                string decodedPath = savedPath ?? temporaryOutput;
+                await using var decoded = File.OpenRead(decodedPath);
+                await LoadBroadcastStreamAsync(decoded, savedPath);
+                if (savedPath is not null) await RememberFileAsync(savedPath, broadcast: true);
+            }
+            finally
+            {
+                try { if (File.Exists(temporaryOutput)) File.Delete(temporaryOutput); } catch { }
+            }
+        }
+    }
+
+    private async Task<List<LiveCaptureInterface>> DiscoverLiveCaptureInterfacesAsync()
+    {
+        if (OperatingSystem.IsMacOS())
+            return DiscoverDeviceFiles(["cu.*", "tty.*"], "Serial");
+        if (OperatingSystem.IsLinux())
+            return DiscoverDeviceFiles(["vbi*"], "Video4Linux VBI");
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(_ffmpegPath))
+            return new List<LiveCaptureInterface>();
+
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = _ffmpegPath,
+                Arguments = "-hide_banner -list_devices true -f dshow -i dummy",
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+            };
+            using Process? process = Process.Start(startInfo);
+            if (process is null) return new List<LiveCaptureInterface>();
+            string output = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var devices = new List<LiveCaptureInterface>();
+            bool videoSection = false;
+            foreach (string line in output.Split('\n'))
+            {
+                if (line.Contains("DirectShow video devices", StringComparison.OrdinalIgnoreCase))
+                {
+                    videoSection = true;
+                    continue;
+                }
+                if (line.Contains("DirectShow audio devices", StringComparison.OrdinalIgnoreCase))
+                {
+                    videoSection = false;
+                    continue;
+                }
+                if (!videoSection) continue;
+                int firstQuote = line.IndexOf('"');
+                int lastQuote = line.LastIndexOf('"');
+                if (firstQuote < 0 || lastQuote <= firstQuote) continue;
+                string name = line[(firstQuote + 1)..lastQuote];
+                if (name.StartsWith('@')) continue;
+                devices.Add(new LiveCaptureInterface(name, name, "DirectShow"));
+            }
+            return devices.DistinctBy(item => item.Path).ToList();
+        }
+        catch
+        {
+            return new List<LiveCaptureInterface>();
+        }
+    }
+
+    private static List<LiveCaptureInterface> DiscoverDeviceFiles(
+        IReadOnlyList<string> patterns,
+        string kind)
+    {
+        var result = new List<LiveCaptureInterface>();
+        foreach (string pattern in patterns)
+        {
+            try
+            {
+                result.AddRange(Directory.EnumerateFiles("/dev", pattern)
+                    .Select(path => new LiveCaptureInterface(Path.GetFileName(path), path, kind)));
+            }
+            catch
+            {
+                // Missing permissions or a disappearing hot-plug interface should
+                // not prevent the dialog from listing the remaining devices.
+            }
+        }
+        return result
+            .GroupBy(item => item.Path, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     private async void OnOpenVbiCaptureClicked(object? sender, RoutedEventArgs e)
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -2491,8 +2902,10 @@ public partial class MainWindow : Window
             _sessionState.ShowLiveDeconvolvedPage = enabled;
             SaveSessionState();
         };
+        VbiDeconvolutionProgress lastProgress = default;
         var reporter = new Progress<VbiDeconvolutionProgress>(value =>
         {
+            lastProgress = value;
             progressBar.Value = value.Percent;
             phaseText.Text = $"Deconvolving with OpenCL — {value.Percent:0.0}%";
             detailText.Text = $"Lines {value.ProcessedLines:N0}/{value.TotalLines:N0}   Teletext {value.TeletextLines:N0}   Packets {value.PacketsWritten:N0}";
@@ -2530,13 +2943,55 @@ public partial class MainWindow : Window
             });
         });
         await progressDialog.ShowDialog(this);
+        bool openingPartialCapture = false;
+
+        void DiscardPartialPreview()
+        {
+            if (liveAssembler is null) return;
+            _store.Clear();
+            _broadcastPackets.Clear();
+            ClearBroadcastPane();
+            BroadcastInfoText.Text = "Full broadcast";
+            BroadcastFilePathText.Text = FormatFileFooter(null, 0);
+            if (_squashFileOpen)
+            {
+                SquashGrid.IsActive = true;
+                BroadcastGrid.IsActive = false;
+            }
+            UpdateWorkspacePaneVisibility();
+            UpdateWindowAndPaneTitles();
+            FitWindowToContent();
+        }
 
         try
         {
             if (failure is OperationCanceledException || cancellation.IsCancellationRequested)
             {
-                await ShowMessageAsync("VBI deconvolution", "Deconvolution was aborted.");
-                return;
+                packetReporter.Enabled = false;
+                long partialPacketCount = File.Exists(temporaryOutput)
+                    ? new FileInfo(temporaryOutput).Length / 42
+                    : lastProgress.PacketsWritten;
+                if (partialPacketCount <= 0)
+                {
+                    DiscardPartialPreview();
+                    await ShowMessageAsync("VBI deconvolution", "Deconvolution was aborted before any Teletext packets were recovered.");
+                    return;
+                }
+
+                bool openPartial = await ConfirmOpenPartialVbiAsync(partialPacketCount);
+                if (!openPartial)
+                {
+                    DiscardPartialPreview();
+                    return;
+                }
+
+                result = new VbiDeconvolutionResult(
+                    lastProgress.ProcessedLines,
+                    lastProgress.TeletextLines,
+                    partialPacketCount,
+                    "OpenCL — partial capture (aborted)");
+                openingPartialCapture = true;
+                failure = null;
             }
             if (failure is not null)
             {
@@ -2604,7 +3059,7 @@ public partial class MainWindow : Window
                 SaveSessionState();
             }
             await ShowMessageAsync(
-                "VBI deconvolution complete",
+                openingPartialCapture ? "Partial VBI capture opened" : "VBI deconvolution complete",
                 $"Recovered {result.PacketsWritten:N0} packets from {result.TeletextLines:N0} detected Teletext lines.\nOpenCL device: {result.OpenClDevice}");
         }
         finally
@@ -5230,6 +5685,45 @@ public partial class MainWindow : Window
         };
         closeButton.Click += (_, _) => dialog.Close();
         await dialog.ShowDialog(this);
+    }
+
+    private async Task<bool> ConfirmOpenPartialVbiAsync(long packetCount)
+    {
+        bool open = false;
+        var discardButton = new Button { Content = "Discard", Width = 90 };
+        var openButton = new Button { Content = "Open partial", Width = 110 };
+        var dialog = new Window
+        {
+            Title = "VBI deconvolution aborted",
+            Width = 460,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(22),
+                Spacing = 18,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = $"Deconvolution was aborted, but {packetCount:N0} Teletext packets were recovered. Open or save the partial capture?",
+                        TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { discardButton, openButton },
+                    },
+                },
+            },
+        };
+        discardButton.Click += (_, _) => dialog.Close();
+        openButton.Click += (_, _) => { open = true; dialog.Close(); };
+        await dialog.ShowDialog(this);
+        return open;
     }
 
     private async Task ShowEnhancementErrorAsync(

@@ -20,11 +20,11 @@ public static class VbiDeconvolutionEngine
         IVbiDecodedPacketProgress? decodedPackets,
         CancellationToken cancellationToken)
     {
-        if (!input.CanSeek) throw new ArgumentException("The VBI input stream must be seekable.", nameof(input));
+        bool liveInput = !input.CanSeek;
         int sampleBytes = options.IsUInt16 ? 2 : 1;
         int lineBytes = checked(options.LineLength * sampleBytes);
-        long totalPhysicalLines = input.Length / lineBytes;
-        long totalFields = totalPhysicalLines / options.FieldLines;
+        long totalPhysicalLines = liveInput ? 0 : input.Length / lineBytes;
+        long totalFields = liveInput ? 0 : totalPhysicalLines / options.FieldLines;
         int selectedPerField = options.FieldRangeEnd - options.FieldRangeStart;
         long totalLines = totalFields * selectedPerField;
         long remainder = totalPhysicalLines % options.FieldLines;
@@ -50,7 +50,8 @@ public static class VbiDeconvolutionEngine
         int fieldLine = 0;
         bool endOfInput = false;
         int batchSize = Math.Max(32, workerCount * 4);
-        input.Position = 0;
+        if (!liveInput) input.Position = 0;
+        var captureTimer = System.Diagnostics.Stopwatch.StartNew();
 
         async Task<List<byte[]>> ReadBatchAsync()
         {
@@ -145,7 +146,11 @@ public static class VbiDeconvolutionEngine
                     }
                 }
                 if ((processed & 31) == 0 || processed == totalLines)
-                    progress?.Report(new VbiDeconvolutionProgress(processed, totalLines, teletext, written));
+                    progress?.Report(new VbiDeconvolutionProgress(
+                        processed, totalLines, teletext, written,
+                        liveInput && captureTimer.Elapsed.TotalSeconds > 0
+                            ? processed / (double)options.FieldLines / captureTimer.Elapsed.TotalSeconds
+                            : 0));
             }
 
             currentLines = nextLines;
@@ -154,7 +159,11 @@ public static class VbiDeconvolutionEngine
         if (previewBatch.Count > 0 && decodedPackets?.IsEnabled == true)
             decodedPackets?.Report(previewBatch.ToArray());
         await output.FlushAsync(cancellationToken).ConfigureAwait(false);
-        progress?.Report(new VbiDeconvolutionProgress(processed, totalLines, teletext, written));
+        progress?.Report(new VbiDeconvolutionProgress(
+            processed, totalLines, teletext, written,
+            liveInput && captureTimer.Elapsed.TotalSeconds > 0
+                ? processed / (double)options.FieldLines / captureTimer.Elapsed.TotalSeconds
+                : 0));
         return new VbiDeconvolutionResult(processed, teletext, written,
             $"{matchers[0].DeviceDescription} ({workerCount} parallel OpenCL workers)");
         }

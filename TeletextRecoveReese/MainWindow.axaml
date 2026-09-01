@@ -15,7 +15,12 @@
                 <NativeMenu>
                     <NativeMenuItem Header="Open Squashed or Single…" Gesture="Meta+O" Click="OnNativeOpenSquashedClicked" />
                     <NativeMenuItem Header="Open Broadcast Stream…" Click="OnNativeOpenClicked" />
-                    <NativeMenuItem Header="Open VBI Capture…" Click="OnNativeOpenVbiCaptureClicked" />
+                    <NativeMenuItem Header="Open VBI Capture">
+                        <NativeMenu>
+                            <NativeMenuItem Header="From File…" Click="OnNativeOpenVbiCaptureClicked" />
+                            <NativeMenuItem Header="Live Capture…" Click="OnNativeOpenLiveVbiCaptureClicked" />
+                        </NativeMenu>
+                    </NativeMenuItem>
                     <NativeMenuItem Header="Open Recent"><NativeMenu /></NativeMenuItem>
                     <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Save" Gesture="Meta+S" Click="OnNativeSaveClicked" />
@@ -102,7 +107,10 @@
             <MenuItem Header="_File">
                 <MenuItem Header="Open _Squashed or Single..." InputGesture="Ctrl+O" Click="OnOpenSquashedClicked" />
                 <MenuItem Header="Open broadcast stream..." Click="OnOpenClicked" />
-                <MenuItem Header="Open _VBI Capture..." Click="OnOpenVbiCaptureClicked" />
+                <MenuItem Header="Open _VBI Capture">
+                    <MenuItem Header="From _File..." Click="OnOpenVbiCaptureClicked" />
+                    <MenuItem Header="_Live Capture..." Click="OnOpenLiveVbiCaptureClicked" />
+                </MenuItem>
                 <MenuItem x:Name="OpenRecentMenuItem" Header="Open _Recent" />
                 <Separator />
                 <MenuItem Header="_Save" InputGesture="Ctrl+S" Click="OnSaveClicked" />

@@ -15,7 +15,8 @@ public readonly record struct VbiDeconvolutionProgress(
     long ProcessedLines,
     long TotalLines,
     long TeletextLines,
-    long PacketsWritten)
+    long PacketsWritten,
+    double CaptureFramesPerSecond = 0)
 {
     public double Percent => TotalLines <= 0 ? 0 : ProcessedLines * 100.0 / TotalLines;
 }
