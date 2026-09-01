@@ -8,4 +8,8 @@
     <AssemblyName>TeletextRecoveReese.Core</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Assets/VbiPatterns/vhs/*.dat" />
+  </ItemGroup>
+
 </Project>

@@ -17,6 +17,8 @@ public class PageAssembler
     // magazine -> the instance currently being built (rows are still arriving for it)
     private readonly Dictionary<int, PageInstance> _inProgress = new();
 
+    public TeletextPage? LastUpdatedPage { get; private set; }
+
     public PageAssembler(PageStore store, bool decodeEnhancements = true)
     {
         _store = store;
@@ -32,6 +34,7 @@ public class PageAssembler
 
     public void Feed(byte[] raw42, int packetIndex = -1)
     {
+        LastUpdatedPage = null;
         if (raw42.Length != 42) return;
 
         var (mrag, mragBad) = DecodeNibblePair(raw42[0], raw42[1]);
@@ -53,6 +56,9 @@ public class PageAssembler
         {
             HandleEnhancementPacket(magazine, raw42, packetIndex);
         }
+
+        if (_inProgress.TryGetValue(magazine, out var updated))
+            LastUpdatedPage = updated.Page;
     }
 
     private void HandleHeader(int magazine, byte[] raw42, int packetIndex)

@@ -25,6 +25,31 @@ namespace TeletextRecoveReese;
 
 public partial class MainWindow : Window
 {
+    private sealed class ToggleablePacketProgress(
+        bool enabled,
+        Action<IReadOnlyList<byte[]>> handler)
+        : IVbiDecodedPacketProgress
+    {
+        private volatile bool _enabled = enabled;
+
+        public bool Enabled
+        {
+            get => _enabled;
+            set => _enabled = value;
+        }
+
+        public bool IsEnabled => _enabled;
+
+        public void Report(IReadOnlyList<byte[]> value)
+        {
+            if (!_enabled) return;
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (_enabled) handler(value);
+            }, DispatcherPriority.Background);
+        }
+    }
+
     private readonly PageStore _store = new();
     private readonly PageStore _squashStore = new();
     private readonly List<byte[]> _broadcastPackets = new();
@@ -175,7 +200,39 @@ public partial class MainWindow : Window
         public int? VideoAspectIndex { get; set; }
         public bool? ShowVideoBookmarks { get; set; }
         public List<RecentFileEntry> RecentFiles { get; set; } = new();
+        public List<CaptureCardPreset> CustomCaptureCardPresets { get; set; } = new();
+        public string? LastCaptureCardPresetName { get; set; }
+        public bool? ShowLiveDeconvolvedPage { get; set; }
     }
+
+    private sealed class CaptureCardPreset
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Chipset { get; set; } = string.Empty;
+        public string Interface { get; set; } = string.Empty;
+        public double SampleRate { get; set; }
+        public int LineLength { get; set; }
+        public int LineStart { get; set; }
+        public int LineStartEnd { get; set; }
+        public string SampleType { get; set; } = "UInt8";
+        public int FieldLines { get; set; }
+        public int FieldRangeStart { get; set; }
+        public int FieldRangeEnd { get; set; }
+        public bool IsBuiltIn { get; set; }
+
+        public override string ToString() => IsBuiltIn ? Name : $"{Name} (Custom)";
+    }
+
+    private static readonly CaptureCardPreset[] BuiltInCaptureCardPresets =
+    {
+        new() { Name = "SAA7131 PCI", Chipset = "SAA7131", Interface = "PCI", SampleRate = 27000000, LineLength = 2048, LineStart = 0, LineStartEnd = 60, SampleType = "UInt8", FieldLines = 17, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
+        new() { Name = "SAA7131 USB", Chipset = "SAA7131", Interface = "USB", SampleRate = 27000000, LineLength = 1440, LineStart = 0, LineStartEnd = 20, SampleType = "UInt8", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
+        new() { Name = "August VGB100 USB", Chipset = "August VGB100", Interface = "USB", SampleRate = 27000000, LineLength = 1440, LineStart = 0, LineStartEnd = 20, SampleType = "UInt8", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
+        new() { Name = "BT8x8 PCI", Chipset = "BT8x8", Interface = "PCI", SampleRate = 35468950, LineLength = 2048, LineStart = 60, LineStartEnd = 130, SampleType = "UInt8", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
+        new() { Name = "CX88 PCI", Chipset = "CX88", Interface = "PCI", SampleRate = 35468950, LineLength = 2048, LineStart = 90, LineStartEnd = 150, SampleType = "UInt8", FieldLines = 18, FieldRangeStart = 1, FieldRangeEnd = 17, IsBuiltIn = true },
+        new() { Name = "VHS-decode Full TBC", Chipset = "VHS-decode", Interface = "TBC file", SampleRate = 17730000, LineLength = 1135, LineStart = 160, LineStartEnd = 190, SampleType = "UInt16", FieldLines = 313, FieldRangeStart = 6, FieldRangeEnd = 22, IsBuiltIn = true },
+        new() { Name = "VHS-decode VBI-only TBC", Chipset = "VHS-decode", Interface = "TBC-VBI file", SampleRate = 17730000, LineLength = 1135, LineStart = 160, LineStartEnd = 190, SampleType = "UInt16", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
+    };
 
     private sealed class RecentFileEntry
     {
@@ -470,6 +527,245 @@ public partial class MainWindow : Window
             await SaveSessionStateAsync();
         }
         catch { }
+    }
+
+    private async void OnCaptureCardPresetsClicked(object? sender, RoutedEventArgs e) =>
+        await ShowCaptureCardPresetsAsync();
+
+    private async Task ShowCaptureCardPresetsAsync()
+    {
+        _sessionState.CustomCaptureCardPresets ??= new List<CaptureCardPreset>();
+        var presetList = new ListBox { Width = 270, MinHeight = 330 };
+        var details = new TextBlock
+        {
+            Width = 390,
+            MinHeight = 250,
+            FontFamily = new FontFamily("Menlo,DejaVu Sans Mono,monospace"),
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var newButton = new Button { Content = "New…", Width = 90 };
+        var deleteButton = new Button { Content = "Delete", Width = 90, IsEnabled = false };
+        var closeButton = new Button { Content = "Close", Width = 90, IsCancel = true };
+
+        List<CaptureCardPreset> GetPresets() => BuiltInCaptureCardPresets
+            .Concat(_sessionState.CustomCaptureCardPresets)
+            .ToList();
+
+        void RefreshPresets(CaptureCardPreset? select = null)
+        {
+            List<CaptureCardPreset> presets = GetPresets();
+            presetList.ItemsSource = presets;
+            presetList.SelectedItem = select ?? presets.FirstOrDefault();
+        }
+
+        void ShowDetails(CaptureCardPreset? preset)
+        {
+            if (preset is null)
+            {
+                details.Text = "Select a preset to see its capture parameters.";
+                deleteButton.IsEnabled = false;
+                return;
+            }
+
+            details.Text =
+                $"Name              {preset.Name}\n" +
+                $"Chipset / family  {preset.Chipset}\n" +
+                $"Interface         {preset.Interface}\n\n" +
+                $"Sample rate       {preset.SampleRate:N0} Hz\n" +
+                $"Line length       {preset.LineLength} samples\n" +
+                $"Line start range  {preset.LineStart}–{preset.LineStartEnd} (end exclusive)\n" +
+                $"Sample type       {preset.SampleType}\n" +
+                $"Field lines       {preset.FieldLines}\n" +
+                $"Field range       {preset.FieldRangeStart}–{preset.FieldRangeEnd} (end exclusive)\n\n" +
+                (preset.IsBuiltIn ? "Built-in preset" : "User preset — stored in session.json");
+            deleteButton.IsEnabled = !preset.IsBuiltIn;
+        }
+
+        var dialog = new Window
+        {
+            Title = "Capture card presets",
+            SizeToContent = SizeToContent.WidthAndHeight,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+        };
+        var columns = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,Auto"),
+            ColumnSpacing = 18,
+            Children = { presetList, details },
+        };
+        Grid.SetColumn(details, 1);
+        var buttons = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,* ,Auto") };
+        var editButtons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children = { newButton, deleteButton },
+        };
+        buttons.Children.Add(editButtons);
+        Grid.SetColumn(closeButton, 2);
+        buttons.Children.Add(closeButton);
+        dialog.Content = new StackPanel
+        {
+            Margin = new Thickness(18),
+            Spacing = 14,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "VBI capture card configurations",
+                    FontSize = 16,
+                    FontWeight = FontWeight.SemiBold,
+                },
+                columns,
+                buttons,
+            },
+        };
+
+        presetList.SelectionChanged += (_, _) =>
+            ShowDetails(presetList.SelectedItem as CaptureCardPreset);
+        newButton.Click += async (_, _) =>
+        {
+            CaptureCardPreset? preset = await ShowNewCaptureCardPresetAsync(dialog, GetPresets());
+            if (preset is null) return;
+            _sessionState.CustomCaptureCardPresets.Add(preset);
+            SaveSessionState();
+            RefreshPresets(preset);
+        };
+        deleteButton.Click += (_, _) =>
+        {
+            if (presetList.SelectedItem is not CaptureCardPreset { IsBuiltIn: false } preset) return;
+            _sessionState.CustomCaptureCardPresets.Remove(preset);
+            SaveSessionState();
+            RefreshPresets();
+        };
+        closeButton.Click += (_, _) => dialog.Close();
+
+        RefreshPresets();
+        await dialog.ShowDialog(this);
+    }
+
+    private static async Task<CaptureCardPreset?> ShowNewCaptureCardPresetAsync(
+        Window owner,
+        IReadOnlyCollection<CaptureCardPreset> existingPresets)
+    {
+        var name = new TextBox { Width = 250, PlaceholderText = "Card manufacturer and model" };
+        var chipset = new TextBox { Width = 250, PlaceholderText = "e.g. SAA7131" };
+        var cardInterface = new ComboBox
+        {
+            Width = 250,
+            ItemsSource = new[] { "PCI", "PCIe", "USB", "TBC file", "Other" },
+            SelectedIndex = 0,
+        };
+        var sampleRate = new NumericUpDown { Width = 250, Minimum = 1, Maximum = 1000000000, Value = 27000000, Increment = 1000 };
+        var lineLength = new NumericUpDown { Width = 250, Minimum = 1, Maximum = 100000, Value = 2048 };
+        var lineStart = new NumericUpDown { Width = 115, Minimum = 0, Maximum = 100000, Value = 0 };
+        var lineStartEnd = new NumericUpDown { Width = 115, Minimum = 1, Maximum = 100000, Value = 60 };
+        var sampleType = new ComboBox { Width = 250, ItemsSource = new[] { "UInt8", "UInt16" }, SelectedIndex = 0 };
+        var fieldLines = new NumericUpDown { Width = 250, Minimum = 1, Maximum = 10000, Value = 17 };
+        var fieldRangeStart = new NumericUpDown { Width = 115, Minimum = 0, Maximum = 10000, Value = 0 };
+        var fieldRangeEnd = new NumericUpDown { Width = 115, Minimum = 1, Maximum = 10000, Value = 16 };
+        var error = new TextBlock { Foreground = Brushes.OrangeRed, TextWrapping = TextWrapping.Wrap };
+        var saveButton = new Button { Content = "Save", Width = 90, IsDefault = true };
+        var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
+
+        var form = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("190,Auto"),
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"),
+            RowSpacing = 9,
+            ColumnSpacing = 12,
+        };
+        void AddField(int row, string label, Control control)
+        {
+            var text = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center };
+            Grid.SetRow(text, row);
+            form.Children.Add(text);
+            Grid.SetRow(control, row);
+            Grid.SetColumn(control, 1);
+            form.Children.Add(control);
+        }
+        static StackPanel RangeControls(Control start, Control end) => new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children = { start, new TextBlock { Text = "to", VerticalAlignment = VerticalAlignment.Center }, end },
+        };
+        AddField(0, "Card preset name", name);
+        AddField(1, "Chipset / family", chipset);
+        AddField(2, "Interface", cardInterface);
+        AddField(3, "Sample rate (Hz)", sampleRate);
+        AddField(4, "Line length (samples)", lineLength);
+        AddField(5, "Line start range", RangeControls(lineStart, lineStartEnd));
+        AddField(6, "Sample type", sampleType);
+        AddField(7, "Lines per field", fieldLines);
+        AddField(8, "Field range", RangeControls(fieldRangeStart, fieldRangeEnd));
+
+        var dialog = new Window
+        {
+            Title = "New capture card preset",
+            SizeToContent = SizeToContent.WidthAndHeight,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(18),
+                Width = 470,
+                Spacing = 12,
+                Children =
+                {
+                    form,
+                    error,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { cancelButton, saveButton },
+                    },
+                },
+            },
+        };
+
+        CaptureCardPreset? result = null;
+        saveButton.Click += (_, _) =>
+        {
+            string presetName = name.Text?.Trim() ?? string.Empty;
+            int start = (int)(lineStart.Value ?? 0);
+            int startEnd = (int)(lineStartEnd.Value ?? 0);
+            int rangeStart = (int)(fieldRangeStart.Value ?? 0);
+            int rangeEnd = (int)(fieldRangeEnd.Value ?? 0);
+            int lines = (int)(fieldLines.Value ?? 0);
+            if (string.IsNullOrWhiteSpace(presetName))
+                error.Text = "Enter a card preset name.";
+            else if (existingPresets.Any(p => string.Equals(p.Name, presetName, StringComparison.OrdinalIgnoreCase)))
+                error.Text = "A preset with this name already exists.";
+            else if (startEnd <= start)
+                error.Text = "Line start range end must be greater than its start.";
+            else if (rangeEnd <= rangeStart || rangeEnd > lines)
+                error.Text = "Field range must be non-empty and fit inside the number of field lines.";
+            else
+            {
+                result = new CaptureCardPreset
+                {
+                    Name = presetName,
+                    Chipset = chipset.Text?.Trim() ?? string.Empty,
+                    Interface = cardInterface.SelectedItem?.ToString() ?? "Other",
+                    SampleRate = (double)(sampleRate.Value ?? 27000000),
+                    LineLength = (int)(lineLength.Value ?? 2048),
+                    LineStart = start,
+                    LineStartEnd = startEnd,
+                    SampleType = sampleType.SelectedItem?.ToString() ?? "UInt8",
+                    FieldLines = lines,
+                    FieldRangeStart = rangeStart,
+                    FieldRangeEnd = rangeEnd,
+                };
+                dialog.Close();
+            }
+        };
+        cancelButton.Click += (_, _) => dialog.Close();
+        await dialog.ShowDialog(owner);
+        return result;
     }
 
     private async Task<FontChoice?> ShowFontPickerAsync()
@@ -1552,6 +1848,9 @@ public partial class MainWindow : Window
     private void OnNativeOpenClicked(object? sender, EventArgs e) =>
         OnOpenClicked(sender, new RoutedEventArgs());
 
+    private void OnNativeOpenVbiCaptureClicked(object? sender, EventArgs e) =>
+        OnOpenVbiCaptureClicked(sender, new RoutedEventArgs());
+
     private void OnNativeSaveClicked(object? sender, EventArgs e) =>
         OnSaveClicked(sender, new RoutedEventArgs());
 
@@ -1678,6 +1977,9 @@ public partial class MainWindow : Window
 
     private void OnNativeChooseFontClicked(object? sender, EventArgs e) =>
         OnChooseFontClicked(sender, new RoutedEventArgs());
+
+    private void OnNativeCaptureCardPresetsClicked(object? sender, EventArgs e) =>
+        OnCaptureCardPresetsClicked(sender, new RoutedEventArgs());
 
     private void SetX26EnhancementsSidebarVisibility(bool isVisible, bool resizeWindow)
     {
@@ -2043,6 +2345,334 @@ public partial class MainWindow : Window
         await using var stream = await file.OpenReadAsync();
         await LoadBroadcastStreamAsync(stream, displayPath);
         await RememberFileAsync(file.Path.IsFile ? file.Path.LocalPath : null, broadcast: true);
+    }
+
+    private async void OnOpenVbiCaptureClicked(object? sender, RoutedEventArgs e)
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Open raw VBI capture",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("Raw VBI captures") { Patterns = new[] { "*.vbi", "*.tbc" } },
+                FilePickerFileTypes.All,
+            },
+        });
+        IStorageFile? file = files.Count > 0 ? files[0] : null;
+        if (file is null) return;
+        if (!file.Path.IsFile)
+        {
+            await ShowMessageAsync("Open VBI Capture", "VBI deconvolution currently requires a local file.");
+            return;
+        }
+
+        CaptureCardPreset? preset = await ShowVbiPresetSelectionAsync();
+        if (preset is null) return;
+        bool showLivePreview = _sessionState.ShowLiveDeconvolvedPage ?? true;
+        _sessionState.LastCaptureCardPresetName = preset.Name;
+        SaveSessionState();
+
+        string inputPath = file.Path.LocalPath;
+        string temporaryOutput = Path.Combine(Path.GetTempPath(), $"TeletextRecoveReese-{Guid.NewGuid():N}.t42");
+        using var cancellation = new CancellationTokenSource();
+        var phaseText = new TextBlock { Text = "Preparing OpenCL deconvolution…", TextWrapping = TextWrapping.Wrap };
+        var detailText = new TextBlock { Foreground = Brushes.LightGray };
+        var timingText = new TextBlock { Text = "Elapsed 00:00:00   Expected: calculating…", Foreground = Brushes.LightGray };
+        var showLiveCheckBox = new CheckBox
+        {
+            Content = "Show deconvolved page",
+            IsChecked = showLivePreview,
+        };
+        var progressBar = new ProgressBar { Width = 480, Minimum = 0, Maximum = 100 };
+        var abortButton = new Button { Content = "Abort", Width = 90 };
+        Grid.SetColumn(abortButton, 1);
+        var progressDialog = new Window
+        {
+            Title = "Deconvolving VBI capture",
+            SizeToContent = SizeToContent.WidthAndHeight,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Width = 500,
+                Margin = new Thickness(18),
+                Spacing = 12,
+                Children =
+                {
+                    phaseText,
+                    progressBar,
+                    detailText,
+                    timingText,
+                    new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                        Children =
+                        {
+                            showLiveCheckBox,
+                            abortButton,
+                        },
+                    },
+                },
+            },
+        };
+        bool allowClose = false;
+        progressDialog.Closing += (_, args) =>
+        {
+            if (allowClose) return;
+            args.Cancel = true;
+            cancellation.Cancel();
+            abortButton.IsEnabled = false;
+            phaseText.Text = "Aborting…";
+        };
+        abortButton.Click += (_, _) =>
+        {
+            cancellation.Cancel();
+            abortButton.IsEnabled = false;
+            phaseText.Text = "Aborting…";
+        };
+
+        VbiDeconvolutionResult? result = null;
+        Exception? failure = null;
+        var elapsedTimer = Stopwatch.StartNew();
+        PageAssembler? liveAssembler = null;
+        int livePacketIndex = 0;
+        void InitializeLivePreview()
+        {
+            if (liveAssembler is not null) return;
+            _store.Clear();
+            _broadcastPackets.Clear();
+            ClearBroadcastPane();
+            _broadcastFileOpen = true;
+            BroadcastPaneGrid.IsVisible = true;
+            BroadcastGrid.IsActive = true;
+            SquashGrid.IsActive = false;
+            SquashGrid.ClearSelection();
+            BroadcastInfoText.Text = $"Full broadcast — {Path.GetFileName(inputPath)}";
+            BroadcastFilePathText.Text = $"{Path.GetFileName(inputPath)} — live deconvolution";
+            UpdateWorkspacePaneVisibility();
+            UpdateG0SubsetMenuChecks();
+            FitWindowToContent();
+            liveAssembler = new PageAssembler(_store, decodeEnhancements: false);
+        }
+        var packetReporter = new ToggleablePacketProgress(showLivePreview, packets =>
+        {
+            if (liveAssembler is null) InitializeLivePreview();
+            TeletextPage? latestPage = null;
+            foreach (byte[] packet in packets)
+            {
+                _broadcastPackets.Add(packet);
+                liveAssembler!.Feed(packet, livePacketIndex++);
+                latestPage = liveAssembler.LastUpdatedPage ?? latestPage;
+            }
+            if (latestPage is not null)
+            {
+                ApplyFileG0SubsetToPage(latestPage, broadcast: true);
+                BroadcastGrid.Page = latestPage;
+                BroadcastGrid.InvalidateVisual();
+                BroadcastFilePathText.Text =
+                    $"{Path.GetFileName(inputPath)} — live — {latestPage.Magazine}{latestPage.PageNumber:X2}-{latestPage.SubPage:X4} — {_broadcastPackets.Count:N0} packets";
+            }
+        });
+        if (showLivePreview) InitializeLivePreview();
+        showLiveCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            bool enabled = showLiveCheckBox.IsChecked == true;
+            if (enabled && !packetReporter.Enabled)
+            {
+                // Packets are deliberately dropped while preview is disabled. Start
+                // a fresh live assembler so later body rows cannot attach to a page
+                // whose intervening header was skipped.
+                liveAssembler = null;
+                livePacketIndex = 0;
+                InitializeLivePreview();
+            }
+            packetReporter.Enabled = enabled;
+            _sessionState.ShowLiveDeconvolvedPage = enabled;
+            SaveSessionState();
+        };
+        var reporter = new Progress<VbiDeconvolutionProgress>(value =>
+        {
+            progressBar.Value = value.Percent;
+            phaseText.Text = $"Deconvolving with OpenCL — {value.Percent:0.0}%";
+            detailText.Text = $"Lines {value.ProcessedLines:N0}/{value.TotalLines:N0}   Teletext {value.TeletextLines:N0}   Packets {value.PacketsWritten:N0}";
+            TimeSpan elapsed = elapsedTimer.Elapsed;
+            if (value.ProcessedLines > 0 && value.TotalLines > 0)
+            {
+                double totalSeconds = elapsed.TotalSeconds * value.TotalLines / value.ProcessedLines;
+                TimeSpan expectedTotal = TimeSpan.FromSeconds(Math.Max(totalSeconds, 0));
+                TimeSpan remaining = expectedTotal > elapsed ? expectedTotal - elapsed : TimeSpan.Zero;
+                timingText.Text = $"Elapsed {FormatVbiDuration(elapsed)}   Expected {FormatVbiDuration(expectedTotal)}   Remaining {FormatVbiDuration(remaining)}";
+            }
+            else
+            {
+                timingText.Text = $"Elapsed {FormatVbiDuration(elapsed)}   Expected: calculating…";
+            }
+        });
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await using var input = new FileStream(inputPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                await using var output = new FileStream(temporaryOutput, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                var options = new VbiCaptureOptions(
+                    preset.Name, preset.SampleRate, preset.LineLength, preset.LineStart,
+                    preset.LineStartEnd, preset.SampleType == "UInt16", preset.FieldLines,
+                    preset.FieldRangeStart, preset.FieldRangeEnd);
+                result = await VbiDeconvolutionEngine.DeconvolveAsync(
+                    input, output, options, reporter, packetReporter, cancellation.Token);
+            }
+            catch (Exception ex) { failure = ex; }
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                allowClose = true;
+                progressDialog.Close();
+            });
+        });
+        await progressDialog.ShowDialog(this);
+
+        try
+        {
+            if (failure is OperationCanceledException || cancellation.IsCancellationRequested)
+            {
+                await ShowMessageAsync("VBI deconvolution", "Deconvolution was aborted.");
+                return;
+            }
+            if (failure is not null)
+            {
+                await ShowMessageAsync("VBI deconvolution failed", failure.Message);
+                return;
+            }
+            if (result is null || result.PacketsWritten == 0)
+            {
+                await ShowMessageAsync("VBI deconvolution", "No Teletext packets were recovered. Check the capture-card preset and input format.");
+                return;
+            }
+
+            IStorageFile? savedOutputFile = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = "Save deconvolved T42 capture (Cancel to open without saving)",
+                SuggestedFileName = $"{Path.GetFileNameWithoutExtension(inputPath)}.t42",
+                DefaultExtension = "t42",
+                FileTypeChoices = new[]
+                {
+                    new FilePickerFileType("Raw Teletext packet stream") { Patterns = new[] { "*.t42" } },
+                },
+            });
+            string? savedOutputPath = savedOutputFile?.Path.IsFile == true
+                ? savedOutputFile.Path.LocalPath
+                : null;
+            if (savedOutputFile is not null && savedOutputPath is null)
+            {
+                await ShowMessageAsync("Save deconvolved capture", "The selected destination is not a local file.");
+                return;
+            }
+            if (savedOutputPath is not null
+                && string.Equals(Path.GetFullPath(savedOutputPath), Path.GetFullPath(inputPath), StringComparison.OrdinalIgnoreCase))
+            {
+                await ShowMessageAsync("Save deconvolved capture", "The output file cannot be the same as the source VBI capture.");
+                return;
+            }
+
+            if (savedOutputPath is not null)
+            {
+                try
+                {
+                    File.Copy(temporaryOutput, savedOutputPath, overwrite: true);
+                }
+                catch (Exception ex)
+                {
+                    await ShowMessageAsync("Could not save deconvolved capture", ex.Message);
+                    return;
+                }
+            }
+
+            CaptureRecentFilePositions();
+            string decodedPath = savedOutputPath ?? temporaryOutput;
+            await using var decoded = File.OpenRead(decodedPath);
+            await LoadBroadcastStreamAsync(decoded, savedOutputPath ?? inputPath);
+            if (savedOutputPath is not null)
+            {
+                await RememberFileAsync(savedOutputPath, broadcast: true);
+            }
+            else
+            {
+                // A raw VBI source cannot be restored later by the ordinary T42
+                // session loader. Keep its visible source name only for this run.
+                _broadcastFilePath = null;
+                _sessionState.BroadcastFilePath = null;
+                SaveSessionState();
+            }
+            await ShowMessageAsync(
+                "VBI deconvolution complete",
+                $"Recovered {result.PacketsWritten:N0} packets from {result.TeletextLines:N0} detected Teletext lines.\nOpenCL device: {result.OpenClDevice}");
+        }
+        finally
+        {
+            try { if (File.Exists(temporaryOutput)) File.Delete(temporaryOutput); } catch { }
+        }
+    }
+
+    private static string FormatVbiDuration(TimeSpan value)
+    {
+        if (value.TotalDays >= 1)
+            return $"{(int)value.TotalDays}.{value:hh\\:mm\\:ss}";
+        return value.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+    }
+
+    private async Task<CaptureCardPreset?> ShowVbiPresetSelectionAsync()
+    {
+        _sessionState.CustomCaptureCardPresets ??= new List<CaptureCardPreset>();
+        List<CaptureCardPreset> presets = BuiltInCaptureCardPresets.Concat(_sessionState.CustomCaptureCardPresets).ToList();
+        var combo = new ComboBox { Width = 420, ItemsSource = presets };
+        combo.SelectedItem = presets.FirstOrDefault(p => string.Equals(p.Name, _sessionState.LastCaptureCardPresetName, StringComparison.OrdinalIgnoreCase))
+                             ?? presets.FirstOrDefault();
+        var details = new TextBlock { Width = 420, Foreground = Brushes.LightGray, TextWrapping = TextWrapping.Wrap };
+        void UpdateDetails()
+        {
+            if (combo.SelectedItem is not CaptureCardPreset p) return;
+            details.Text = $"{p.SampleRate:N0} Hz · {p.LineLength} samples · {p.SampleType}\nLine start {p.LineStart}–{p.LineStartEnd} · field {p.FieldRangeStart}–{p.FieldRangeEnd} of {p.FieldLines}";
+        }
+        combo.SelectionChanged += (_, _) => UpdateDetails();
+        var openButton = new Button { Content = "Deconvolve", Width = 105, IsDefault = true };
+        var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
+        var dialog = new Window
+        {
+            Title = "Open VBI capture",
+            SizeToContent = SizeToContent.WidthAndHeight,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Width = 440,
+                Margin = new Thickness(18),
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock { Text = "Capture card configuration", FontSize = 16, FontWeight = FontWeight.SemiBold },
+                    combo,
+                    details,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { cancelButton, openButton },
+                    },
+                },
+            },
+        };
+        CaptureCardPreset? result = null;
+        openButton.Click += (_, _) =>
+        {
+            if (combo.SelectedItem is CaptureCardPreset selected)
+                result = selected;
+            dialog.Close();
+        };
+        cancelButton.Click += (_, _) => dialog.Close();
+        UpdateDetails();
+        await dialog.ShowDialog(this);
+        return result;
     }
 
     private async void OnOpenSquashedClicked(object? sender, RoutedEventArgs e) =>

@@ -11,8 +11,8 @@ the best surviving parts into a new, editable `.t42` stream.
 ## Download
 
 <p align="center">
-  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.3-beta">
-    <img src="https://img.shields.io/badge/Download_latest_release-0.3_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.3 beta">
+  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.4-beta">
+    <img src="https://img.shields.io/badge/Download_latest_release-0.4_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.4 beta">
   </a>
 </p>
 
@@ -173,7 +173,7 @@ dotnet build TeletextRecoveReese.sln
 
 ## Status
 
-- Current version: **0.3 beta**
+- Current version: **0.4 beta**
 - Actively developed and used for real restoration work.
 - Core `.t42` loading, comparison, editing, squashing, and export are available.
 - Complete EN 300 706 coverage and broader interoperability testing are ongoing.
