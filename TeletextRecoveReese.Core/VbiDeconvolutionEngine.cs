@@ -5,6 +5,8 @@ namespace TeletextRecoveReese.Core;
 public static class VbiDeconvolutionEngine
 {
     private const double TeletextBitRate = 6_937_500.0;
+    private const int TeletextPacketBits = 16 + 8 + 42 * 8;
+    private const int DecoderInputBits = 368;
     public static readonly bool UseLegacyFixedDetectionForTest = false;
 
     public static string ValidateOpenClBackend()
@@ -17,7 +19,8 @@ public static class VbiDeconvolutionEngine
         byte[] rawFrame,
         VbiCaptureOptions options,
         int lineCount,
-        int maximumOffsetSamples = 300)
+        int maximumOffsetSamples = 300,
+        int lineMask = -1)
     {
         int sampleBytes = options.IsUInt16 ? 2 : 1;
         int lineBytes = checked(options.LineLength * sampleBytes);
@@ -26,16 +29,22 @@ public static class VbiDeconvolutionEngine
         if (availableLines <= 0) return offsets;
 
         VbiResamplePlan plan = CreateResamplePlan(options);
-        // PrepareLine reports the beginning of the CRI/FC pattern. That position
-        // corresponds to the orange (start) marker, not the cyan end marker.
-        int targetPosition = options.LineStart;
+        // Keep the detected CRI/FC near the middle of the shifted search window.
+        // Aligning it to the left edge leaves no tolerance when VHS time-base drift
+        // moves the next frame even one sample earlier, which disproportionately
+        // corrupts body/control bytes while Hamming-protected headers still survive.
+        int targetPosition = options.LineStart
+            + (options.LineStartEnd - options.LineStart) / 2;
         for (int line = 0; line < availableLines; line++)
         {
+            if ((lineMask & (1 << line)) == 0) continue;
             byte[] rawLine = rawFrame.AsSpan(line * lineBytes, lineBytes).ToArray();
             foreach (int searchOffset in EnumerateSearchOffsets(maximumOffsetSamples))
             {
-                float[]? prepared = PrepareLine(
-                    rawLine, options, plan, searchOffset, out int detectedStartSample);
+                PreparedLine? prepared = PrepareLine(
+                    rawLine, options, plan, searchOffset,
+                    out int detectedStartSample,
+                    allowClippedClockRunIn: true);
                 if (prepared is null) continue;
                 offsets[line] = Math.Clamp(
                     detectedStartSample - targetPosition,
@@ -55,6 +64,44 @@ public static class VbiDeconvolutionEngine
                 yield return -offset;
             }
         }
+    }
+
+    public static VbiLineTiming?[] FindLineTimings(
+        byte[] rawFrame,
+        VbiCaptureOptions options,
+        IReadOnlyList<int> searchOffsets,
+        IReadOnlyList<double>? manualPacketSpanSamples,
+        int lineCount,
+        int lineMask = -1)
+    {
+        int sampleBytes = options.IsUInt16 ? 2 : 1;
+        int lineBytes = checked(options.LineLength * sampleBytes);
+        int availableLines = Math.Min(lineCount, rawFrame.Length / lineBytes);
+        var timings = new VbiLineTiming?[lineCount];
+        if (availableLines <= 0) return timings;
+
+        VbiResamplePlan plan = CreateResamplePlan(options);
+        for (int line = 0; line < availableLines; line++)
+        {
+            if ((lineMask & (1 << line)) == 0) continue;
+            byte[] rawLine = rawFrame.AsSpan(line * lineBytes, lineBytes).ToArray();
+            int searchOffset = line < searchOffsets.Count ? searchOffsets[line] : 0;
+            double manualPacketSpanSample = manualPacketSpanSamples is not null
+                                         && line < manualPacketSpanSamples.Count
+                ? manualPacketSpanSamples[line]
+                : -1;
+            PreparedLine? prepared = PrepareLine(
+                rawLine, options, plan, searchOffset,
+                out int detectedStartSample,
+                out int detectedEndSample,
+                manualPacketSpanSamples: manualPacketSpanSample);
+            if (prepared is null || detectedEndSample < 0) continue;
+            timings[line] = new VbiLineTiming(
+                detectedStartSample,
+                detectedEndSample,
+                prepared.Pll is not null);
+        }
+        return timings;
     }
 
     public static async Task<VbiDeconvolutionResult> DeconvolveAsync(
@@ -119,9 +166,9 @@ public static class VbiDeconvolutionEngine
             return lines;
         }
 
-        Task<float[]?[]> PrepareBatchAsync(IReadOnlyList<CapturedLine> lines) => Task.Run(() =>
+        Task<PreparedLine?[]> PrepareBatchAsync(IReadOnlyList<CapturedLine> lines) => Task.Run(() =>
         {
-            var prepared = new float[]?[lines.Count];
+            var prepared = new PreparedLine?[lines.Count];
             if (deconvolutionControl?.Enabled == false)
                 return prepared;
             Parallel.For(
@@ -135,26 +182,35 @@ public static class VbiDeconvolutionEngine
                 index =>
                 {
                     CapturedLine line = lines[index];
+                    if (deconvolutionControl is not null
+                        && !deconvolutionControl.GetLineDecodingEnabled(line.FieldLine))
+                        return;
                     int searchOffset = 0;
+                    double manualPacketSpanSamples = -1;
                     if (deconvolutionControl is not null)
+                    {
                         searchOffset = deconvolutionControl.GetClockSearchOffset(line.FieldLine);
+                        manualPacketSpanSamples = deconvolutionControl.GetManualPacketSpanSamples(
+                            line.FieldLine);
+                    }
                     prepared[index] = PrepareLine(
-                        line.Raw, options, resamplePlan, searchOffset);
+                        line.Raw, options, resamplePlan, searchOffset,
+                        manualPacketSpanSamples: manualPacketSpanSamples);
                 });
             return prepared;
         }, cancellationToken);
 
         List<CapturedLine> currentLines = await ReadBatchAsync().ConfigureAwait(false);
-        Task<float[]?[]>? currentPreparation = currentLines.Count > 0
+        Task<PreparedLine?[]>? currentPreparation = currentLines.Count > 0
             ? PrepareBatchAsync(currentLines)
             : null;
         while (currentPreparation is not null)
         {
-            float[]?[] preparedLines = await currentPreparation.ConfigureAwait(false);
+            PreparedLine?[] preparedLines = await currentPreparation.ConfigureAwait(false);
             // Start CPU preparation of the next batch before matching this batch on
             // OpenCL. This keeps the CPU and GPU busy at the same time.
             List<CapturedLine> nextLines = await ReadBatchAsync().ConfigureAwait(false);
-            Task<float[]?[]>? nextPreparation = nextLines.Count > 0
+            Task<PreparedLine?[]>? nextPreparation = nextLines.Count > 0
                 ? PrepareBatchAsync(nextLines)
                 : null;
 
@@ -168,8 +224,9 @@ public static class VbiDeconvolutionEngine
                     int index = Interlocked.Increment(ref nextDecodeIndex);
                     if (index >= preparedLines.Length) break;
                     cancellationToken.ThrowIfCancellationRequested();
-                    float[]? bits = preparedLines[index];
-                    if (bits is null) continue;
+                    PreparedLine? prepared = preparedLines[index];
+                    if (prepared is null) continue;
+                    float[] bits = prepared.Pll ?? prepared.Nominal;
                     matcher.UploadLine(bits);
                     byte[] packet = DecodePacket(matcher, bits);
                     if (packet.Length == 42) decoded[index] = packet;
@@ -232,7 +289,9 @@ public static class VbiDeconvolutionEngine
         }
     }
 
-    private static byte[] DecodePacket(OpenClVhsPatternMatcher matcher, float[] bits)
+    private static byte[] DecodePacket(
+        OpenClVhsPatternMatcher matcher,
+        float[] bits)
     {
         byte[] first = matcher.MatchHamming(16, 3);
         int lo = Hamming.Decode84(first[0]).Value;
@@ -283,6 +342,7 @@ public static class VbiDeconvolutionEngine
 
     private sealed record VbiResamplePlan(int Length, int[] Left, float[] Fraction);
     private sealed record CapturedLine(byte[] Raw, int FieldLine);
+    private sealed record PreparedLine(float[] Nominal, float[]? Pll);
 
     private static VbiResamplePlan CreateResamplePlan(VbiCaptureOptions options)
     {
@@ -300,21 +360,42 @@ public static class VbiDeconvolutionEngine
         return new VbiResamplePlan(length, left, fraction);
     }
 
-    private static float[]? PrepareLine(
+    private static PreparedLine? PrepareLine(
         byte[] raw,
         VbiCaptureOptions options,
         VbiResamplePlan plan,
-        int searchOffsetSamples = 0)
-        => PrepareLine(raw, options, plan, searchOffsetSamples, out _);
+        int searchOffsetSamples = 0,
+        double manualPacketSpanSamples = -1,
+        bool allowClippedClockRunIn = false)
+        => PrepareLine(
+            raw, options, plan, searchOffsetSamples, out _, out _,
+            manualPacketSpanSamples, allowClippedClockRunIn);
 
-    private static float[]? PrepareLine(
+    private static PreparedLine? PrepareLine(
         byte[] raw,
         VbiCaptureOptions options,
         VbiResamplePlan plan,
         int searchOffsetSamples,
-        out int detectedStartSample)
+        out int detectedStartSample,
+        double manualPacketSpanSamples = -1,
+        bool allowClippedClockRunIn = false)
+        => PrepareLine(
+            raw, options, plan, searchOffsetSamples,
+            out detectedStartSample, out _, manualPacketSpanSamples,
+            allowClippedClockRunIn);
+
+    private static PreparedLine? PrepareLine(
+        byte[] raw,
+        VbiCaptureOptions options,
+        VbiResamplePlan plan,
+        int searchOffsetSamples,
+        out int detectedStartSample,
+        out int detectedEndSample,
+        double manualPacketSpanSamples = -1,
+        bool allowClippedClockRunIn = false)
     {
         detectedStartSample = -1;
+        detectedEndSample = -1;
         float[] resampled = ArrayPool<float>.Shared.Rent(plan.Length);
         try
         {
@@ -345,13 +426,31 @@ public static class VbiDeconvolutionEngine
             : searchOffsetSamples;
         int shiftedStart = options.LineStart + effectiveSearchOffset;
         int shiftedEnd = options.LineStartEnd + effectiveSearchOffset;
+        if ((allowClippedClockRunIn || shiftedStart < 0)
+            && TryFindClippedClockRunIn(
+                resampled, plan.Length, options,
+                out int clippedStart,
+                out float clippedLow,
+                out float clippedHigh))
+        {
+            PreparedLine? clipped = BuildPreparedLine(
+                resampled, plan.Length, clippedStart, bitWidth,
+                manualPacketSpanSamples, clippedLow, clippedHigh,
+                out detectedEndSample);
+            if (clipped is not null)
+            {
+                detectedStartSample = (int)Math.Round(
+                    clippedStart * bitWidth / 8.0);
+                return clipped;
+            }
+        }
         int searchStart = Math.Max(0, (int)Math.Floor(shiftedStart * 8 / bitWidth));
         int searchEnd = Math.Min(plan.Length - 24 * 8 - 1, (int)Math.Ceiling(shiftedEnd * 8 / bitWidth));
         if (searchEnd <= searchStart) return null;
 
         if (!UseLegacyFixedDetectionForTest)
         {
-            int varianceEnd = Math.Min(plan.Length, searchEnd + 368 * 8);
+            int varianceEnd = Math.Min(plan.Length, searchEnd + DecoderInputBits * 8);
             double sampleSum = 0;
             double squareSum = 0;
             int varianceCount = varianceEnd - searchStart;
@@ -461,7 +560,7 @@ public static class VbiDeconvolutionEngine
             }
             if (score < bestCriFcScore) { bestCriFcScore = score; bestStart = clockStart + roll; }
         }
-        if (bestStart < 0 || bestStart + 368 * 8 > plan.Length) return null;
+        if (bestStart < 0 || bestStart + 24 * 8 > plan.Length) return null;
 
         // Do not launch the very expensive 8K/32K/64K-pattern OpenCL matcher for
         // arbitrary VBI noise. vhs-teletext performs the same kind of early
@@ -472,10 +571,7 @@ public static class VbiDeconvolutionEngine
         float criFcMaximum = float.MinValue;
         for (int bit = 0; bit < criFcBits.Length; bit++)
         {
-            float sum = 0;
-            int offset = bestStart + bit * 8;
-            for (int sample = 0; sample < 8; sample++) sum += resampled[offset + sample];
-            float average = sum / 8;
+            float average = AverageNominalBit(resampled, bestStart, bit);
             criFcBits[bit] = average;
             criFcMinimum = Math.Min(criFcMinimum, average);
             criFcMaximum = Math.Max(criFcMaximum, average);
@@ -503,24 +599,232 @@ public static class VbiDeconvolutionEngine
             : options.CriFcConfidenceThreshold;
         if (criFcConfidence < criFcConfidenceThreshold) return null;
 
-        var bits = new float[368];
-        float bitsMin = float.MaxValue, bitsMax = float.MinValue;
-        for (int bit = 0; bit < bits.Length; bit++)
-        {
-            float sum = 0;
-            for (int sample = 0; sample < 8; sample++) sum += resampled[bestStart + bit * 8 + sample];
-            bits[bit] = sum / 8;
-            bitsMin = Math.Min(bitsMin, bits[bit]); bitsMax = Math.Max(bitsMax, bits[bit]);
-        }
-        float range = Math.Max(bitsMax - bitsMin, 1);
-        for (int i = 0; i < bits.Length; i++) bits[i] = Math.Clamp((bits[i] - bitsMin) * 255f / range, 0, 255);
+        PreparedLine? preparedLine = BuildPreparedLine(
+            resampled, plan.Length, bestStart, bitWidth,
+            manualPacketSpanSamples, null, null,
+            out detectedEndSample);
+        if (preparedLine is null) return null;
         detectedStartSample = (int)Math.Round(bestStart * bitWidth / 8.0);
-        return bits;
+        return preparedLine;
         }
         finally
         {
             ArrayPool<float>.Shared.Return(resampled);
         }
+    }
+
+    private static bool TryFindClippedClockRunIn(
+        float[] samples,
+        int sampleCount,
+        VbiCaptureOptions options,
+        out int packetStart,
+        out float signalLow,
+        out float signalHigh)
+    {
+        packetStart = 0;
+        signalLow = 0;
+        signalHigh = 0;
+        ReadOnlySpan<sbyte> framingCode = VbiPatternResources.IdealCriFc[16..24];
+        const int samplesPerBit = VbiPatternResources.ObservedCriFcSamplesPerBit;
+        const int clockRunInSamples = 16 * samplesPerBit;
+        const double minimumConfidence = 0.62;
+        double bestConfidence = double.MinValue;
+        float bestRange = 0;
+        Span<float> bitLevels = stackalloc float[8];
+
+        // A clipped candidate must begin before the captured line, while its full
+        // framing byte must remain visible. Restricting the search to this narrow
+        // region prevents packet data farther right from becoming a false CRI lock.
+        for (int candidateStart = -clockRunInSamples + 1;
+             candidateStart < 0;
+             candidateStart++)
+        {
+            int framingStart = candidateStart + clockRunInSamples;
+            if (framingStart < 0
+                || framingStart + framingCode.Length * samplesPerBit > sampleCount)
+                continue;
+
+            float minimum = float.MaxValue;
+            float maximum = float.MinValue;
+            for (int bit = 0; bit < bitLevels.Length; bit++)
+            {
+                float sum = 0;
+                int offset = framingStart + bit * samplesPerBit;
+                for (int sample = 0; sample < samplesPerBit; sample++)
+                    sum += samples[offset + sample];
+                float average = sum / samplesPerBit;
+                bitLevels[bit] = average;
+                minimum = Math.Min(minimum, average);
+                maximum = Math.Max(maximum, average);
+            }
+
+            float range = maximum - minimum;
+            if (range < options.CriFcRangeThreshold) continue;
+            float midpoint = (minimum + maximum) * 0.5f;
+            double correlation = 0;
+            double energy = 0;
+            for (int bit = 0; bit < bitLevels.Length; bit++)
+            {
+                double centered = bitLevels[bit] - midpoint;
+                correlation += centered * framingCode[bit];
+                energy += Math.Abs(centered);
+            }
+            double confidence = energy > 0 ? correlation / energy : 0;
+            if (confidence < minimumConfidence
+                || confidence < bestConfidence
+                || confidence == bestConfidence && range <= bestRange)
+                continue;
+
+            bestConfidence = confidence;
+            bestRange = range;
+            packetStart = candidateStart;
+            signalLow = minimum;
+            signalHigh = maximum;
+        }
+        return bestConfidence >= minimumConfidence;
+    }
+
+    private static PreparedLine? BuildPreparedLine(
+        float[] samples,
+        int sampleCount,
+        int start,
+        double bitWidth,
+        double manualPacketSpanSamples,
+        float? clippedSignalLow,
+        float? clippedSignalHigh,
+        out int detectedEndSample)
+    {
+        detectedEndSample = -1;
+        double manualEndPosition = manualPacketSpanSamples >= 0
+            ? start + manualPacketSpanSamples * 8.0 / bitWidth
+            : -1;
+        double[]? adjustedBoundaries = manualEndPosition > start
+            ? BuildManualEndBoundaries(
+                start, manualEndPosition, DecoderInputBits, sampleCount)
+            : null;
+        if (adjustedBoundaries is null && start + DecoderInputBits * 8 > sampleCount)
+            return null;
+
+        var nominalBits = new float[DecoderInputBits];
+        for (int bit = 0; bit < nominalBits.Length; bit++)
+        {
+            int bitStart = start + bit * 8;
+            if (bitStart >= 0)
+            {
+                nominalBits[bit] = AverageNominalBit(samples, start, bit);
+                continue;
+            }
+
+            // Only the leading clock run-in can be outside the captured line.
+            // Recreate it at the levels measured from the visible framing byte;
+            // useful packet bytes remain sampled from the real signal.
+            if (bit >= 16
+                || clippedSignalLow is not float low
+                || clippedSignalHigh is not float high)
+                return null;
+            nominalBits[bit] = VbiPatternResources.IdealCriFc[bit] > 0
+                ? high
+                : low;
+        }
+        NormalizeBits(nominalBits);
+
+        float[]? adjustedBits = null;
+        if (adjustedBoundaries is not null)
+        {
+            adjustedBits = new float[DecoderInputBits];
+            for (int bit = 0; bit < adjustedBits.Length; bit++)
+            {
+                if (adjustedBoundaries[bit] < 0)
+                {
+                    if (bit >= 16
+                        || clippedSignalLow is not float low
+                        || clippedSignalHigh is not float high)
+                        return null;
+                    adjustedBits[bit] = VbiPatternResources.IdealCriFc[bit] > 0
+                        ? high
+                        : low;
+                    continue;
+                }
+                adjustedBits[bit] = AveragePllBit(
+                    samples, adjustedBoundaries[bit], adjustedBoundaries[bit + 1],
+                    sampleCount);
+            }
+            NormalizeBits(adjustedBits);
+        }
+
+        // The matcher keeps eight extra working bits for pattern context, but the
+        // physical line packet itself ends after CRI + framing code + 42 bytes.
+        double endPosition = adjustedBoundaries is not null
+            ? adjustedBoundaries[TeletextPacketBits]
+            : start + TeletextPacketBits * 8.0;
+        detectedEndSample = (int)Math.Round(endPosition * bitWidth / 8.0);
+        return new PreparedLine(nominalBits, adjustedBits);
+    }
+
+    private static double[]? BuildManualEndBoundaries(
+        int start,
+        double packetEnd,
+        int bitCount,
+        int sampleCount)
+    {
+        double period = (packetEnd - start) / TeletextPacketBits;
+        // Reject an accidental marker close to the start, but leave enough range
+        // for severely time-compressed or expanded VHS lines.
+        if (period is < 4.0 or > 12.0) return null;
+
+        var boundaries = new double[bitCount + 1];
+        for (int bit = 0; bit <= bitCount; bit++)
+        {
+            double position = start + bit * period;
+            if (position < 0 || position >= sampleCount - 1) return null;
+            boundaries[bit] = position;
+        }
+        return boundaries;
+    }
+
+    private static float AverageNominalBit(
+        float[] samples,
+        int start,
+        int bit)
+    {
+        float sum = 0;
+        int offset = start + bit * 8;
+        for (int point = 0; point < 8; point++)
+            sum += samples[offset + point];
+        return sum / 8;
+    }
+
+    private static void NormalizeBits(float[] bits)
+    {
+        float minimum = float.MaxValue;
+        float maximum = float.MinValue;
+        foreach (float bit in bits)
+        {
+            minimum = Math.Min(minimum, bit);
+            maximum = Math.Max(maximum, bit);
+        }
+        float range = Math.Max(maximum - minimum, 1);
+        for (int index = 0; index < bits.Length; index++)
+            bits[index] = Math.Clamp((bits[index] - minimum) * 255f / range, 0, 255);
+    }
+
+    private static float AveragePllBit(
+        float[] samples,
+        double start,
+        double end,
+        int sampleCount)
+    {
+        float sum = 0;
+        double width = end - start;
+        for (int point = 0; point < 8; point++)
+        {
+            double position = start + point / 8.0 * width;
+            int left = Math.Clamp((int)Math.Floor(position), 0, sampleCount - 1);
+            int right = Math.Min(left + 1, sampleCount - 1);
+            float fraction = (float)(position - left);
+            sum += samples[left] + (samples[right] - samples[left]) * fraction;
+        }
+        return sum / 8;
     }
 
     private static async Task<bool> ReadExactlyOrEndAsync(Stream stream, byte[] buffer, CancellationToken token)

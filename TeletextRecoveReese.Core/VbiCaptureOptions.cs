@@ -31,6 +31,11 @@ public sealed record VbiDeconvolutionResult(
     long PacketsWritten,
     string OpenClDevice);
 
+public readonly record struct VbiLineTiming(
+    int StartSample,
+    int EndSample,
+    bool PllAdjusted);
+
 public interface IVbiDecodedPacketProgress : IProgress<IReadOnlyList<byte[]>>
 {
     bool IsEnabled { get; }
@@ -39,5 +44,7 @@ public interface IVbiDecodedPacketProgress : IProgress<IReadOnlyList<byte[]>>
 public interface IVbiDeconvolutionControl
 {
     bool Enabled { get; }
+    bool GetLineDecodingEnabled(int fieldLine);
     int GetClockSearchOffset(int fieldLine);
+    double GetManualPacketSpanSamples(int fieldLine);
 }

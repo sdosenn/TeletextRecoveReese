@@ -210,6 +210,7 @@ public partial class MainWindow : Window
         public bool? ShowRawVbiPreview { get; set; }
         public bool? ShowVideoCapturePreview { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
+        public bool? RecordRawVbiToDisk { get; set; }
     }
 
     private sealed class CaptureCardPreset
@@ -234,17 +235,38 @@ public partial class MainWindow : Window
         public override string ToString() => IsBuiltIn ? Name : $"{Name} (Custom)";
     }
 
-    private sealed class ToggleableDeconvolutionControl(bool enabled) : IVbiDeconvolutionControl
+    private sealed class ToggleableDeconvolutionControl(
+        bool enabled,
+        int clockSearchLineCount) : IVbiDeconvolutionControl
     {
         private int _enabled = enabled ? 1 : 0;
-        private readonly int[] _clockSearchOffsets = new int[5];
+        private readonly int[] _clockSearchOffsets =
+            new int[Math.Max(clockSearchLineCount, 1)];
+        private readonly double[] _manualPacketSpanSamples =
+            Enumerable.Repeat(-1.0, Math.Max(clockSearchLineCount, 1)).ToArray();
+        private readonly int[] _lineDecodingEnabled =
+            Enumerable.Repeat(1, Math.Max(clockSearchLineCount, 1)).ToArray();
         public bool Enabled
         {
             get => Volatile.Read(ref _enabled) != 0;
             set => Volatile.Write(ref _enabled, value ? 1 : 0);
         }
 
-        public int ClockSearchLinePeriod { get; init; } = 1;
+        public int ClockSearchLinePeriod { get; } = Math.Max(clockSearchLineCount, 1);
+
+        public bool GetLineDecodingEnabled(int fieldLine)
+        {
+            int lineWithinField = fieldLine % Math.Max(ClockSearchLinePeriod, 1);
+            return lineWithinField < _lineDecodingEnabled.Length
+                && Volatile.Read(ref _lineDecodingEnabled[lineWithinField]) != 0;
+        }
+
+        public void SetLineDecodingEnabled(int lineWithinField, bool enabled)
+        {
+            if ((uint)lineWithinField < (uint)_lineDecodingEnabled.Length)
+                Volatile.Write(
+                    ref _lineDecodingEnabled[lineWithinField], enabled ? 1 : 0);
+        }
 
         public int GetClockSearchOffset(int fieldLine)
         {
@@ -258,6 +280,20 @@ public partial class MainWindow : Window
         {
             if ((uint)lineWithinField < (uint)_clockSearchOffsets.Length)
                 Volatile.Write(ref _clockSearchOffsets[lineWithinField], samples);
+        }
+
+        public double GetManualPacketSpanSamples(int fieldLine)
+        {
+            int lineWithinField = fieldLine % Math.Max(ClockSearchLinePeriod, 1);
+            return lineWithinField < _manualPacketSpanSamples.Length
+                ? Volatile.Read(ref _manualPacketSpanSamples[lineWithinField])
+                : -1;
+        }
+
+        public void SetManualPacketSpanSamples(int lineWithinField, double samples)
+        {
+            if ((uint)lineWithinField < (uint)_manualPacketSpanSamples.Length)
+                Volatile.Write(ref _manualPacketSpanSamples[lineWithinField], samples);
         }
     }
 
@@ -2651,6 +2687,14 @@ public partial class MainWindow : Window
         var refreshButton = new Button { Content = "Refresh", Width = 90 };
         var useButton = new Button { Content = "Start capture", Width = 110, IsDefault = true };
         var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
+        var recordRawVbiCheckBox = new CheckBox
+        {
+            Content = "Write raw VBI to temp file to save later",
+            IsChecked = _sessionState.RecordRawVbiToDisk == true,
+        };
+        ToolTip.SetTip(
+            recordRawVbiCheckBox,
+            "Keeps the complete raw sample stream so it can be saved when capture stops");
         var dialog = new Window
         {
             Title = "Live VBI capture",
@@ -2722,6 +2766,7 @@ public partial class MainWindow : Window
                     statusText,
                     previewBorder,
                     previewStatusText,
+                    recordRawVbiCheckBox,
                     new Grid
                     {
                         ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"),
@@ -2964,6 +3009,11 @@ public partial class MainWindow : Window
         }
 
         presetCombo.SelectionChanged += (_, _) => UpdateStartButton();
+        recordRawVbiCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            _sessionState.RecordRawVbiToDisk = recordRawVbiCheckBox.IsChecked == true;
+            SaveSessionState();
+        };
         inputCombo.SelectionChanged += async (_, _) =>
         {
             RefreshStandardsForInput();
@@ -3000,7 +3050,8 @@ public partial class MainWindow : Window
             if (OperatingSystem.IsLinux())
                 await StartLinuxLiveVbiCaptureAsync(
                     captureInterface, captureInput!, captureStandard!, preset,
-                    selectedVideoInterface);
+                    selectedVideoInterface,
+                    recordRawVbiCheckBox.IsChecked == true);
             else
                 await ShowMessageAsync(
                     "Live VBI capture",
@@ -3021,7 +3072,8 @@ public partial class MainWindow : Window
         LinuxV4l2Input captureInput,
         LinuxV4l2Standard captureStandard,
         CaptureCardPreset preset,
-        string? videoInterfacePath)
+        string? videoInterfacePath,
+        bool recordRawVbi)
     {
         LinuxVbiCaptureStream? input = null;
         try
@@ -3055,8 +3107,10 @@ public partial class MainWindow : Window
                 CriFcConfidenceThreshold: preset.CriFcConfidenceThreshold);
             string temporaryOutput = Path.Combine(
                 Path.GetTempPath(), $"TeletextRecoveReese-live-{Guid.NewGuid():N}.t42");
-            string temporaryRawCapture = Path.Combine(
-                Path.GetTempPath(), $"TeletextRecoveReese-live-{Guid.NewGuid():N}.vbi");
+            string? temporaryRawCapture = recordRawVbi
+                ? Path.Combine(
+                    Path.GetTempPath(), $"TeletextRecoveReese-live-{Guid.NewGuid():N}.vbi")
+                : null;
             using var cancellation = new CancellationTokenSource();
             using var videoPreviewCancellation = new CancellationTokenSource();
             var phaseText = new TextBlock
@@ -3075,9 +3129,10 @@ public partial class MainWindow : Window
             int rawPreviewSamples = Math.Min(
                 input.SamplesPerLine,
                 (int)Math.Ceiling(input.SamplingRate / 6_937_500.0 * 368)
-                + Math.Max(preset.LineStartEnd, 0) + 32);
+                + Math.Max(preset.LineStartEnd, 0) + 300 + 32);
             int rawPreviewWidth = rawPreviewSamples;
-            int rawPreviewHeight = input.FirstFieldLines * 10;
+            int rawPreviewHeight = Math.Max(
+                input.FirstFieldLines, input.SecondFieldLines) * 10;
             var rawPreviewBitmap = new WriteableBitmap(
                 new PixelSize(rawPreviewWidth, rawPreviewHeight),
                 new Vector(96, 96),
@@ -3092,9 +3147,22 @@ public partial class MainWindow : Window
             };
             var rawPreviewTitle = new TextBlock
             {
-                Text = "Raw VBI input",
+                Text = "Raw VBI input — sampled preview",
                 FontWeight = FontWeight.SemiBold,
             };
+            var rawPreviewFieldCombo = new ComboBox
+            {
+                Width = 95,
+                ItemsSource = new[] { "Field 1", "Field 2" },
+                SelectedIndex = 0,
+                IsEnabled = input.SecondFieldLines > 0,
+            };
+            var rawPreviewHeader = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                Children = { rawPreviewTitle, rawPreviewFieldCombo },
+            };
+            Grid.SetColumn(rawPreviewFieldCombo, 1);
             var rawPreviewBorder = new Border
             {
                 Background = Brushes.Black,
@@ -3141,7 +3209,7 @@ public partial class MainWindow : Window
             };
             var showRawPreviewCheckBox = new CheckBox
             {
-                Content = "Live raw VBI preview",
+                Content = "Raw VBI preview (sampled, up to 10 fps)",
                 IsChecked = _sessionState.ShowRawVbiPreview ?? true,
             };
             bool showRawPreview = showRawPreviewCheckBox.IsChecked == true;
@@ -3158,18 +3226,35 @@ public partial class MainWindow : Window
                 Content = "Show deconvolved page",
                 IsChecked = _sessionState.ShowLiveDeconvolvedPage ?? true,
             };
+            var livePageLockTextBox = new TextBox
+            {
+                Width = 110,
+                MaxLength = 3,
+                PlaceholderText = "Page",
+                IsEnabled = showLiveCheckBox.IsChecked == true,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalContentAlignment = VerticalAlignment.Center,
+            };
+            ToolTip.SetTip(
+                livePageLockTextBox,
+                "Optional three-digit hexadecimal Teletext page, for example 100, 205 or 8FF");
+            var showLiveControls = new StackPanel
+            {
+                Orientation = Orientation.Vertical,
+                Spacing = 4,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Children = { showLiveCheckBox, livePageLockTextBox },
+            };
             var runDeconvolutionCheckBox = new CheckBox
             {
                 Content = "Live deconvolution",
                 IsChecked = true,
             };
-            var deconvolutionControl = new ToggleableDeconvolutionControl(true)
+            var deconvolutionControl = new ToggleableDeconvolutionControl(
+                true, input.LinesPerFrame);
+            var resetAllClockOffsetsButton = new Button
             {
-                ClockSearchLinePeriod = Math.Max(input.FirstFieldLines, 1),
-            };
-            var autoSearchButton = new Button
-            {
-                Content = "Auto search",
+                Content = "Reset all",
                 Width = 105,
                 IsEnabled = !VbiDeconvolutionEngine.UseLegacyFixedDetectionForTest,
             };
@@ -3177,11 +3262,54 @@ public partial class MainWindow : Window
             {
                 Text = VbiDeconvolutionEngine.UseLegacyFixedDetectionForTest
                     ? "Test mode: fixed 64 / 28 / 0.35 thresholds; line offsets are ignored."
-                    : "Adjust manually or detect from the next VBI frame.",
+                    : "Enable CRI start detection for each line that should be tracked.",
                 Foreground = Brushes.Gray,
                 TextWrapping = TextWrapping.Wrap,
             };
-            var clockOffsetSliders = new Slider[5];
+            const int clockBankSize = 5;
+            int adjustableLineCount = input.FirstFieldLines;
+            int clockBankCount = Math.Max(
+                1, (adjustableLineCount + clockBankSize - 1) / clockBankSize);
+            var clockBankCombo = new ComboBox
+            {
+                Width = 105,
+                ItemsSource = Enumerable.Range(0, clockBankCount)
+                    .Select(bank =>
+                    {
+                        int start = bank * clockBankSize;
+                        int end = Math.Min(start + clockBankSize - 1, adjustableLineCount - 1);
+                        return $"Lines {start + 1}–{end + 1}";
+                    })
+                    .ToArray(),
+                SelectedIndex = 0,
+            };
+            var clockBankControls = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children = { clockBankCombo, resetAllClockOffsetsButton },
+            };
+            Grid.SetColumn(clockBankControls, 1);
+            var autoTrackLineCheckBoxes = new CheckBox[5];
+            var autoEndFitCheckBoxes = new CheckBox[5];
+            var decodeFirstFieldCheckBoxes = new CheckBox[5];
+            var decodeSecondFieldCheckBoxes = new CheckBox[5];
+            var clockOffsetValueTexts = new TextBlock[5];
+            var clockOffsetRows = new Grid[5];
+            var visibleClockLines = Enumerable.Repeat(-1, clockBankSize).ToArray();
+            var lastDetectedClockStarts = Enumerable.Repeat(-1, input.LinesPerFrame).ToArray();
+            var autoEndFitEnabled = new int[input.LinesPerFrame];
+            var autoEndSpanHistories = Enumerable.Range(0, input.LinesPerFrame)
+                .Select(_ => new Queue<double>())
+                .ToArray();
+            var autoStartOffsetHistories = Enumerable.Range(0, input.LinesPerFrame)
+                .Select(_ => new Queue<int>())
+                .ToArray();
+            int autoTrackFirstFieldLineMask = 0;
+            int autoTrackSecondFieldLineMask = 0;
+            int selectedRawPreviewField = 0;
+            int selectedClockBank = 0;
+            bool updatingClockBank = false;
             var clockOffsetsPanel = new StackPanel
             {
                 Width = 500,
@@ -3195,11 +3323,11 @@ public partial class MainWindow : Window
                         {
                             new TextBlock
                             {
-                                Text = "Clock run-in search offsets — VBI lines 1–5",
+                                Text = "CRI tracking",
                                 Foreground = Brushes.LightGray,
                                 VerticalAlignment = VerticalAlignment.Center,
                             },
-                            autoSearchButton,
+                            clockBankControls,
                         },
                     },
                     new TextBlock
@@ -3213,41 +3341,211 @@ public partial class MainWindow : Window
             };
             clockOffsetsPanel.IsEnabled =
                 !VbiDeconvolutionEngine.UseLegacyFixedDetectionForTest;
-            Grid.SetColumn(autoSearchButton, 1);
-            for (int index = 0; index < 5; index++)
+            for (int slot = 0; slot < clockBankSize; slot++)
             {
-                int lineIndex = index;
+                int sliderSlot = slot;
                 var valueText = new TextBlock
                 {
-                    Text = $"Line {lineIndex + 1}: 0",
-                    Width = 82,
+                    Text = $"Line {sliderSlot + 1}: 0",
+                    Width = 110,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    TextAlignment = TextAlignment.Left,
                     VerticalAlignment = VerticalAlignment.Center,
                 };
-                var slider = new Slider
+                clockOffsetValueTexts[sliderSlot] = valueText;
+                var autoTrackCheckBox = new CheckBox
                 {
-                    Minimum = -300,
-                    Maximum = 300,
-                    Value = 0,
-                    TickFrequency = 1,
-                    IsSnapToTickEnabled = true,
+                    Content = "CRI start detection",
+                    VerticalAlignment = VerticalAlignment.Center,
                 };
-                clockOffsetSliders[lineIndex] = slider;
-                slider.PropertyChanged += (_, args) =>
+                autoTrackLineCheckBoxes[sliderSlot] = autoTrackCheckBox;
+                ToolTip.SetTip(
+                    autoTrackCheckBox,
+                    "Auto-detect this physical line in the currently selected field on every rendered VBI preview frame");
+                var autoEndFitCheckBox = new CheckBox
                 {
-                    if (args.Property != Slider.ValueProperty) return;
-                    int samples = (int)Math.Round(slider.Value);
-                    deconvolutionControl.SetClockSearchOffset(lineIndex, samples);
-                    valueText.Text = $"Line {lineIndex + 1}: {samples:+0;-0;0}";
+                    Content = "Auto end",
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                autoEndFitCheckBoxes[sliderSlot] = autoEndFitCheckBox;
+                ToolTip.SetTip(
+                    autoEndFitCheckBox,
+                    "Automatically find the end of the VBI burst and linearly fit all 360 bits between the detected start and end");
+                var decodeFirstFieldCheckBox = new CheckBox
+                {
+                    Content = $"D{sliderSlot + 1}",
+                    IsChecked = true,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                var decodeSecondFieldCheckBox = new CheckBox
+                {
+                    Content = $"D{sliderSlot + input.FirstFieldLines + 1}",
+                    IsChecked = true,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                decodeFirstFieldCheckBoxes[sliderSlot] = decodeFirstFieldCheckBox;
+                decodeSecondFieldCheckBoxes[sliderSlot] = decodeSecondFieldCheckBox;
+                ToolTip.SetTip(
+                    decodeFirstFieldCheckBox,
+                    "Decode this physical VBI line from the first field");
+                ToolTip.SetTip(
+                    decodeSecondFieldCheckBox,
+                    "Decode this physical VBI line from the second field");
+                autoTrackCheckBox.IsCheckedChanged += (_, _) =>
+                {
+                    if (updatingClockBank) return;
+                    int line = visibleClockLines[sliderSlot];
+                    if (line < 0) return;
+                    int bit = 1 << line;
+                    int field = Volatile.Read(ref selectedRawPreviewField);
+                    int physicalLine = field == 0
+                        ? line
+                        : line + input.FirstFieldLines;
+                    lock (autoStartOffsetHistories[physicalLine])
+                        autoStartOffsetHistories[physicalLine].Clear();
+                    if (field == 0)
+                    {
+                        int mask = Volatile.Read(ref autoTrackFirstFieldLineMask);
+                        Volatile.Write(
+                            ref autoTrackFirstFieldLineMask,
+                            autoTrackCheckBox.IsChecked == true ? mask | bit : mask & ~bit);
+                    }
+                    else
+                    {
+                        int mask = Volatile.Read(ref autoTrackSecondFieldLineMask);
+                        Volatile.Write(
+                            ref autoTrackSecondFieldLineMask,
+                            autoTrackCheckBox.IsChecked == true ? mask | bit : mask & ~bit);
+                    }
+                    if (autoTrackCheckBox.IsChecked != true)
+                    {
+                        deconvolutionControl.SetClockSearchOffset(physicalLine, 0);
+                        if (physicalLine < lastDetectedClockStarts.Length)
+                            Volatile.Write(ref lastDetectedClockStarts[physicalLine], -1);
+                        valueText.Text = $"Line {physicalLine + 1}: 0";
+                    }
+                };
+                autoEndFitCheckBox.IsCheckedChanged += (_, _) =>
+                {
+                    if (updatingClockBank) return;
+                    int line = visibleClockLines[sliderSlot];
+                    if (line < 0) return;
+                    int physicalLine = Volatile.Read(ref selectedRawPreviewField) == 0
+                        ? line
+                        : line + input.FirstFieldLines;
+                    if (physicalLine >= input.LinesPerFrame) return;
+                    bool enabled = autoEndFitCheckBox.IsChecked == true;
+                    Volatile.Write(
+                        ref autoEndFitEnabled[physicalLine], enabled ? 1 : 0);
+                    lock (autoEndSpanHistories[physicalLine])
+                        autoEndSpanHistories[physicalLine].Clear();
+                    if (enabled)
+                    {
+                        if (autoTrackCheckBox.IsChecked != true)
+                            autoTrackCheckBox.IsChecked = true;
+                        double nominalSpan = 360.0 * input.SamplingRate / 6_937_500.0;
+                        deconvolutionControl.SetManualPacketSpanSamples(
+                            physicalLine, nominalSpan);
+                    }
+                    else
+                    {
+                        deconvolutionControl.SetManualPacketSpanSamples(physicalLine, -1);
+                    }
+                };
+                decodeFirstFieldCheckBox.IsCheckedChanged += (_, _) =>
+                {
+                    if (updatingClockBank) return;
+                    int line = visibleClockLines[sliderSlot];
+                    if (line < 0) return;
+                    deconvolutionControl.SetLineDecodingEnabled(
+                        line, decodeFirstFieldCheckBox.IsChecked == true);
+                };
+                decodeSecondFieldCheckBox.IsCheckedChanged += (_, _) =>
+                {
+                    if (updatingClockBank) return;
+                    int line = visibleClockLines[sliderSlot];
+                    if (line < 0) return;
+                    int secondFieldLine = line + input.FirstFieldLines;
+                    if (secondFieldLine < input.LinesPerFrame)
+                        deconvolutionControl.SetLineDecodingEnabled(
+                            secondFieldLine,
+                            decodeSecondFieldCheckBox.IsChecked == true);
                 };
                 var row = new Grid
                 {
-                    ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+                    ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto,Auto"),
                     ColumnSpacing = 8,
-                    Children = { valueText, slider },
+                    Children =
+                    {
+                        valueText, autoTrackCheckBox, autoEndFitCheckBox,
+                        decodeFirstFieldCheckBox, decodeSecondFieldCheckBox,
+                    },
                 };
-                Grid.SetColumn(slider, 1);
+                Grid.SetColumn(autoTrackCheckBox, 1);
+                Grid.SetColumn(autoEndFitCheckBox, 2);
+                Grid.SetColumn(decodeFirstFieldCheckBox, 3);
+                Grid.SetColumn(decodeSecondFieldCheckBox, 4);
+                clockOffsetRows[sliderSlot] = row;
                 clockOffsetsPanel.Children.Add(row);
             }
+
+            void UpdateClockBank()
+            {
+                updatingClockBank = true;
+                try
+                {
+                    int bankStart = Math.Max(clockBankCombo.SelectedIndex, 0) * clockBankSize;
+                    Volatile.Write(ref selectedClockBank, Math.Max(clockBankCombo.SelectedIndex, 0));
+                    int selectedField = Volatile.Read(ref selectedRawPreviewField);
+                    int trackedMask = selectedField == 0
+                        ? Volatile.Read(ref autoTrackFirstFieldLineMask)
+                        : Volatile.Read(ref autoTrackSecondFieldLineMask);
+                    for (int slot = 0; slot < clockBankSize; slot++)
+                    {
+                        int line = bankStart + slot;
+                        bool valid = line < adjustableLineCount;
+                        visibleClockLines[slot] = valid ? line : -1;
+                        clockOffsetRows[slot].IsEnabled = valid;
+                        if (!valid)
+                        {
+                            clockOffsetValueTexts[slot].Text = "Unused";
+                            autoTrackLineCheckBoxes[slot].IsChecked = false;
+                            autoEndFitCheckBoxes[slot].IsChecked = false;
+                            decodeFirstFieldCheckBoxes[slot].IsChecked = false;
+                            decodeSecondFieldCheckBoxes[slot].IsChecked = false;
+                            continue;
+                        }
+
+                        int physicalLine = selectedField == 0
+                            ? line
+                            : line + input.FirstFieldLines;
+                        int offset = deconvolutionControl.GetClockSearchOffset(physicalLine);
+                        clockOffsetValueTexts[slot].Text =
+                            $"Line {physicalLine + 1}: {offset:+0;-0;0}";
+                        autoTrackLineCheckBoxes[slot].IsChecked =
+                            (trackedMask & (1 << line)) != 0;
+                        autoEndFitCheckBoxes[slot].IsChecked =
+                            Volatile.Read(ref autoEndFitEnabled[physicalLine]) != 0;
+                        decodeFirstFieldCheckBoxes[slot].Content = $"D{line + 1}";
+                        decodeFirstFieldCheckBoxes[slot].IsChecked =
+                            deconvolutionControl.GetLineDecodingEnabled(line);
+                        int secondFieldLine = line + input.FirstFieldLines;
+                        bool secondFieldLineValid = secondFieldLine < input.LinesPerFrame;
+                        decodeSecondFieldCheckBoxes[slot].Content =
+                            secondFieldLineValid ? $"D{secondFieldLine + 1}" : "Unused";
+                        decodeSecondFieldCheckBoxes[slot].IsEnabled = secondFieldLineValid;
+                        decodeSecondFieldCheckBoxes[slot].IsChecked =
+                            secondFieldLineValid
+                            && deconvolutionControl.GetLineDecodingEnabled(secondFieldLine);
+                    }
+                }
+                finally
+                {
+                    updatingClockBank = false;
+                }
+            }
+            clockBankCombo.SelectionChanged += (_, _) => UpdateClockBank();
+            UpdateClockBank();
             long fpsBaselineFrames = 0;
             long fpsBaselineTimestamp = Stopwatch.GetTimestamp();
             var stopButton = new Button
@@ -3280,7 +3578,7 @@ public partial class MainWindow : Window
                                     Spacing = 8,
                                     Children =
                                     {
-                                        rawPreviewTitle,
+                                        rawPreviewHeader,
                                         rawPreviewBorder,
                                         rawPreviewInfoText,
                                         clockOffsetsPanel,
@@ -3303,7 +3601,7 @@ public partial class MainWindow : Window
                                         showRawPreviewCheckBox,
                                         showVideoPreviewCheckBox,
                                         runDeconvolutionCheckBox,
-                                        showLiveCheckBox,
+                                        showLiveControls,
                                     },
                                 },
                             },
@@ -3323,70 +3621,279 @@ public partial class MainWindow : Window
             long rawPreviewFrameNumber = 0;
             int rawPreviewHasFrame = 0;
             int rawPreviewWorkerBusy = 0;
-            int autoSearchRequested = 0;
             int videoSnapshotNumber = 0;
             CancellationTokenSource? videoPreviewPipeCancellation = null;
+            rawPreviewFieldCombo.SelectionChanged += (_, _) =>
+            {
+                Volatile.Write(
+                    ref selectedRawPreviewField,
+                    Math.Clamp(rawPreviewFieldCombo.SelectedIndex, 0, 1));
+                Interlocked.Exchange(ref rawPreviewHasFrame, 0);
+                Interlocked.Exchange(ref lastRawPreviewTimestamp, 0);
+                UpdateClockBank();
+            };
             input.RawFrameCaptured = rawFrame =>
             {
                 if (!rawPreviewActive) return;
-                bool runAutoSearch = Interlocked.Exchange(ref autoSearchRequested, 0) != 0;
+                int firstFieldTrackedMask =
+                    Volatile.Read(ref autoTrackFirstFieldLineMask);
+                int secondFieldTrackedMask =
+                    Volatile.Read(ref autoTrackSecondFieldLineMask);
                 bool liveUpdate = Volatile.Read(ref rawPreviewEnabled) != 0;
                 bool renderPreview = liveUpdate || Volatile.Read(ref rawPreviewHasFrame) == 0;
-                if (!renderPreview && !runAutoSearch) return;
-
                 if (renderPreview)
                 {
                     long now = Stopwatch.GetTimestamp();
                     long previous = Interlocked.Read(ref lastRawPreviewTimestamp);
-                    if (now - previous < Stopwatch.Frequency / 10
+                    const int rawPreviewMaximumFps = 10;
+                    if (now - previous < Stopwatch.Frequency / rawPreviewMaximumFps
                         || Interlocked.CompareExchange(ref lastRawPreviewTimestamp, now, previous) != previous)
                         renderPreview = false;
                 }
+                bool periodicAutoSearch = renderPreview
+                    && (firstFieldTrackedMask != 0 || secondFieldTrackedMask != 0);
+                bool runAutoSearch = periodicAutoSearch;
                 if (!renderPreview && !runAutoSearch) return;
 
                 if (Interlocked.CompareExchange(ref rawPreviewWorkerBusy, 1, 0) != 0)
-                {
-                    if (runAutoSearch) Interlocked.Exchange(ref autoSearchRequested, 1);
                     return;
-                }
 
                 // LinuxVbiCaptureStream reuses its frame buffer. Copy it quickly,
                 // then do all analysis and bitmap scaling away from the VBI reader.
                 byte[] snapshot = (byte[])rawFrame.Clone();
+                int previewField = Volatile.Read(ref selectedRawPreviewField);
                 _ = Task.Run(() =>
                 {
                     try
                     {
+                        int previewFirstLine = previewField == 0
+                            ? 0
+                            : input.FirstFieldLines;
+                        int previewLineCount = previewField == 0
+                            ? input.FirstFieldLines
+                            : input.SecondFieldLines;
+                        var autoStartAcceptedThisFrame =
+                            new bool[input.LinesPerFrame];
                         if (runAutoSearch)
                         {
-                            int?[] detectedOffsets = VbiDeconvolutionEngine.FindClockRunInOffsets(
-                                snapshot, options, Math.Min(5, input.FirstFieldLines));
+                            var detectedUpdates = new List<(
+                                int Field, int PhysicalLine, int Offset)>();
+                            int rejectedJumps = 0;
+                            DetectField(
+                                field: 0,
+                                firstLine: 0,
+                                lineCount: input.FirstFieldLines,
+                                firstFieldTrackedMask);
+                            DetectField(
+                                field: 1,
+                                firstLine: input.FirstFieldLines,
+                                lineCount: input.SecondFieldLines,
+                                secondFieldTrackedMask);
+
+                            void DetectField(
+                                int field,
+                                int firstLine,
+                                int lineCount,
+                                int trackedMask)
+                            {
+                                if (trackedMask == 0 || lineCount <= 0) return;
+                                byte[] fieldFrame = firstLine == 0
+                                    ? snapshot
+                                    : snapshot.AsSpan(
+                                        firstLine * input.SamplesPerLine,
+                                        lineCount * input.SamplesPerLine).ToArray();
+                                int?[] detectedOffsets =
+                                    VbiDeconvolutionEngine.FindClockRunInOffsets(
+                                        fieldFrame, options,
+                                        Math.Min(lineCount, adjustableLineCount),
+                                        lineMask: trackedMask);
+                                for (int line = 0; line < detectedOffsets.Length; line++)
+                                {
+                                    if ((trackedMask & (1 << line)) == 0) continue;
+                                    if (detectedOffsets[line] is not int offset) continue;
+                                    int physicalLine = firstLine + line;
+                                    int detectedStart = preset.LineStart
+                                        + (preset.LineStartEnd - preset.LineStart) / 2
+                                        + offset;
+                                    Queue<int> history =
+                                        autoStartOffsetHistories[physicalLine];
+                                    bool accepted;
+                                    lock (history)
+                                    {
+                                        int[] ordered = history.Order().ToArray();
+                                        int median = ordered.Length == 0
+                                            ? 0
+                                            : ordered[ordered.Length / 2];
+                                        int[] deviations = ordered
+                                            .Select(value => Math.Abs(value - median))
+                                            .Order()
+                                            .ToArray();
+                                        int medianDeviation = deviations.Length == 0
+                                            ? 0
+                                            : deviations[deviations.Length / 2];
+                                        int allowedJump = Math.Max(
+                                            70, medianDeviation * 6 + 24);
+                                        bool implausiblyLate = detectedStart >= 0
+                                            && offset > 180;
+                                        bool discontinuity = ordered.Length >= 3
+                                            && detectedStart >= 0
+                                            && Math.Abs(offset - median) > allowedJump;
+                                        accepted = !implausiblyLate && !discontinuity;
+                                        if (accepted)
+                                        {
+                                            history.Enqueue(offset);
+                                            while (history.Count > 9)
+                                                history.Dequeue();
+                                        }
+                                    }
+                                    if (!accepted)
+                                    {
+                                        rejectedJumps++;
+                                        continue;
+                                    }
+                                    autoStartAcceptedThisFrame[physicalLine] = true;
+                                    Volatile.Write(
+                                        ref lastDetectedClockStarts[physicalLine],
+                                        detectedStart);
+                                    deconvolutionControl.SetClockSearchOffset(
+                                        physicalLine, offset);
+                                    detectedUpdates.Add((field, physicalLine, offset));
+                                }
+                            }
                             Dispatcher.UIThread.Post(() =>
                             {
                                 if (!rawPreviewActive) return;
-                                int found = 0;
-                                for (int line = 0; line < detectedOffsets.Length; line++)
-                                {
-                                    if (detectedOffsets[line] is not int offset) continue;
-                                    clockOffsetSliders[line].Value = offset;
-                                    found++;
-                                }
-                                autoSearchStatus.Text = found > 0
-                                    ? $"Auto search found clock run-in on {found} of 5 lines."
-                                    : "Auto search did not find a valid clock run-in in this frame.";
-                                autoSearchButton.IsEnabled = true;
+                                UpdateClockBank();
+                                int found = detectedUpdates.Count;
+                                int searched =
+                                    System.Numerics.BitOperations.PopCount(
+                                        (uint)firstFieldTrackedMask)
+                                    + System.Numerics.BitOperations.PopCount(
+                                        (uint)secondFieldTrackedMask);
+                                autoSearchStatus.Text =
+                                    $"CRI tracking updated {found} of {searched} enabled physical VBI lines across both fields"
+                                    + (rejectedJumps > 0
+                                        ? $"; rejected {rejectedJumps} implausible jump(s)."
+                                        : ".");
                             });
                         }
 
+                        bool peakFitUpdated = false;
+                        for (int physicalLine = 0;
+                             physicalLine < input.LinesPerFrame;
+                             physicalLine++)
+                        {
+                            double span = deconvolutionControl
+                                .GetManualPacketSpanSamples(physicalLine);
+                            if (span < 0) continue;
+
+                            int start = Volatile.Read(
+                                ref lastDetectedClockStarts[physicalLine]);
+                            if (start < 0)
+                                start = preset.LineStart
+                                    + (preset.LineStartEnd - preset.LineStart) / 2
+                                    + deconvolutionControl.GetClockSearchOffset(
+                                        physicalLine);
+
+                            if (Volatile.Read(
+                                    ref autoEndFitEnabled[physicalLine]) != 0)
+                            {
+                                if (!autoStartAcceptedThisFrame[physicalLine])
+                                    continue;
+                                double nominalSpan = 360.0 * input.SamplingRate
+                                    / 6_937_500.0;
+                                if (!TryFindRawVbiBurstEnd(
+                                        snapshot, input.SamplesPerLine,
+                                        physicalLine, start, nominalSpan,
+                                        preset.CriFcRangeThreshold,
+                                        out double detectedEnd))
+                                    continue;
+
+                                double detectedSpan = detectedEnd - start;
+                                Queue<double> history =
+                                    autoEndSpanHistories[physicalLine];
+                                double filteredSpan;
+                                lock (history)
+                                {
+                                    history.Enqueue(detectedSpan);
+                                    while (history.Count > 7) history.Dequeue();
+                                    double[] ordered = history.Order().ToArray();
+                                    filteredSpan = ordered[ordered.Length / 2];
+                                }
+                                filteredSpan = Math.Clamp(
+                                    filteredSpan, 600.0,
+                                    input.SamplesPerLine - 1.0);
+                                deconvolutionControl.SetManualPacketSpanSamples(
+                                    physicalLine, filteredSpan);
+                                peakFitUpdated = true;
+                                continue;
+                            }
+                        }
+                        if (peakFitUpdated)
+                            Dispatcher.UIThread.Post(UpdateClockBank);
+
                         if (!renderPreview) return;
-                        int[] clockSearchOffsets = Enumerable.Range(0, 5)
+                        int[] clockSearchOffsets = Enumerable.Range(
+                                previewFirstLine, previewLineCount)
                             .Select(deconvolutionControl.GetClockSearchOffset)
                             .ToArray();
+                        double[] manualPacketSpanSamples = Enumerable.Range(
+                                previewFirstLine, previewLineCount)
+                            .Select(deconvolutionControl.GetManualPacketSpanSamples)
+                            .ToArray();
+                        int timingLineMask = previewLineCount >= 32
+                            ? -1
+                            : (1 << previewLineCount) - 1;
+                        byte[] timingFrame = previewFirstLine == 0
+                            ? snapshot
+                            : snapshot.AsSpan(
+                                previewFirstLine * input.SamplesPerLine,
+                                previewLineCount * input.SamplesPerLine).ToArray();
+                        VbiLineTiming?[] lineTimings =
+                            VbiDeconvolutionEngine.FindLineTimings(
+                                timingFrame, options, clockSearchOffsets,
+                                manualPacketSpanSamples,
+                                previewLineCount, timingLineMask);
+                        int[] detectedClockStarts = Enumerable.Range(0, previewLineCount)
+                            .Select(line => lineTimings[line]?.StartSample ?? -1)
+                            .ToArray();
+                        int nominalPacketSamples = (int)Math.Round(
+                            360.0 * input.SamplingRate / 6_937_500.0);
+                        int[] detectedLineEnds = Enumerable.Range(0, previewLineCount)
+                            .Select(line => lineTimings[line]?.EndSample ?? -1)
+                            .ToArray();
+                        int[] manualLineEndSamples = Enumerable.Range(0, previewLineCount)
+                            .Select(line =>
+                            {
+                                double span = manualPacketSpanSamples[line];
+                                if (span < 0) return -1;
+                                int start = detectedClockStarts[line];
+                                if (start < 0)
+                                    start = preset.LineStart
+                                        + (preset.LineStartEnd - preset.LineStart) / 2
+                                        + clockSearchOffsets[line];
+                                return (int)Math.Round(start + span);
+                            })
+                            .ToArray();
+                        bool[] pllAdjustedLines = lineTimings
+                            .Select(timing => timing?.PllAdjusted == true)
+                            .ToArray();
+                        int selectedBankStart = Volatile.Read(ref selectedClockBank)
+                            * clockBankSize;
+                        int selectedBankLineCount = Math.Min(
+                            clockBankSize,
+                            Math.Max(previewLineCount - selectedBankStart, 0));
                         byte[] pixels = BuildRawVbiPreview(
-                            snapshot, input.SamplesPerLine, input.FirstFieldLines,
+                            snapshot, input.SamplesPerLine,
+                            previewFirstLine, previewLineCount,
                             rawPreviewSamples, rawPreviewWidth, rawPreviewHeight,
                             preset.LineStart, preset.LineStartEnd,
                             clockSearchOffsets,
+                            detectedClockStarts,
+                            detectedLineEnds,
+                            pllAdjustedLines,
+                            manualLineEndSamples,
+                            selectedBankStart, selectedBankLineCount,
                             out byte minimumSample, out byte maximumSample);
                         long frameNumber = Interlocked.Increment(ref rawPreviewFrameNumber);
                         Volatile.Write(ref rawPreviewHasFrame, 1);
@@ -3398,8 +3905,9 @@ public partial class MainWindow : Window
                                 UpdateBgraBitmap(rawPreviewBitmap, pixels, rawPreviewWidth, rawPreviewHeight);
                                 rawPreviewImage.InvalidateVisual();
                                 rawPreviewInfoText.Text =
-                                    $"Raw frame {frameNumber:N0} · Field 1 · sample range {minimumSample}–{maximumSample}"
+                                    $"Raw frame {frameNumber:N0} · Field {previewField + 1} · sample range {minimumSample}–{maximumSample}"
                                     + $" · clock run-in search {preset.LineStart}–{preset.LineStartEnd}"
+                                    + " · orange–cyan search · green lock · magenta adjusted end · yellow nominal end · red auto end · purple bank"
                                     + (clockSearchOffsets.All(offset => offset == 0)
                                         ? string.Empty
                                         : " · custom line offsets")
@@ -3417,7 +3925,6 @@ public partial class MainWindow : Window
                         {
                             if (!rawPreviewActive) return;
                             rawPreviewInfoText.Text = $"Raw VBI preview processing failed: {ex.Message}";
-                            if (runAutoSearch) autoSearchButton.IsEnabled = true;
                         });
                     }
                     finally
@@ -3426,11 +3933,25 @@ public partial class MainWindow : Window
                     }
                 });
             };
-            autoSearchButton.Click += (_, _) =>
+            resetAllClockOffsetsButton.Click += (_, _) =>
             {
-                autoSearchButton.IsEnabled = false;
-                autoSearchStatus.Text = "Waiting for the next VBI frame…";
-                Interlocked.Exchange(ref autoSearchRequested, 1);
+                Volatile.Write(ref autoTrackFirstFieldLineMask, 0);
+                Volatile.Write(ref autoTrackSecondFieldLineMask, 0);
+                Array.Fill(lastDetectedClockStarts, -1);
+                for (int line = 0; line < input.LinesPerFrame; line++)
+                {
+                    deconvolutionControl.SetClockSearchOffset(line, 0);
+                    deconvolutionControl.SetManualPacketSpanSamples(line, -1);
+                    Volatile.Write(ref autoEndFitEnabled[line], 0);
+                    lock (autoEndSpanHistories[line])
+                        autoEndSpanHistories[line].Clear();
+                    lock (autoStartOffsetHistories[line])
+                        autoStartOffsetHistories[line].Clear();
+                    deconvolutionControl.SetLineDecodingEnabled(line, true);
+                }
+                UpdateClockBank();
+                autoSearchStatus.Text =
+                    "All line offsets, CRI tracking and automatic endpoints were reset; decoding was enabled for every line.";
             };
             void StopVideoPreviewPipe()
             {
@@ -3581,6 +4102,67 @@ public partial class MainWindow : Window
 
             PageAssembler? liveAssembler = null;
             int livePacketIndex = 0;
+            TeletextPage? lockedLivePage = null;
+            string activeLivePageLock = string.Empty;
+            bool TryGetLockedLivePage(out int magazine, out int pageNumber)
+            {
+                magazine = 0;
+                pageNumber = 0;
+                string text = livePageLockTextBox.Text?.Trim() ?? string.Empty;
+                return text.Length == 3
+                    && text[0] is >= '1' and <= '8'
+                    && int.TryParse(
+                        text.AsSpan(1), NumberStyles.HexNumber,
+                        CultureInfo.InvariantCulture, out pageNumber)
+                    && (magazine = text[0] - '0') is >= 1 and <= 8;
+            }
+            static TeletextPage CreateWaitingPageDisplay(
+                TeletextPage body,
+                TeletextPage header,
+                int lockedMagazine,
+                int lockedPageNumber)
+            {
+                var display = new TeletextPage
+                {
+                    Magazine = lockedMagazine,
+                    PageNumber = lockedPageNumber,
+                    SubPage = body.SubPage,
+                    NationalOption = body.NationalOption,
+                    NationalOptionOverride = body.NationalOptionOverride,
+                    Newsflash = body.Newsflash,
+                    Subtitle = body.Subtitle,
+                    Suppress = body.Suppress,
+                };
+                for (int row = 0; row < 25; row++)
+                {
+                    display.RawRows[row] = body.RawRows[row];
+                    display.RawRowPacketIndices[row] =
+                        body.RawRowPacketIndices[row];
+                    for (int column = 0; column < 40; column++)
+                        display.Grid[column, row] = body.Grid[column, row];
+                }
+
+                // Columns 0-7 are reserved for receiver-generated information.
+                // Keep the broadcaster's live service header (columns 8-39)
+                // untouched and place the requested page at receiver position 3.
+                for (int column = 8; column < 40; column++)
+                    display.Grid[column, 0] = header.Grid[column, 0];
+                string requested = $"P{lockedMagazine}{lockedPageNumber:X2}";
+                const int requestedPageColumn = 2;
+                for (int index = 0; index < requested.Length; index++)
+                {
+                    Cell cell = display.Grid[requestedPageColumn + index, 0];
+                    cell.Character = requested[index];
+                    cell.EnhancementText = null;
+                    cell.IsMosaic = false;
+                    cell.MosaicPattern = 0;
+                    cell.MosaicHeld = false;
+                    cell.HoldMosaics = false;
+                    cell.Conceal = false;
+                    display.Grid[requestedPageColumn + index, 0] = cell;
+                }
+                return display;
+            }
             void InitializeLivePreview()
             {
                 if (liveAssembler is not null) return;
@@ -3589,11 +4171,16 @@ public partial class MainWindow : Window
                 ClearBroadcastPane();
                 _broadcastFileOpen = true;
                 BroadcastPaneGrid.IsVisible = true;
-                BroadcastGrid.IsActive = true;
                 SquashGrid.IsActive = false;
                 BroadcastInfoText.Text = $"Live VBI — {captureInterface.Name}";
                 BroadcastFilePathText.Text = $"{captureInterface.Path} — live capture";
                 UpdateWorkspacePaneVisibility();
+                // Pane layout may activate a broadcast-only grid, so disable it
+                // afterwards. The pane is a monitor rather than an editor while
+                // capture is running.
+                BroadcastGrid.IsActive = false;
+                BroadcastGrid.ClearSelection();
+                SquashGrid.IsActive = false;
                 UpdateG0SubsetMenuChecks();
                 FitWindowToContent();
                 liveAssembler = new PageAssembler(_store, decodeEnhancements: false);
@@ -3604,11 +4191,52 @@ public partial class MainWindow : Window
                 {
                     if (liveAssembler is null) InitializeLivePreview();
                     TeletextPage? latestPage = null;
+                    TeletextPage? latestHeaderPage = null;
+                    string lockText = livePageLockTextBox.Text?.Trim()
+                        .ToUpperInvariant() ?? string.Empty;
+                    bool pageLocked = lockText.Length > 0;
+                    bool validPageLock = TryGetLockedLivePage(
+                        out int lockedMagazine,
+                        out int lockedPageNumber);
+                    if (!string.Equals(
+                            activeLivePageLock, lockText,
+                            StringComparison.Ordinal))
+                    {
+                        activeLivePageLock = lockText;
+                        lockedLivePage = null;
+                    }
                     foreach (byte[] packet in packets)
                     {
                         _broadcastPackets.Add(packet);
                         liveAssembler!.Feed(packet, livePacketIndex++);
-                        latestPage = liveAssembler.LastFinalizedPage ?? latestPage;
+                        latestHeaderPage =
+                            liveAssembler.LastUpdatedPage ?? latestHeaderPage;
+                        TeletextPage? finalized = liveAssembler.LastFinalizedPage;
+                        if (finalized is null) continue;
+                        if (!pageLocked)
+                            latestPage = finalized;
+                        else if (validPageLock
+                                 && finalized.Magazine == lockedMagazine
+                                 && finalized.PageNumber == lockedPageNumber)
+                            lockedLivePage = finalized;
+                    }
+                    if (pageLocked)
+                    {
+                        if (!validPageLock || latestHeaderPage is null) return;
+                        TeletextPage body = lockedLivePage
+                            ?? BroadcastGrid.Page
+                            ?? new TeletextPage
+                            {
+                                Magazine = lockedMagazine,
+                                PageNumber = lockedPageNumber,
+                            };
+                        if (lockedLivePage is not null)
+                            ApplyFileG0SubsetToPage(lockedLivePage, broadcast: true);
+                        BroadcastGrid.Page = CreateWaitingPageDisplay(
+                            body, latestHeaderPage,
+                            lockedMagazine, lockedPageNumber);
+                        BroadcastGrid.InvalidateVisual();
+                        return;
                     }
                     if (latestPage is null) return;
                     ApplyFileG0SubsetToPage(latestPage, broadcast: true);
@@ -3626,6 +4254,7 @@ public partial class MainWindow : Window
                     InitializeLivePreview();
                 }
                 packetReporter.Enabled = enabled;
+                livePageLockTextBox.IsEnabled = enabled;
                 _sessionState.ShowLiveDeconvolvedPage = enabled;
                 SaveSessionState();
             };
@@ -3659,18 +4288,27 @@ public partial class MainWindow : Window
             {
                 try
                 {
-                    await using var rawOutput = new FileStream(
-                        temporaryRawCapture, FileMode.CreateNew, FileAccess.Write,
-                        FileShare.None, 1024 * 1024,
-                        FileOptions.Asynchronous | FileOptions.SequentialScan);
                     await using var output = new FileStream(
                         temporaryOutput, FileMode.CreateNew, FileAccess.Write,
                         FileShare.None, 1024 * 1024,
                         FileOptions.Asynchronous | FileOptions.SequentialScan);
-                    var recordingInput = new RecordingReadStream(input, rawOutput);
-                    await VbiDeconvolutionEngine.DeconvolveAsync(
-                        recordingInput, output, options, reporter, packetReporter, cancellation.Token,
-                        deconvolutionControl);
+                    if (temporaryRawCapture is null)
+                    {
+                        await VbiDeconvolutionEngine.DeconvolveAsync(
+                            input, output, options, reporter, packetReporter,
+                            cancellation.Token, deconvolutionControl);
+                    }
+                    else
+                    {
+                        await using var rawOutput = new FileStream(
+                            temporaryRawCapture, FileMode.CreateNew, FileAccess.Write,
+                            FileShare.None, 1024 * 1024,
+                            FileOptions.Asynchronous | FileOptions.SequentialScan);
+                        var recordingInput = new RecordingReadStream(input, rawOutput);
+                        await VbiDeconvolutionEngine.DeconvolveAsync(
+                            recordingInput, output, options, reporter, packetReporter,
+                            cancellation.Token, deconvolutionControl);
+                    }
                 }
                 catch (Exception ex) { failure = ex; }
                 await Dispatcher.UIThread.InvokeAsync(() =>
@@ -3680,6 +4318,30 @@ public partial class MainWindow : Window
                 });
             });
             await dialog.ShowDialog(this);
+
+            // Pages assembled for the live monitor are deliberately temporary.
+            // Leave the editor empty after capture; the decoded stream below is
+            // the only path that may populate it again.
+            packetReporter.Enabled = false;
+            liveAssembler = null;
+            _store.Clear();
+            _broadcastPackets.Clear();
+            ClearBroadcastPane();
+            BroadcastInfoText.Text = "Full broadcast";
+            BroadcastFilePathText.Text = FormatFileFooter(null, 0);
+            if (_squashFileOpen)
+            {
+                SquashGrid.IsActive = true;
+                BroadcastGrid.IsActive = false;
+            }
+            else
+            {
+                SquashGrid.IsActive = false;
+                BroadcastGrid.IsActive = true;
+            }
+            UpdateWorkspacePaneVisibility();
+            UpdateWindowAndPaneTitles();
+            FitWindowToContent();
 
             try
             {
@@ -3707,6 +4369,9 @@ public partial class MainWindow : Window
 
                 // Open first as an untitled full broadcast. Saving afterwards only
                 // assigns a path to this already-open document.
+                SquashGrid.IsActive = false;
+                SquashGrid.ClearSelection();
+                BroadcastGrid.IsActive = true;
                 await using (var decoded = File.OpenRead(temporaryOutput))
                     await LoadBroadcastStreamAsync(decoded, filePath: null);
                 _sessionState.BroadcastFilePath = null;
@@ -3719,7 +4384,12 @@ public partial class MainWindow : Window
             finally
             {
                 try { if (File.Exists(temporaryOutput)) File.Delete(temporaryOutput); } catch { }
-                try { if (File.Exists(temporaryRawCapture)) File.Delete(temporaryRawCapture); } catch { }
+                try
+                {
+                    if (temporaryRawCapture is not null && File.Exists(temporaryRawCapture))
+                        File.Delete(temporaryRawCapture);
+                }
+                catch { }
             }
         }
     }
@@ -3992,9 +4662,95 @@ public partial class MainWindow : Window
         _ => $"field {field}",
     };
 
+    private static bool TryFindRawVbiBurstEnd(
+        byte[] rawFrame,
+        int samplesPerLine,
+        int physicalLine,
+        int detectedStart,
+        double nominalSpan,
+        double minimumSignalRange,
+        out double endSample)
+    {
+        endSample = -1;
+        if (samplesPerLine <= 0 || physicalLine < 0
+            || rawFrame.Length < (physicalLine + 1) * samplesPerLine)
+            return false;
+
+        int lineOffset = physicalLine * samplesPerLine;
+        int activeFrom = Math.Clamp(detectedStart + 24, 1, samplesPerLine - 2);
+        int activeTo = Math.Clamp(
+            (int)Math.Round(detectedStart + nominalSpan * 0.55),
+            activeFrom + 1, samplesPerLine - 1);
+        byte activeMinimum = 255;
+        byte activeMaximum = 0;
+        for (int sample = activeFrom; sample < activeTo; sample++)
+        {
+            byte value = rawFrame[lineOffset + sample];
+            activeMinimum = Math.Min(activeMinimum, value);
+            activeMaximum = Math.Max(activeMaximum, value);
+        }
+        double activeRange = activeMaximum - activeMinimum;
+        if (activeRange < minimumSignalRange) return false;
+
+        // Roughly twelve teletext bits on either side make the change point
+        // insensitive to the final byte while remaining local enough to follow
+        // line-by-line VHS time-base compression.
+        int window = Math.Clamp((int)Math.Round(nominalSpan / 30.0), 32, 64);
+        int searchFrom = Math.Max(
+            window + 1,
+            (int)Math.Round(detectedStart + nominalSpan * 0.62));
+        int searchTo = Math.Min(
+            samplesPerLine - window - 2,
+            (int)Math.Round(detectedStart + nominalSpan * 1.08));
+        if (searchTo <= searchFrom) return false;
+
+        double minimumActiveEnergy = Math.Max(0.8, activeRange / 48.0);
+        double bestScore = double.NegativeInfinity;
+        int bestBoundary = -1;
+        for (int boundary = searchFrom; boundary <= searchTo; boundary++)
+        {
+            double leftEnergy = 0;
+            double rightEnergy = 0;
+            for (int sample = boundary - window; sample < boundary; sample++)
+                leftEnergy += Math.Abs(
+                    rawFrame[lineOffset + sample + 1]
+                    - rawFrame[lineOffset + sample]);
+            for (int sample = boundary; sample < boundary + window; sample++)
+                rightEnergy += Math.Abs(
+                    rawFrame[lineOffset + sample + 1]
+                    - rawFrame[lineOffset + sample]);
+            leftEnergy /= window;
+            rightEnergy /= window;
+            if (leftEnergy < minimumActiveEnergy
+                || rightEnergy > leftEnergy * 0.48)
+                continue;
+
+            double score = leftEnergy - rightEnergy * 1.5;
+            if (score <= bestScore) continue;
+            bestScore = score;
+            bestBoundary = boundary;
+        }
+        if (bestBoundary < 0) return false;
+
+        double transitionThreshold = Math.Max(2.0, activeRange * 0.08);
+        int refineFrom = Math.Max(searchFrom, bestBoundary - window / 2);
+        int refineTo = Math.Min(searchTo, bestBoundary + window / 2);
+        int lastTransition = -1;
+        for (int sample = refineFrom; sample <= refineTo; sample++)
+        {
+            double contrast = Math.Abs(
+                rawFrame[lineOffset + sample + 1]
+                - rawFrame[lineOffset + sample - 1]);
+            if (contrast >= transitionThreshold) lastTransition = sample;
+        }
+        endSample = lastTransition >= 0 ? lastTransition + 0.5 : bestBoundary;
+        return true;
+    }
+
     private static byte[] BuildRawVbiPreview(
         byte[] rawFrame,
         int samplesPerLine,
+        int firstLine,
         int lineCount,
         int displayedSamples,
         int outputWidth,
@@ -4002,14 +4758,21 @@ public partial class MainWindow : Window
         int clockSearchStart,
         int clockSearchEnd,
         IReadOnlyList<int> clockSearchOffsets,
+        IReadOnlyList<int> detectedClockStarts,
+        IReadOnlyList<int> detectedLineEnds,
+        IReadOnlyList<bool> pllAdjustedLines,
+        IReadOnlyList<int> manualLineEndSamples,
+        int selectedLineStart,
+        int selectedLineCount,
         out byte minimumSample,
         out byte maximumSample)
     {
         var pixels = new byte[checked(outputWidth * outputHeight * 4)];
         minimumSample = 0;
         maximumSample = 0;
-        if (samplesPerLine <= 0 || lineCount <= 0 || displayedSamples <= 0
-            || rawFrame.Length < samplesPerLine * lineCount)
+        if (samplesPerLine <= 0 || firstLine < 0 || lineCount <= 0
+            || displayedSamples <= 0
+            || rawFrame.Length < samplesPerLine * (firstLine + lineCount))
             return pixels;
 
         displayedSamples = Math.Min(displayedSamples, samplesPerLine);
@@ -4019,7 +4782,7 @@ public partial class MainWindow : Window
         for (int line = 0; line < lineCount; line++)
         for (int sample = 0; sample < displayedSamples; sample++)
         {
-            byte value = rawFrame[line * samplesPerLine + sample];
+            byte value = rawFrame[(firstLine + line) * samplesPerLine + sample];
             minimumSample = Math.Min(minimumSample, value);
             maximumSample = Math.Max(maximumSample, value);
         }
@@ -4028,7 +4791,7 @@ public partial class MainWindow : Window
         for (int outputY = 0; outputY < outputHeight; outputY++)
         {
             int sourceLine = Math.Min(outputY * lineCount / outputHeight, lineCount - 1);
-            int sourceLineOffset = sourceLine * samplesPerLine;
+            int sourceLineOffset = (firstLine + sourceLine) * samplesPerLine;
             int outputOffset = outputY * outputWidth * 4;
             for (int outputX = 0; outputX < outputWidth; outputX++)
             {
@@ -4050,7 +4813,100 @@ public partial class MainWindow : Window
         // Mark the preset's raw-sample window used to locate the clock run-in.
         DrawSearchMarker(clockSearchStart, 0x00, 0xA5, 0xFF); // orange (BGRA)
         DrawSearchMarker(clockSearchEnd, 0xFF, 0xD7, 0x00);   // cyan (BGRA)
+        DrawDetectedMarkers();
+        DrawLineEndMarkers();
+        DrawManualEndMarkers();
+        DrawSelectedBankOutline();
         return pixels;
+
+        void DrawDetectedMarkers()
+        {
+            int markerWidth = Math.Max(1, (int)Math.Round(outputWidth / 500.0 * 2));
+            for (int y = 0; y < outputHeight; y++)
+            {
+                int sourceLine = Math.Min(y * lineCount / outputHeight, lineCount - 1);
+                if (sourceLine >= detectedClockStarts.Count) continue;
+                int sample = detectedClockStarts[sourceLine];
+                if (sample < 0 || sample >= displayedSamples) continue;
+                int x = (int)Math.Round(sample * (outputWidth - 1.0) / displayedSamples);
+                for (int dx = 0; dx < markerWidth && x + dx < outputWidth; dx++)
+                {
+                    int offset = (y * outputWidth + x + dx) * 4;
+                    pixels[offset] = 0x40;
+                    pixels[offset + 1] = 0xFF;
+                    pixels[offset + 2] = 0x40;
+                    pixels[offset + 3] = 0xFF;
+                }
+            }
+        }
+
+        void DrawLineEndMarkers()
+        {
+            int markerWidth = Math.Max(1, (int)Math.Round(outputWidth / 500.0 * 2));
+            for (int y = 0; y < outputHeight; y++)
+            {
+                int sourceLine = Math.Min(y * lineCount / outputHeight, lineCount - 1);
+                if (sourceLine >= detectedLineEnds.Count) continue;
+                int sample = detectedLineEnds[sourceLine];
+                if (sample < 0 || sample >= displayedSamples) continue;
+                bool adjusted = sourceLine < pllAdjustedLines.Count
+                    && pllAdjustedLines[sourceLine];
+                int x = (int)Math.Round(sample * (outputWidth - 1.0) / displayedSamples);
+                for (int dx = 0; dx < markerWidth && x + dx < outputWidth; dx++)
+                {
+                    int offset = (y * outputWidth + x + dx) * 4;
+                    pixels[offset] = adjusted ? (byte)0xFF : (byte)0x20;
+                    pixels[offset + 1] = adjusted ? (byte)0x40 : (byte)0xE0;
+                    pixels[offset + 2] = 0xFF;
+                    pixels[offset + 3] = 0xFF;
+                }
+            }
+        }
+
+        void DrawManualEndMarkers()
+        {
+            int markerWidth = Math.Max(1, (int)Math.Round(outputWidth / 500.0 * 2));
+            for (int y = 0; y < outputHeight; y++)
+            {
+                int sourceLine = Math.Min(y * lineCount / outputHeight, lineCount - 1);
+                if (sourceLine >= manualLineEndSamples.Count) continue;
+                int sample = manualLineEndSamples[sourceLine];
+                if (sample < 0 || sample >= displayedSamples) continue;
+                int x = (int)Math.Round(sample * (outputWidth - 1.0) / displayedSamples);
+                for (int dx = 0; dx < markerWidth && x + dx < outputWidth; dx++)
+                {
+                    int offset = (y * outputWidth + x + dx) * 4;
+                    pixels[offset] = 0x20;
+                    pixels[offset + 1] = 0x20;
+                    pixels[offset + 2] = 0xFF;
+                    pixels[offset + 3] = 0xFF;
+                }
+            }
+        }
+
+        void DrawSelectedBankOutline()
+        {
+            if (selectedLineCount <= 0 || selectedLineStart < 0
+                || selectedLineStart >= lineCount)
+                return;
+
+            int endLine = Math.Min(selectedLineStart + selectedLineCount, lineCount);
+            int top = selectedLineStart * outputHeight / lineCount;
+            int bottom = Math.Max(top, endLine * outputHeight / lineCount - 1);
+            const int thickness = 2;
+            for (int y = top; y <= bottom; y++)
+            for (int x = 0; x < outputWidth; x++)
+            {
+                bool border = y < top + thickness || y > bottom - thickness
+                    || x < thickness || x >= outputWidth - thickness;
+                if (!border) continue;
+                int offset = (y * outputWidth + x) * 4;
+                pixels[offset] = 0xFF;     // blue
+                pixels[offset + 1] = 0x66; // green
+                pixels[offset + 2] = 0xCC; // red
+                pixels[offset + 3] = 0xFF;
+            }
+        }
 
         void DrawSearchMarker(int baseSample, byte blue, byte green, byte red)
         {
@@ -7097,11 +7953,19 @@ public partial class MainWindow : Window
     }
 
     private async Task<LiveCaptureCompletionChoice> ShowLiveCaptureCompletionDialogAsync(
-        string rawCapturePath,
+        string? rawCapturePath,
         long packetCount)
     {
         LiveCaptureCompletionChoice choice = LiveCaptureCompletionChoice.Discard;
-        var saveRawButton = new Button { Content = "Save VBI file…", Width = 120 };
+        bool hasRawCapture = rawCapturePath is not null && File.Exists(rawCapturePath);
+        var saveRawButton = new Button
+        {
+            Content = "Save VBI file…",
+            Width = 120,
+            IsEnabled = hasRawCapture,
+        };
+        if (!hasRawCapture)
+            ToolTip.SetTip(saveRawButton, "Raw VBI recording was disabled for this capture");
         var discardButton = new Button
         {
             Content = "Discard all",
@@ -7131,8 +7995,12 @@ public partial class MainWindow : Window
                     new TextBlock
                     {
                         Text = packetCount > 0
-                            ? $"Recovered {packetCount:N0} Teletext packets. You can save the raw VBI capture, then open the decoded stream or discard everything."
-                            : "No Teletext packets were recovered. You can still save the raw VBI capture for later analysis.",
+                            ? hasRawCapture
+                                ? $"Recovered {packetCount:N0} Teletext packets. You can save the raw VBI capture, then open the decoded stream or discard everything."
+                                : $"Recovered {packetCount:N0} Teletext packets. Raw VBI recording was disabled; open the decoded stream or discard everything."
+                            : hasRawCapture
+                                ? "No Teletext packets were recovered. You can still save the raw VBI capture for later analysis."
+                                : "No Teletext packets were recovered. Raw VBI recording was disabled for this capture.",
                         TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
                     },
                     new Grid
@@ -7149,6 +8017,7 @@ public partial class MainWindow : Window
 
         saveRawButton.Click += async (_, _) =>
         {
+            if (rawCapturePath is null) return;
             saveRawButton.IsEnabled = false;
             try
             {
