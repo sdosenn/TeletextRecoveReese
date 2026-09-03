@@ -74,6 +74,7 @@ public partial class MainWindow : Window
     private bool _squashPaneEstablished;
     private bool _closeConfirmed;
     private bool _closeDialogOpen;
+    private bool _broadcastReadOnlyExplanationShown;
 
     private sealed class HexNumericConverter(int digits, bool packedSubpage = false) : IValueConverter
     {
@@ -343,7 +344,9 @@ public partial class MainWindow : Window
         new() { Name = "SAA7131 PCI", Chipset = "SAA7131", Interface = "PCI", SampleRate = 27000000, LineLength = 2048, LineStart = 0, LineStartEnd = 60, SampleType = "UInt8", FieldLines = 17, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
         new() { Name = "SAA7131 USB", Chipset = "SAA7131", Interface = "USB", SampleRate = 27000000, LineLength = 1440, LineStart = 0, LineStartEnd = 20, SampleType = "UInt8", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
         new() { Name = "SAA7135 PCI", Chipset = "SAA7135", Interface = "PCI / DirectShow", SampleRate = 27000000, LineLength = 1600, LineStart = 0, LineStartEnd = 60, SampleType = "UInt8", FieldLines = 18, FieldRangeStart = 0, FieldRangeEnd = 18, IsBuiltIn = true },
-        new() { Name = "August VGB100 / Elgato Video Capture", Chipset = "August VGB100 / Elgato Video Capture", Interface = "USB", SampleRate = 27000000, LineLength = 1440, LineStart = 0, LineStartEnd = 20, SampleType = "UInt8", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
+        new() { Name = "August VGB100 USB", Chipset = "August VGB100", Interface = "USB", SampleRate = 27000000, LineLength = 1440, LineStart = 0, LineStartEnd = 20, SampleType = "UInt8", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
+        new() { Name = "Elgato Video Capture (0FD9:0033)", Chipset = "Empia EM2860 + SAA711x", Interface = "USB", SampleRate = 13500000, LineLength = 720, LineStart = 0, LineStartEnd = 20, SampleType = "UInt8", FieldLines = 18, FieldRangeStart = 0, FieldRangeEnd = 18, IsBuiltIn = true },
+        new() { Name = "Elgato Video Capture V2 (0FD9:0037)", Chipset = "Conexant CX231xx", Interface = "USB", SampleRate = 27000000, LineLength = 1440, LineStart = 0, LineStartEnd = 20, SampleType = "UInt8", FieldLines = 18, FieldRangeStart = 0, FieldRangeEnd = 18, IsBuiltIn = true },
         new() { Name = "BT8x8 PCI", Chipset = "BT8x8", Interface = "PCI", SampleRate = 35468950, LineLength = 2048, LineStart = 60, LineStartEnd = 130, SampleType = "UInt8", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
         new() { Name = "CX88 PCI", Chipset = "CX88", Interface = "PCI", SampleRate = 35468950, LineLength = 2048, LineStart = 90, LineStartEnd = 150, SampleType = "UInt8", FieldLines = 18, FieldRangeStart = 1, FieldRangeEnd = 17, IsBuiltIn = true },
         new() { Name = "VHS-decode Full TBC", Chipset = "VHS-decode", Interface = "TBC file", SampleRate = 17730000, LineLength = 1135, LineStart = 160, LineStartEnd = 190, SampleType = "UInt16", FieldLines = 313, FieldRangeStart = 6, FieldRangeEnd = 22, IsBuiltIn = true },
@@ -417,6 +420,8 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeOpenRecentMenuItem;
     private NativeMenuItem? _nativeG0SubsetMenuItem;
     private NativeMenuItem? _nativeCreateSquashedStreamMenuItem;
+    private NativeMenuItem? _nativeOpenLiveVbiCaptureMenuItem;
+    private NativeMenuItem? _nativeSaveCapturedStreamMenuItem;
     private NativeMenuItem? _nativeDisableLiveVbiVideoPreviewMenuItem;
     private readonly string? _ffmpegPath;
     private bool _showX26EnhancementsSidebar = true;
@@ -467,6 +472,10 @@ public partial class MainWindow : Window
             ClearValue(NativeMenu.MenuProperty);
         }
         InitializeNativeMenuReferences();
+        bool liveVbiCaptureAvailable = !OperatingSystem.IsMacOS();
+        OpenLiveVbiCaptureMenuItem.IsEnabled = liveVbiCaptureAvailable;
+        if (_nativeOpenLiveVbiCaptureMenuItem is not null)
+            _nativeOpenLiveVbiCaptureMenuItem.IsEnabled = liveVbiCaptureAvailable;
         _ffmpegPath = FindFfmpegExecutable();
         ExportVideoMenuItem.IsEnabled = _ffmpegPath is not null;
         if (_nativeExportVideoMenuItem is not null)
@@ -548,6 +557,13 @@ public partial class MainWindow : Window
                 _installedFontFamilies.Add(new FontChoice(name, family));
         }
 
+        // Avalonia can report success here by silently resolving an unknown
+        // family to the platform fallback. Fonts such as TIFAX installed in a
+        // macOS Fonts directory must be registered with our runtime collection
+        // before the saved family name is applied.
+        if (OperatingSystem.IsMacOS() && !string.IsNullOrWhiteSpace(requestedFamilyName))
+            LoadMacFontsMissingFromSystemCatalog(CancellationToken.None);
+
         if (_installedFontFamilies.Count == 0)
         {
             FontFamily family = FontManager.Current.DefaultFontFamily;
@@ -593,12 +609,21 @@ public partial class MainWindow : Window
 
     private void LoadMacFontsMissingFromSystemCatalog(CancellationToken cancellationToken)
     {
+        void UpsertFontChoice(string name, FontFamily family)
+        {
+            int existingIndex = _installedFontFamilies.FindIndex(choice =>
+                string.Equals(choice.Name, name, StringComparison.OrdinalIgnoreCase));
+            var choice = new FontChoice(name, family);
+            if (existingIndex >= 0)
+                _installedFontFamilies[existingIndex] = choice;
+            else
+                _installedFontFamilies.Add(choice);
+        }
+
         foreach ((string name, FontFamily family) in _loadedMacFontFamilies)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!_installedFontFamilies.Any(choice =>
-                    string.Equals(choice.Name, name, StringComparison.OrdinalIgnoreCase)))
-                _installedFontFamilies.Add(new FontChoice(name, family));
+            UpsertFontChoice(name, family);
         }
 
         string userFonts = Path.Combine(
@@ -650,13 +675,9 @@ public partial class MainWindow : Window
                                  .Select(name => name!)
                                  .Distinct(StringComparer.OrdinalIgnoreCase))
                     {
-                        if (_installedFontFamilies.Any(choice =>
-                                string.Equals(choice.Name, name, StringComparison.OrdinalIgnoreCase)))
-                            continue;
-
                         var family = new FontFamily($"{MacInstalledFontCollectionKey}#{name}");
                         _loadedMacFontFamilies[name] = family;
-                        _installedFontFamilies.Add(new FontChoice(name, family));
+                        UpsertFontChoice(name, family);
                     }
                 }
                 catch
@@ -1193,20 +1214,91 @@ public partial class MainWindow : Window
     {
         CaptureSessionSelection();
         SaveSessionState();
-        if (_closeConfirmed || !_squashDirty) return;
+        if (_closeConfirmed) return;
+
+        bool hasUnsavedCapturedStream = HasUnsavedCapturedStream();
+        if (!hasUnsavedCapturedStream && !_squashDirty) return;
 
         e.Cancel = true;
         if (_closeDialogOpen) return;
 
         _closeDialogOpen = true;
-        bool closeWithoutSaving = await ConfirmCloseWithoutSavingAsync();
-        _closeDialogOpen = false;
-
-        if (closeWithoutSaving)
+        try
         {
+            if (hasUnsavedCapturedStream)
+            {
+                UnsavedCaptureCloseChoice choice = await ConfirmUnsavedCapturedStreamOnCloseAsync();
+                if (choice == UnsavedCaptureCloseChoice.Cancel) return;
+                if (choice == UnsavedCaptureCloseChoice.Save
+                    && !await SaveCapturedStreamAsync())
+                    return;
+            }
+
+            if (_squashDirty && !await ConfirmCloseWithoutSavingAsync()) return;
+
             _closeConfirmed = true;
             Close();
         }
+        finally
+        {
+            _closeDialogOpen = false;
+        }
+    }
+
+    private enum UnsavedCaptureCloseChoice
+    {
+        Cancel,
+        Discard,
+        Save,
+    }
+
+    private async Task<UnsavedCaptureCloseChoice> ConfirmUnsavedCapturedStreamOnCloseAsync()
+    {
+        UnsavedCaptureCloseChoice choice = UnsavedCaptureCloseChoice.Cancel;
+        var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
+        var discardButton = new Button { Content = "Close without saving", Width = 155 };
+        var saveButton = new Button { Content = "Save…", Width = 90, IsDefault = true };
+        var dialog = new Window
+        {
+            Title = "Unsaved captured stream",
+            Width = 500,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(22),
+                Spacing = 18,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = $"The Untitled full broadcast contains {_broadcastPackets.Count:N0} captured packets. Save it before closing?",
+                        TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { cancelButton, discardButton, saveButton },
+                    },
+                },
+            },
+        };
+        cancelButton.Click += (_, _) => dialog.Close();
+        discardButton.Click += (_, _) =>
+        {
+            choice = UnsavedCaptureCloseChoice.Discard;
+            dialog.Close();
+        };
+        saveButton.Click += (_, _) =>
+        {
+            choice = UnsavedCaptureCloseChoice.Save;
+            dialog.Close();
+        };
+        await dialog.ShowDialog(this);
+        return choice;
     }
 
     private async Task<bool> ConfirmCloseWithoutSavingAsync()
@@ -1320,8 +1412,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                PlaySystemErrorSound();
-                await BroadcastGrid.FlashReadOnlyWarningAsync();
+                await WarnBroadcastReadOnlyAsync();
             }
             return;
         }
@@ -1336,8 +1427,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                PlaySystemErrorSound();
-                await BroadcastGrid.FlashReadOnlyWarningAsync();
+                await WarnBroadcastReadOnlyAsync();
             }
             return;
         }
@@ -1368,8 +1458,7 @@ public partial class MainWindow : Window
         if (activeGrid == BroadcastGrid && IsEditingKey(e))
         {
             e.Handled = true;
-            PlaySystemErrorSound();
-            _ = BroadcastGrid.FlashReadOnlyWarningAsync();
+            await WarnBroadcastReadOnlyAsync();
             return;
         }
 
@@ -1818,6 +1907,25 @@ public partial class MainWindow : Window
         || TryGetLevel15Diacritic(e, out _, out _)
         || e.Key is Key.Back or Key.Delete or Key.Enter;
 
+    private async Task WarnBroadcastReadOnlyAsync()
+    {
+        bool showExplanation = BroadcastPaneGrid.IsVisible
+            && !SquashPaneGrid.IsVisible
+            && !_broadcastReadOnlyExplanationShown;
+        if (showExplanation)
+            _broadcastReadOnlyExplanationShown = true;
+
+        PlaySystemErrorSound();
+        await BroadcastGrid.FlashReadOnlyWarningAsync();
+
+        if (!showExplanation) return;
+        await ShowMessageAsync(
+            "Full broadcast capture is read-only",
+            "A full broadcast capture cannot be edited directly.\n\n" +
+            "To restore and edit Teletext pages, choose Page > Create Squashed Stream. " +
+            "The squashed stream will open in the editable left pane.");
+    }
+
     private void DeletePreviousCell()
     {
         if (SquashGrid.Page is not { } page) return;
@@ -2140,6 +2248,9 @@ public partial class MainWindow : Window
 
     private void OnNativeSaveAsClicked(object? sender, EventArgs e) =>
         OnSaveAsClicked(sender, new RoutedEventArgs());
+
+    private void OnNativeSaveCapturedStreamClicked(object? sender, EventArgs e) =>
+        OnSaveCapturedStreamClicked(sender, new RoutedEventArgs());
 
     private void OnNativeExportScreenshotClicked(object? sender, EventArgs e) =>
         OnExportScreenshotClicked(sender, new RoutedEventArgs());
@@ -2535,10 +2646,19 @@ public partial class MainWindow : Window
 
         if (menu.Items.Count > 0 && menu.Items[0] is NativeMenuItem { Menu: { } fileMenu })
         {
+            _nativeOpenLiveVbiCaptureMenuItem = fileMenu.Items
+                .OfType<NativeMenuItem>()
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Open VBI Capture", StringComparison.Ordinal))?
+                .Menu?.Items
+                .OfType<NativeMenuItem>()
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Live Capture…", StringComparison.Ordinal));
             _nativeOpenRecentMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
                 .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Open Recent", StringComparison.Ordinal))
                 ?? fileMenu.Items.ElementAtOrDefault(2) as NativeMenuItem;
+            _nativeSaveCapturedStreamMenuItem = fileMenu.Items
+                .OfType<NativeMenuItem>()
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Save Captured Stream…", StringComparison.Ordinal));
             _nativeExportVideoMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
                 .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Export Video…", StringComparison.Ordinal));
@@ -2671,6 +2791,7 @@ public partial class MainWindow : Window
 
     private async void OnOpenLiveVbiCaptureClicked(object? sender, RoutedEventArgs e)
     {
+        if (OperatingSystem.IsMacOS()) return;
         _sessionState.CustomCaptureCardPresets ??= new List<CaptureCardPreset>();
         List<CaptureCardPreset> presets = BuiltInCaptureCardPresets
             .Concat(_sessionState.CustomCaptureCardPresets)
@@ -2892,7 +3013,7 @@ public partial class MainWindow : Window
                     return;
 
                 int windowsGeneration = ++previewGeneration;
-                previewStatusText.Text = $"Opening DirectShow preview from {captureInterface.Name}â€¦";
+                previewStatusText.Text = $"Opening DirectShow preview from {captureInterface.Name}…";
                 try
                 {
                     directShowPreview = await Task.Run(() => new WindowsDirectShowPreview(
@@ -2926,7 +3047,7 @@ public partial class MainWindow : Window
                                 previewStatusText.Text = $"DirectShow preview frame failed: {ex.Message}";
                             }
                         }, DispatcherPriority.Background)));
-                    previewStatusText.Text = $"Live DirectShow preview Â· {selectedDirectShowInput.Name} Â· {selectedDirectShowStandard.Name}";
+                    previewStatusText.Text = $"Live DirectShow preview · {selectedDirectShowInput.Name} · {selectedDirectShowStandard.Name}";
                 }
                 catch (Exception ex)
                 {
@@ -3042,8 +3163,8 @@ public partial class MainWindow : Window
 
             if (OperatingSystem.IsWindows())
             {
-                statusText.Text = $"Reading DirectShow properties for {captureInterface.Name}â€¦";
-                cardNameText.Text = "Capture card: readingâ€¦";
+                statusText.Text = $"Reading DirectShow properties for {captureInterface.Name}…";
+                cardNameText.Text = "Capture card: reading…";
                 try
                 {
                     DirectShowDeviceInfo device = await Task.Run(() =>
@@ -5522,6 +5643,7 @@ public partial class MainWindow : Window
                 // session loader. Keep its visible source name only for this run.
                 _broadcastFilePath = null;
                 _sessionState.BroadcastFilePath = null;
+                UpdateWindowAndPaneTitles();
                 SaveSessionState();
             }
             await ShowMessageAsync(
@@ -5772,6 +5894,7 @@ public partial class MainWindow : Window
     private void ClearBroadcastPane()
     {
         StopFlashRoll();
+        _broadcastReadOnlyExplanationShown = false;
         _broadcastFileG0Subset = null;
         _broadcastEnhancementsScanned.Clear();
         _suppressComboEvents = true;
@@ -5926,6 +6049,7 @@ public partial class MainWindow : Window
 
     private void UpdateWindowAndPaneTitles()
     {
+        UpdateSaveCapturedStreamMenuVisibility();
         bool broadcastVisible = BroadcastPaneGrid.IsVisible;
         bool dualPane = broadcastVisible && _squashPaneEstablished;
         bool broadcastOnly = broadcastVisible && !_squashPaneEstablished;
@@ -5960,6 +6084,19 @@ public partial class MainWindow : Window
             SquashInfoText.IsVisible = false;
             SquashInfoText.Text = "Squashed page";
         }
+    }
+
+    private bool HasUnsavedCapturedStream() =>
+        _broadcastFileOpen
+        && string.IsNullOrWhiteSpace(_broadcastFilePath)
+        && _broadcastPackets.Count > 0;
+
+    private void UpdateSaveCapturedStreamMenuVisibility()
+    {
+        bool visible = HasUnsavedCapturedStream();
+        SaveCapturedStreamMenuItem.IsVisible = visible;
+        if (_nativeSaveCapturedStreamMenuItem is not null)
+            _nativeSaveCapturedStreamMenuItem.IsVisible = visible;
     }
 
     private PageHistory EnsurePageHistory(TeletextPage page)
@@ -6371,6 +6508,12 @@ public partial class MainWindow : Window
 
     private void InsertControlCodeAtSelection(byte controlCode)
     {
+        if (BroadcastPaneGrid.IsVisible && !SquashPaneGrid.IsVisible)
+        {
+            _ = WarnBroadcastReadOnlyAsync();
+            return;
+        }
+
         if (SquashGrid.Page is not { } page) return;
         int x = SquashGrid.SelectedColumn;
         int y = SquashGrid.SelectedRow;
@@ -7146,6 +7289,7 @@ public partial class MainWindow : Window
             : -1;
         SquashPreviousButton.IsEnabled = squashIndex > 0;
         SquashNextButton.IsEnabled = squashIndex >= 0 && squashIndex < squashAddresses.Count - 1;
+        SquashDeletePageButton.IsEnabled = squashIndex >= 0;
         UpdateRestorationProgress(squashAddresses.Count, squashIndex);
 
         SquashJumpToBroadcastButton.IsEnabled = _broadcastFileOpen;
@@ -8500,6 +8644,64 @@ public partial class MainWindow : Window
 
     private async void OnSaveClicked(object? sender, RoutedEventArgs e) => await SaveSquashAsync(forcePicker: false);
     private async void OnSaveAsClicked(object? sender, RoutedEventArgs e) => await SaveSquashAsync(forcePicker: true);
+    private async void OnSaveCapturedStreamClicked(object? sender, RoutedEventArgs e) =>
+        await SaveCapturedStreamAsync();
+
+    private async Task<bool> SaveCapturedStreamAsync()
+    {
+        if (!HasUnsavedCapturedStream()) return false;
+
+        IStorageFile? destination = await StorageProvider.SaveFilePickerAsync(
+            new FilePickerSaveOptions
+            {
+                Title = "Save captured full broadcast stream",
+                SuggestedFileName = $"captured-stream-{DateTime.Now:yyyyMMdd-HHmmss}.t42",
+                DefaultExtension = "t42",
+                FileTypeChoices = new[]
+                {
+                    new FilePickerFileType("Raw Teletext packet stream")
+                    {
+                        Patterns = new[] { "*.t42" },
+                    },
+                },
+            });
+        string? destinationPath = destination?.Path.IsFile == true
+            ? destination.Path.LocalPath
+            : null;
+        if (destination is not null && destinationPath is null)
+        {
+            await ShowMessageAsync("Save captured stream", "The selected destination is not a local file.");
+            return false;
+        }
+        if (destinationPath is null) return false;
+
+        try
+        {
+            await using (var output = new FileStream(
+                             destinationPath, FileMode.Create, FileAccess.Write,
+                             FileShare.None, 1024 * 1024,
+                             FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                foreach (byte[] packet in _broadcastPackets)
+                    await output.WriteAsync(packet);
+                await output.FlushAsync();
+            }
+
+            _broadcastFilePath = destinationPath;
+            _sessionState.BroadcastFilePath = destinationPath;
+            BroadcastFilePathText.Text = FormatFileFooter(
+                destinationPath, _store.TotalInstanceCount);
+            UpdateWindowAndPaneTitles();
+            await RememberFileAsync(destinationPath, broadcast: true);
+            SaveSessionState();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Could not save captured stream", ex.Message);
+            return false;
+        }
+    }
 
     private static string? FindFfmpegExecutable()
     {

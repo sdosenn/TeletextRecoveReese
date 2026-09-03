@@ -25,6 +25,7 @@
                     <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Save" Gesture="Meta+S" Click="OnNativeSaveClicked" />
                     <NativeMenuItem Header="Save As…" Gesture="Meta+Shift+S" Click="OnNativeSaveAsClicked" />
+                    <NativeMenuItem Header="Save Captured Stream…" IsVisible="False" Click="OnNativeSaveCapturedStreamClicked" />
                     <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Export Screenshot…" Click="OnNativeExportScreenshotClicked" />
                     <NativeMenuItem Header="Batch Export Screenshots…" Click="OnNativeBatchExportScreenshotsClicked" />
@@ -112,12 +113,13 @@
                 <MenuItem Header="Open broadcast stream..." Click="OnOpenClicked" />
                 <MenuItem Header="Open _VBI Capture">
                     <MenuItem Header="From _File..." Click="OnOpenVbiCaptureClicked" />
-                    <MenuItem Header="_Live Capture..." Click="OnOpenLiveVbiCaptureClicked" />
+                    <MenuItem x:Name="OpenLiveVbiCaptureMenuItem" Header="_Live Capture..." Click="OnOpenLiveVbiCaptureClicked" />
                 </MenuItem>
                 <MenuItem x:Name="OpenRecentMenuItem" Header="Open _Recent" />
                 <Separator />
                 <MenuItem Header="_Save" InputGesture="Ctrl+S" Click="OnSaveClicked" />
                 <MenuItem Header="Save _As..." Click="OnSaveAsClicked" />
+                <MenuItem x:Name="SaveCapturedStreamMenuItem" Header="Save _Captured Stream..." IsVisible="False" Click="OnSaveCapturedStreamClicked" />
                 <Separator />
                 <MenuItem Header="Export _Screenshot..." Click="OnExportScreenshotClicked" />
                 <MenuItem Header="_Batch Export Screenshots..." Click="OnBatchExportScreenshotsClicked" />
@@ -216,6 +218,7 @@
                                 <ComboBox x:Name="SquashMagazineComboBox" Width="70" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashMagazineComboChanged"/>
                                 <ComboBox x:Name="SquashPageNumberComboBox" Width="70" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashPageNumberComboChanged"/>
                                 <ComboBox x:Name="SquashSubpageComboBox" Width="80" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashSubpageComboChanged"/>
+                                <Button x:Name="SquashDeletePageButton" IsEnabled="False" Content="🗑" ToolTip.Tip="Delete current page" Width="32" Height="30" FontSize="16" Padding="0" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnDeletePageClicked"/>
                                 <Separator Width="1" Background="#3f3f46" Margin="2,2"/>
                                 <Button x:Name="SquashPreviousButton" IsEnabled="False" Content="&lt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnSquashPreviousClicked"/>
                                 <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="#ffffff" FontSize="13" Margin="2,0"/>

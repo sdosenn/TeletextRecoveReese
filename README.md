@@ -173,7 +173,7 @@ dotnet build TeletextRecoveReese.sln
 
 ## Status
 
-- Current version: **0.4 beta**
+- Current version: **0.6 beta**
 - Actively developed and used for real restoration work.
 - Core `.t42` loading, comparison, editing, squashing, and export are available.
 - Complete EN 300 706 coverage and broader interoperability testing are ongoing.
