@@ -3214,7 +3214,8 @@ public partial class MainWindow : Window
                     captureInterface.Path, linuxInput.Index, linuxStandard.Id);
             else if (OperatingSystem.IsWindows() && directShowInput is not null && directShowStandard is not null)
                 input = new WindowsDirectShowVbiCaptureStream(
-                    captureInterface.Name, directShowInput, directShowStandard);
+                    captureInterface.Name, directShowInput, directShowStandard,
+                    preset.LineLength, preset.FieldLines);
             else
                 throw new PlatformNotSupportedException("No live VBI transport is available for this platform.");
         }
@@ -3309,7 +3310,9 @@ public partial class MainWindow : Window
             {
                 Text = "Waiting for the first raw VBI frame…",
                 Foreground = Brushes.LightGray,
-                TextWrapping = TextWrapping.Wrap,
+                TextWrapping = TextWrapping.NoWrap,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Height = 22,
             };
             const int videoPreviewWidth = 240;
             const int videoPreviewHeight = 180;
@@ -3439,9 +3442,6 @@ public partial class MainWindow : Window
             var autoEndSpanHistories = Enumerable.Range(0, input.LinesPerFrame)
                 .Select(_ => new Queue<double>())
                 .ToArray();
-            var autoStartOffsetHistories = Enumerable.Range(0, input.LinesPerFrame)
-                .Select(_ => new Queue<int>())
-                .ToArray();
             int autoTrackFirstFieldLineMask = 0;
             int autoTrackSecondFieldLineMask = 0;
             int selectedRawPreviewField = 0;
@@ -3538,8 +3538,6 @@ public partial class MainWindow : Window
                     int physicalLine = field == 0
                         ? line
                         : line + input.FirstFieldLines;
-                    lock (autoStartOffsetHistories[physicalLine])
-                        autoStartOffsetHistories[physicalLine].Clear();
                     if (field == 0)
                     {
                         int mask = Volatile.Read(ref autoTrackFirstFieldLineMask);
@@ -3873,46 +3871,19 @@ public partial class MainWindow : Window
                                     VbiDeconvolutionEngine.FindClockRunInOffsets(
                                         fieldFrame, options,
                                         Math.Min(lineCount, adjustableLineCount),
+                                        maximumOffsetSamples: input.SamplesPerLine / 2,
                                         lineMask: trackedMask);
                                 for (int line = 0; line < detectedOffsets.Length; line++)
                                 {
                                     if ((trackedMask & (1 << line)) == 0) continue;
                                     if (detectedOffsets[line] is not int offset) continue;
                                     int physicalLine = firstLine + line;
-                                    int detectedStart = preset.LineStart
-                                        + (preset.LineStartEnd - preset.LineStart) / 2
-                                        + offset;
-                                    Queue<int> history =
-                                        autoStartOffsetHistories[physicalLine];
-                                    bool accepted;
-                                    lock (history)
-                                    {
-                                        int[] ordered = history.Order().ToArray();
-                                        int median = ordered.Length == 0
-                                            ? 0
-                                            : ordered[ordered.Length / 2];
-                                        int[] deviations = ordered
-                                            .Select(value => Math.Abs(value - median))
-                                            .Order()
-                                            .ToArray();
-                                        int medianDeviation = deviations.Length == 0
-                                            ? 0
-                                            : deviations[deviations.Length / 2];
-                                        int allowedJump = Math.Max(
-                                            70, medianDeviation * 6 + 24);
-                                        bool implausiblyLate = detectedStart >= 0
-                                            && offset > 180;
-                                        bool discontinuity = ordered.Length >= 3
-                                            && detectedStart >= 0
-                                            && Math.Abs(offset - median) > allowedJump;
-                                        accepted = !implausiblyLate && !discontinuity;
-                                        if (accepted)
-                                        {
-                                            history.Enqueue(offset);
-                                            while (history.Count > 9)
-                                                history.Dequeue();
-                                        }
-                                    }
+                                    int detectedStart = preset.LineStart + offset;
+                                    // Keep CRI tracking deliberately simple: a
+                                    // slightly clipped negative start is valid,
+                                    // but nothing in the latter half of the raw
+                                    // line can be the clock run-in.
+                                    bool accepted = detectedStart < input.SamplesPerLine / 2;
                                     if (!accepted)
                                     {
                                         rejectedJumps++;
@@ -3958,9 +3929,7 @@ public partial class MainWindow : Window
                                 ref lastDetectedClockStarts[physicalLine]);
                             if (start < 0)
                                 start = preset.LineStart
-                                    + (preset.LineStartEnd - preset.LineStart) / 2
-                                    + deconvolutionControl.GetClockSearchOffset(
-                                        physicalLine);
+                                    + deconvolutionControl.GetClockSearchOffset(physicalLine);
 
                             if (Volatile.Read(
                                     ref autoEndFitEnabled[physicalLine]) != 0)
@@ -4036,9 +4005,7 @@ public partial class MainWindow : Window
                                 if (span < 0) return -1;
                                 int start = detectedClockStarts[line];
                                 if (start < 0)
-                                    start = preset.LineStart
-                                        + (preset.LineStartEnd - preset.LineStart) / 2
-                                        + clockSearchOffsets[line];
+                                    start = preset.LineStart + clockSearchOffsets[line];
                                 return (int)Math.Round(start + span);
                             })
                             .ToArray();
@@ -4072,12 +4039,10 @@ public partial class MainWindow : Window
                                 UpdateBgraBitmap(rawPreviewBitmap, pixels, rawPreviewWidth, rawPreviewHeight);
                                 rawPreviewImage.InvalidateVisual();
                                 rawPreviewInfoText.Text =
-                                    $"Raw frame {frameNumber:N0} · Field {previewField + 1} · sample range {minimumSample}–{maximumSample}"
-                                    + $" · clock run-in search {preset.LineStart}–{preset.LineStartEnd}"
-                                    + " · orange–cyan search · green lock · magenta adjusted end · yellow nominal end · red auto end · purple bank"
+                                    $"Frame {frameNumber:N0} · F{previewField + 1} · levels {minimumSample}–{maximumSample} · CRI {preset.LineStart}–{preset.LineStartEnd}"
                                     + (clockSearchOffsets.All(offset => offset == 0)
                                         ? string.Empty
-                                        : " · custom line offsets")
+                                        : " · adjusted")
                                     + (Volatile.Read(ref rawPreviewEnabled) == 0 ? " · paused" : string.Empty);
                             }
                             catch (Exception ex)
@@ -4112,8 +4077,6 @@ public partial class MainWindow : Window
                     Volatile.Write(ref autoEndFitEnabled[line], 0);
                     lock (autoEndSpanHistories[line])
                         autoEndSpanHistories[line].Clear();
-                    lock (autoStartOffsetHistories[line])
-                        autoStartOffsetHistories[line].Clear();
                     deconvolutionControl.SetLineDecodingEnabled(line, true);
                 }
                 UpdateClockBank();
@@ -4854,49 +4817,62 @@ public partial class MainWindow : Window
         double activeRange = activeMaximum - activeMinimum;
         if (activeRange < minimumSignalRange) return false;
 
-        // Roughly twelve teletext bits on either side make the change point
-        // insensitive to the final byte while remaining local enough to follow
-        // line-by-line VHS time-base compression.
-        int window = Math.Clamp((int)Math.Round(nominalSpan / 30.0), 32, 64);
+        // DirectShow/WDM drivers can leave stale DMA or PCI padding after the
+        // useful waveform. Find the first sustained quiet interval and ignore
+        // everything after it, rather than selecting the strongest later edge.
+        int quietRunLength = Math.Clamp(
+            (int)Math.Round(nominalSpan / 35.0), 32, 48);
         int searchFrom = Math.Max(
-            window + 1,
-            (int)Math.Round(detectedStart + nominalSpan * 0.62));
+            2,
+            // Do not confuse a long constant run inside packet data with the
+            // real transition into the flat post-packet portion of the line.
+            (int)Math.Round(detectedStart + nominalSpan * 0.78));
         int searchTo = Math.Min(
-            samplesPerLine - window - 2,
+            samplesPerLine - 2,
             (int)Math.Round(detectedStart + nominalSpan * 1.08));
         if (searchTo <= searchFrom) return false;
 
-        double minimumActiveEnergy = Math.Max(0.8, activeRange / 48.0);
-        double bestScore = double.NegativeInfinity;
-        int bestBoundary = -1;
-        for (int boundary = searchFrom; boundary <= searchTo; boundary++)
+        double quietTransitionThreshold = Math.Max(1.5, activeRange / 80.0);
+        int quietRun = 0;
+        int quietStart = -1;
+        for (int sample = searchFrom; sample <= searchTo; sample++)
         {
-            double leftEnergy = 0;
-            double rightEnergy = 0;
-            for (int sample = boundary - window; sample < boundary; sample++)
-                leftEnergy += Math.Abs(
-                    rawFrame[lineOffset + sample + 1]
-                    - rawFrame[lineOffset + sample]);
-            for (int sample = boundary; sample < boundary + window; sample++)
-                rightEnergy += Math.Abs(
-                    rawFrame[lineOffset + sample + 1]
-                    - rawFrame[lineOffset + sample]);
-            leftEnergy /= window;
-            rightEnergy /= window;
-            if (leftEnergy < minimumActiveEnergy
-                || rightEnergy > leftEnergy * 0.48)
-                continue;
-
-            double score = leftEnergy - rightEnergy * 1.5;
-            if (score <= bestScore) continue;
-            bestScore = score;
-            bestBoundary = boundary;
+            int transition = Math.Abs(
+                rawFrame[lineOffset + sample]
+                - rawFrame[lineOffset + sample - 1]);
+            if (transition <= quietTransitionThreshold)
+            {
+                quietRun++;
+                if (quietRun < quietRunLength) continue;
+                quietStart = sample - quietRunLength + 1;
+                break;
+            }
+            quietRun = 0;
         }
-        if (bestBoundary < 0) return false;
+        if (quietStart < 0)
+        {
+            // The selected line window can end while the packet is still active
+            // (notably a 1440-sample DirectShow profile). In that case the only
+            // honest endpoint available is the final captured sample.
+            int tailFrom = Math.Max(1, samplesPerLine - quietRunLength);
+            double tailTransitionEnergy = 0;
+            for (int sample = tailFrom; sample < samplesPerLine; sample++)
+                tailTransitionEnergy += Math.Abs(
+                    rawFrame[lineOffset + sample]
+                    - rawFrame[lineOffset + sample - 1]);
+            tailTransitionEnergy /= Math.Max(samplesPerLine - tailFrom, 1);
+            if (tailTransitionEnergy > quietTransitionThreshold)
+            {
+                endSample = samplesPerLine - 1;
+                return true;
+            }
+            return false;
+        }
 
         double transitionThreshold = Math.Max(2.0, activeRange * 0.08);
-        int refineFrom = Math.Max(searchFrom, bestBoundary - window / 2);
-        int refineTo = Math.Min(searchTo, bestBoundary + window / 2);
+        int refineWidth = Math.Clamp(quietRunLength / 2, 12, 24);
+        int refineFrom = Math.Max(searchFrom, quietStart - refineWidth);
+        int refineTo = quietStart;
         int lastTransition = -1;
         for (int sample = refineFrom; sample <= refineTo; sample++)
         {
@@ -4905,7 +4881,7 @@ public partial class MainWindow : Window
                 - rawFrame[lineOffset + sample - 1]);
             if (contrast >= transitionThreshold) lastTransition = sample;
         }
-        endSample = lastTransition >= 0 ? lastTransition + 0.5 : bestBoundary;
+        endSample = lastTransition >= 0 ? lastTransition + 0.5 : quietStart;
         return true;
     }
 

@@ -29,12 +29,10 @@ public static class VbiDeconvolutionEngine
         if (availableLines <= 0) return offsets;
 
         VbiResamplePlan plan = CreateResamplePlan(options);
-        // Keep the detected CRI/FC near the middle of the shifted search window.
-        // Aligning it to the left edge leaves no tolerance when VHS time-base drift
-        // moves the next frame even one sample earlier, which disproportionately
-        // corrupts body/control bytes while Hamming-protected headers still survive.
-        int targetPosition = options.LineStart
-            + (options.LineStartEnd - options.LineStart) / 2;
+        // The offset belongs to the actual CRI start marker, not to the middle of
+        // the movable search window. Keeping those coordinate systems separate
+        // lets the marker drift a little before or after the preset window.
+        int targetPosition = options.LineStart;
         for (int line = 0; line < availableLines; line++)
         {
             if ((lineMask & (1 << line)) == 0) continue;
@@ -44,7 +42,8 @@ public static class VbiDeconvolutionEngine
                 PreparedLine? prepared = PrepareLine(
                     rawLine, options, plan, searchOffset,
                     out int detectedStartSample,
-                    allowClippedClockRunIn: true);
+                    allowClippedClockRunIn: true,
+                    detectStartOnly: true);
                 if (prepared is null) continue;
                 offsets[line] = Math.Clamp(
                     detectedStartSample - targetPosition,
@@ -366,10 +365,11 @@ public static class VbiDeconvolutionEngine
         VbiResamplePlan plan,
         int searchOffsetSamples = 0,
         double manualPacketSpanSamples = -1,
-        bool allowClippedClockRunIn = false)
+        bool allowClippedClockRunIn = false,
+        bool detectStartOnly = false)
         => PrepareLine(
             raw, options, plan, searchOffsetSamples, out _, out _,
-            manualPacketSpanSamples, allowClippedClockRunIn);
+            manualPacketSpanSamples, allowClippedClockRunIn, detectStartOnly);
 
     private static PreparedLine? PrepareLine(
         byte[] raw,
@@ -378,11 +378,12 @@ public static class VbiDeconvolutionEngine
         int searchOffsetSamples,
         out int detectedStartSample,
         double manualPacketSpanSamples = -1,
-        bool allowClippedClockRunIn = false)
+        bool allowClippedClockRunIn = false,
+        bool detectStartOnly = false)
         => PrepareLine(
             raw, options, plan, searchOffsetSamples,
             out detectedStartSample, out _, manualPacketSpanSamples,
-            allowClippedClockRunIn);
+            allowClippedClockRunIn, detectStartOnly);
 
     private static PreparedLine? PrepareLine(
         byte[] raw,
@@ -392,7 +393,8 @@ public static class VbiDeconvolutionEngine
         out int detectedStartSample,
         out int detectedEndSample,
         double manualPacketSpanSamples = -1,
-        bool allowClippedClockRunIn = false)
+        bool allowClippedClockRunIn = false,
+        bool detectStartOnly = false)
     {
         detectedStartSample = -1;
         detectedEndSample = -1;
@@ -433,6 +435,12 @@ public static class VbiDeconvolutionEngine
                 out float clippedLow,
                 out float clippedHigh))
         {
+            if (detectStartOnly)
+            {
+                detectedStartSample = (int)Math.Round(
+                    clippedStart * bitWidth / 8.0);
+                return new PreparedLine(Array.Empty<float>(), null);
+            }
             PreparedLine? clipped = BuildPreparedLine(
                 resampled, plan.Length, clippedStart, bitWidth,
                 manualPacketSpanSamples, clippedLow, clippedHigh,
@@ -599,6 +607,12 @@ public static class VbiDeconvolutionEngine
             : options.CriFcConfidenceThreshold;
         if (criFcConfidence < criFcConfidenceThreshold) return null;
 
+        if (detectStartOnly)
+        {
+            detectedStartSample = (int)Math.Round(bestStart * bitWidth / 8.0);
+            return new PreparedLine(Array.Empty<float>(), null);
+        }
+
         PreparedLine? preparedLine = BuildPreparedLine(
             resampled, plan.Length, bestStart, bitWidth,
             manualPacketSpanSamples, null, null,
@@ -624,32 +638,37 @@ public static class VbiDeconvolutionEngine
         packetStart = 0;
         signalLow = 0;
         signalHigh = 0;
-        ReadOnlySpan<sbyte> framingCode = VbiPatternResources.IdealCriFc[16..24];
+        ReadOnlySpan<sbyte> criAndFraming = VbiPatternResources.IdealCriFc;
         const int samplesPerBit = VbiPatternResources.ObservedCriFcSamplesPerBit;
         const int clockRunInSamples = 16 * samplesPerBit;
-        const double minimumConfidence = 0.62;
+        double minimumConfidence = options.CriFcConfidenceThreshold;
         double bestConfidence = double.MinValue;
         float bestRange = 0;
-        Span<float> bitLevels = stackalloc float[8];
+        Span<float> bitLevels = stackalloc float[VbiPatternResources.ObservedCriFcBits];
 
-        // A clipped candidate must begin before the captured line, while its full
-        // framing byte must remain visible. Restricting the search to this narrow
-        // region prevents packet data farther right from becoming a false CRI lock.
+        // A clipped candidate must begin before the captured line. Correlate every
+        // complete CRI/FC bit that is still visible, not only the framing byte.
+        // The alternating visible CRI tail makes this much less likely to lock to
+        // an unrelated byte while still allowing the leading run-in to be absent.
         for (int candidateStart = -clockRunInSamples + 1;
              candidateStart < 0;
              candidateStart++)
         {
-            int framingStart = candidateStart + clockRunInSamples;
-            if (framingStart < 0
-                || framingStart + framingCode.Length * samplesPerBit > sampleCount)
+            int firstVisibleBit = Math.Max(
+                0, (int)Math.Ceiling(-candidateStart / (double)samplesPerBit));
+            int lastVisibleBitExclusive = Math.Min(
+                criAndFraming.Length,
+                (sampleCount - candidateStart) / samplesPerBit);
+            int visibleBits = lastVisibleBitExclusive - firstVisibleBit;
+            if (visibleBits < 8 || lastVisibleBitExclusive < criAndFraming.Length)
                 continue;
 
             float minimum = float.MaxValue;
             float maximum = float.MinValue;
-            for (int bit = 0; bit < bitLevels.Length; bit++)
+            for (int bit = firstVisibleBit; bit < lastVisibleBitExclusive; bit++)
             {
                 float sum = 0;
-                int offset = framingStart + bit * samplesPerBit;
+                int offset = candidateStart + bit * samplesPerBit;
                 for (int sample = 0; sample < samplesPerBit; sample++)
                     sum += samples[offset + sample];
                 float average = sum / samplesPerBit;
@@ -663,10 +682,10 @@ public static class VbiDeconvolutionEngine
             float midpoint = (minimum + maximum) * 0.5f;
             double correlation = 0;
             double energy = 0;
-            for (int bit = 0; bit < bitLevels.Length; bit++)
+            for (int bit = firstVisibleBit; bit < lastVisibleBitExclusive; bit++)
             {
                 double centered = bitLevels[bit] - midpoint;
-                correlation += centered * framingCode[bit];
+                correlation += centered * criAndFraming[bit];
                 energy += Math.Abs(centered);
             }
             double confidence = energy > 0 ? correlation / energy : 0;

@@ -38,6 +38,7 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
     private int _readOffset;
     private int _fieldLines;
     private int _driverStride;
+    private int _driverSamplesPerLine;
     private uint _samplingRate;
     private int _samplesPerLine;
     private long _capturedFrames;
@@ -52,15 +53,18 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
     public Action<DirectShowPreviewFrame>? VideoFrameCaptured { get; set; }
 
     public WindowsDirectShowVbiCaptureStream(
-        string deviceName, DirectShowVideoInput input, DirectShowVideoStandard standard)
+        string deviceName, DirectShowVideoInput input, DirectShowVideoStandard standard,
+        int configuredLineLength, int configuredFieldLines)
     {
         if (!OperatingSystem.IsWindows())
             throw new PlatformNotSupportedException("DirectShow VBI capture is available on Windows.");
-        try { Build(deviceName, input, standard); }
+        try { Build(deviceName, input, standard, configuredLineLength, configuredFieldLines); }
         catch { Dispose(); throw; }
     }
 
-    private void Build(string deviceName, DirectShowVideoInput input, DirectShowVideoStandard standard)
+    private void Build(
+        string deviceName, DirectShowVideoInput input, DirectShowVideoStandard standard,
+        int configuredLineLength, int configuredFieldLines)
     {
         DsDevice device = DsDevice.GetDevicesOfCat(FilterCategory.VideoInputDevice)
             .FirstOrDefault(candidate => string.Equals(candidate.Name, deviceName, StringComparison.OrdinalIgnoreCase))
@@ -91,8 +95,8 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
 
         IPin vbiPin = DsFindPin.ByCategory(_source, PinCategory.VBI, 0)
             ?? throw new InvalidOperationException("The DirectShow VBI output pin disappeared while opening capture.");
-        AMMediaType rawType = SelectRawVbiType(vbiPin);
-        ReadFormat(rawType);
+        AMMediaType rawType = SelectRawVbiType(vbiPin, configuredFieldLines);
+        ReadFormat(rawType, configuredLineLength);
 
         _grabber = (ISampleGrabber)new SampleGrabber();
         _grabberFilter = (IBaseFilter)_grabber;
@@ -185,33 +189,57 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
         public int BufferCB(double sampleTime, IntPtr buffer, int bufferLen) => owner.OnVideoBuffer(buffer, bufferLen);
     }
 
-    private static AMMediaType SelectRawVbiType(IPin pin)
+    private static AMMediaType SelectRawVbiType(IPin pin, int configuredFieldLines)
     {
         DsError.ThrowExceptionForHR(pin.EnumMediaTypes(out IEnumMediaTypes types));
+        AMMediaType? best = null;
+        int bestDifference = int.MaxValue;
         try
         {
             var values = new AMMediaType[1];
             while (types.Next(1, values, IntPtr.Zero) == 0)
             {
                 AMMediaType value = values[0];
-                if (value.majorType == MediaType.VBI && value.formatPtr != IntPtr.Zero
-                    && value.formatSize >= Marshal.SizeOf<VbiInfoHeader>())
-                    return value;
-                DsUtils.FreeAMMediaType(value);
+                if (value.majorType != MediaType.VBI || value.formatPtr == IntPtr.Zero
+                    || value.formatSize < Marshal.SizeOf<VbiInfoHeader>())
+                {
+                    DsUtils.FreeAMMediaType(value);
+                    continue;
+                }
+                VbiInfoHeader format = Marshal.PtrToStructure<VbiInfoHeader>(value.formatPtr);
+                int lines = checked((int)(format.EndLine - format.StartLine + 1));
+                int difference = Math.Abs(lines - configuredFieldLines);
+                if (difference < bestDifference)
+                {
+                    if (best is not null) DsUtils.FreeAMMediaType(best);
+                    best = value;
+                    bestDifference = difference;
+                }
+                else
+                {
+                    DsUtils.FreeAMMediaType(value);
+                }
             }
         }
         finally { Release(types); }
-        throw new NotSupportedException("The VBI pin does not advertise a raw VBI waveform format.");
+        return best
+            ?? throw new NotSupportedException("The VBI pin does not advertise a raw VBI waveform format.");
     }
 
-    private void ReadFormat(AMMediaType type)
+    private void ReadFormat(AMMediaType type, int configuredLineLength)
     {
         VbiInfoHeader format = Marshal.PtrToStructure<VbiInfoHeader>(type.formatPtr);
         _samplingRate = format.SamplingFrequency;
-        _samplesPerLine = checked((int)format.SamplesPerLine);
+        _driverSamplesPerLine = checked((int)format.SamplesPerLine);
         _driverStride = checked((int)format.StrideInBytes);
+        // Stride locates consecutive driver rows; it is not the requested
+        // analysis width. Respect the selected capture-card profile exactly.
+        _samplesPerLine = configuredLineLength > 0
+            ? configuredLineLength
+            : _driverSamplesPerLine;
         _fieldLines = checked((int)(format.EndLine - format.StartLine + 1));
-        if (SamplingRate == 0 || SamplesPerLine <= 0 || _driverStride < SamplesPerLine || _fieldLines <= 0)
+        if (SamplingRate == 0 || _driverSamplesPerLine <= 0
+            || _driverStride < _driverSamplesPerLine || SamplesPerLine <= 0 || _fieldLines <= 0)
             throw new InvalidDataException("The DirectShow driver returned an invalid raw VBI format.");
     }
 
@@ -222,7 +250,13 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
         if (_disposed || bufferLen < _driverStride * _fieldLines) return 0;
         var field = new byte[SamplesPerLine * _fieldLines];
         for (int line = 0; line < _fieldLines; line++)
-            Marshal.Copy(IntPtr.Add(buffer, line * _driverStride), field, line * SamplesPerLine, SamplesPerLine);
+        {
+            int destination = line * SamplesPerLine;
+            int copied = Math.Min(_driverStride, SamplesPerLine);
+            Marshal.Copy(IntPtr.Add(buffer, line * _driverStride), field, destination, copied);
+            byte flatLevel = copied > 0 ? field[destination + copied - 1] : (byte)0;
+            field.AsSpan(destination + copied, SamplesPerLine - copied).Fill(flatLevel);
+        }
         lock (_fieldLock)
         {
             if (_firstField is null) { _firstField = field; return 0; }
