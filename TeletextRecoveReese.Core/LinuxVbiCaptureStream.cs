@@ -44,7 +44,7 @@ public sealed record LinuxV4l2VideoFrame(
     int BytesPerLine,
     byte[] Data);
 
-public sealed class LinuxVbiCaptureStream : Stream
+public sealed class LinuxVbiCaptureStream : LiveVbiCaptureStream
 {
     private const uint VbiCaptureType = 4;
     private const ulong VideoQueryCapabilities = 0x80685600;
@@ -64,14 +64,13 @@ public sealed class LinuxVbiCaptureStream : Stream
     private int _frameLength;
     private long _capturedFrames;
 
-    public uint SamplingRate { get; }
-    public int SamplesPerLine { get; }
-    public int FirstFieldLines { get; }
-    public int SecondFieldLines { get; }
-    public int LinesPerFrame => FirstFieldLines + SecondFieldLines;
-    public long CapturedFrames => Interlocked.Read(ref _capturedFrames);
+    public override uint SamplingRate { get; }
+    public override int SamplesPerLine { get; }
+    public override int FirstFieldLines { get; }
+    public override int SecondFieldLines { get; }
+    public override long CapturedFrames => Interlocked.Read(ref _capturedFrames);
     public uint SampleFormat { get; }
-    public Action<byte[]>? RawFrameCaptured { get; set; }
+    public override Action<byte[]>? RawFrameCaptured { get; set; }
 
     public LinuxVbiCaptureStream(string path, int? inputIndex = null, ulong? standardId = null)
     {

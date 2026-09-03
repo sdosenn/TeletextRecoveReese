@@ -2666,7 +2666,9 @@ public partial class MainWindow : Window
         var previewImage = new Image { Stretch = Stretch.Uniform };
         var previewStatusText = new TextBlock
         {
-            Text = _ffmpegPath is null
+            Text = OperatingSystem.IsWindows()
+                ? "DirectShow preview will appear after a capture device is selected."
+                : _ffmpegPath is null
                 ? "FFmpeg is required to display the live video preview."
                 : "Video preview will appear after a VBI interface is selected.",
             Foreground = Brushes.LightGray,
@@ -2781,8 +2783,10 @@ public partial class MainWindow : Window
         Grid.SetColumn(useButton, 3);
 
         LinuxV4l2DeviceInfo? selectedDevice = null;
+        DirectShowDeviceInfo? selectedDirectShowDevice = null;
         string? selectedVideoInterface = null;
         Process? previewProcess = null;
+        WindowsDirectShowPreview? directShowPreview = null;
         CancellationTokenSource? previewCancellation = null;
         int previewGeneration = 0;
         bool suppressInterfaceSelection = false;
@@ -2797,6 +2801,8 @@ public partial class MainWindow : Window
 
         void StopPreview()
         {
+            directShowPreview?.Dispose();
+            directShowPreview = null;
             previewCancellation?.Cancel();
             previewCancellation?.Dispose();
             previewCancellation = null;
@@ -2814,6 +2820,58 @@ public partial class MainWindow : Window
             if (suppressPreviewRestart) return;
             StopPreview();
             ClearPreviewImage();
+            if (OperatingSystem.IsWindows())
+            {
+                if (interfaceCombo.SelectedItem is not LiveCaptureInterface captureInterface
+                    || inputCombo.SelectedItem is not DirectShowVideoInput selectedDirectShowInput
+                    || standardCombo.SelectedItem is not DirectShowVideoStandard selectedDirectShowStandard)
+                    return;
+
+                int windowsGeneration = ++previewGeneration;
+                previewStatusText.Text = $"Opening DirectShow preview from {captureInterface.Name}â€¦";
+                try
+                {
+                    directShowPreview = await Task.Run(() => new WindowsDirectShowPreview(
+                        captureInterface.Name,
+                        selectedDirectShowInput,
+                        selectedDirectShowStandard,
+                        frame => Dispatcher.UIThread.Post(() =>
+                        {
+                            if (windowsGeneration != previewGeneration) return;
+                            try
+                            {
+                                var bitmap = new WriteableBitmap(
+                                    new PixelSize(frame.Width, frame.Height),
+                                    new Vector(96, 96),
+                                    PixelFormat.Bgra8888,
+                                    AlphaFormat.Opaque);
+                                using (ILockedFramebuffer locked = bitmap.Lock())
+                                {
+                                    for (int row = 0; row < frame.Height; row++)
+                                        Marshal.Copy(
+                                            frame.Bgra, row * frame.Stride,
+                                            IntPtr.Add(locked.Address, row * locked.RowBytes),
+                                            frame.Stride);
+                                }
+                                if (previewImage.Source is IDisposable oldSource)
+                                    oldSource.Dispose();
+                                previewImage.Source = bitmap;
+                            }
+                            catch (Exception ex)
+                            {
+                                previewStatusText.Text = $"DirectShow preview frame failed: {ex.Message}";
+                            }
+                        }, DispatcherPriority.Background)));
+                    previewStatusText.Text = $"Live DirectShow preview Â· {selectedDirectShowInput.Name} Â· {selectedDirectShowStandard.Name}";
+                }
+                catch (Exception ex)
+                {
+                    if (windowsGeneration == previewGeneration)
+                        previewStatusText.Text = $"DirectShow preview unavailable: {ex.Message}";
+                }
+                return;
+            }
+
             if (!OperatingSystem.IsLinux()
                 || selectedDevice is null
                 || selectedVideoInterface is null
@@ -2889,14 +2947,21 @@ public partial class MainWindow : Window
                 || selectedDevice is not null
                 && inputCombo.SelectedItem is LinuxV4l2Input
                 && standardCombo.SelectedItem is LinuxV4l2Standard;
+            bool windowsSelectionComplete = !OperatingSystem.IsWindows()
+                || selectedDirectShowDevice is not null
+                && selectedDirectShowDevice.HasVbiPin
+                && inputCombo.SelectedItem is DirectShowVideoInput
+                && standardCombo.SelectedItem is DirectShowVideoStandard;
             useButton.IsEnabled = interfaceCombo.SelectedItem is LiveCaptureInterface
                                   && presetCombo.SelectedItem is CaptureCardPreset
-                                  && linuxSelectionComplete;
+                                  && linuxSelectionComplete
+                                  && windowsSelectionComplete;
         }
 
         async Task LoadSelectedVbiDeviceAsync()
         {
             selectedDevice = null;
+            selectedDirectShowDevice = null;
             selectedVideoInterface = null;
             StopPreview();
             ClearPreviewImage();
@@ -2906,9 +2971,65 @@ public partial class MainWindow : Window
             inputCombo.IsEnabled = false;
             standardCombo.IsEnabled = false;
             presetCombo.IsEnabled = false;
+            statusText.Foreground = Brushes.LightGray;
             UpdateStartButton();
             if (interfaceCombo.SelectedItem is not LiveCaptureInterface captureInterface)
                 return;
+
+            if (OperatingSystem.IsWindows())
+            {
+                statusText.Text = $"Reading DirectShow properties for {captureInterface.Name}â€¦";
+                cardNameText.Text = "Capture card: readingâ€¦";
+                try
+                {
+                    DirectShowDeviceInfo device = await Task.Run(() =>
+                        WindowsDirectShowCapture.QueryDevice(captureInterface.Name));
+                    if (interfaceCombo.SelectedItem is not LiveCaptureInterface current
+                        || !string.Equals(current.Path, captureInterface.Path, StringComparison.Ordinal))
+                        return;
+
+                    selectedDirectShowDevice = device;
+                    cardNameText.Text = $"Capture card: {device.Name}";
+                    List<DirectShowVideoInput> inputs = device.Inputs.ToList();
+                    inputCombo.ItemsSource = inputs;
+                    inputCombo.SelectedItem = inputs.FirstOrDefault(input =>
+                                                   input.PinIndex == _sessionState.LastLiveCaptureInput)
+                                               ?? inputs.FirstOrDefault(input =>
+                                                   input.PinIndex == device.CurrentInputPin)
+                                               ?? inputs.FirstOrDefault();
+                    inputCombo.IsEnabled = inputs.Count > 0;
+
+                    List<DirectShowVideoStandard> standards = device.Standards.ToList();
+                    standardCombo.ItemsSource = standards;
+                    standardCombo.SelectedItem = standards.FirstOrDefault(standard =>
+                                                      (ulong)(int)standard.Value == _sessionState.LastLiveCaptureStandard)
+                                                  ?? standards.FirstOrDefault(standard =>
+                                                      standard.Value == device.CurrentStandard)
+                                                  ?? standards.FirstOrDefault();
+                    standardCombo.IsEnabled = standards.Count > 0;
+                    presetCombo.IsEnabled = true;
+                    if (device.HasVbiPin)
+                    {
+                        statusText.Foreground = Brushes.LightGreen;
+                        statusText.Text = string.IsNullOrWhiteSpace(device.VbiPinName)
+                            ? "VBI output detected. Inputs and analogue TV standards are reported by the DirectShow driver."
+                            : $"VBI output detected: {device.VbiPinName}. Inputs and analogue TV standards are reported by the DirectShow driver.";
+                    }
+                    else
+                    {
+                        statusText.Foreground = Brushes.OrangeRed;
+                        statusText.Text = "This capture device does not expose a DirectShow VBI output pin. Live VBI capture is unavailable.";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    statusText.Foreground = Brushes.OrangeRed;
+                    cardNameText.Text = "Capture card: unavailable";
+                    statusText.Text = $"Could not inspect {captureInterface.Name}: {ex.Message}";
+                }
+                UpdateStartButton();
+                return;
+            }
 
             if (!OperatingSystem.IsLinux())
             {
@@ -2985,6 +3106,7 @@ public partial class MainWindow : Window
         {
             refreshButton.IsEnabled = false;
             useButton.IsEnabled = false;
+            statusText.Foreground = Brushes.LightGray;
             statusText.Text = "Searching for capture interfaces…";
             List<LiveCaptureInterface> interfaces = await DiscoverLiveCaptureInterfacesAsync();
             interfaceCombo.ItemsSource = interfaces;
@@ -3003,7 +3125,7 @@ public partial class MainWindow : Window
                     ? "No serial interfaces were found under /dev/cu.* or /dev/tty.*."
                     : OperatingSystem.IsLinux()
                         ? "No /dev/vbi* devices were found. Check the capture driver and device permissions."
-                        : "No DirectShow capture interfaces were found. FFmpeg must be available for device discovery.";
+                        : "No DirectShow video capture devices were reported by Windows.";
             refreshButton.IsEnabled = true;
             await LoadSelectedVbiDeviceAsync();
         }
@@ -3016,7 +3138,8 @@ public partial class MainWindow : Window
         };
         inputCombo.SelectionChanged += async (_, _) =>
         {
-            RefreshStandardsForInput();
+            if (OperatingSystem.IsLinux()) RefreshStandardsForInput();
+            else UpdateStartButton();
             await RestartPreviewAsync();
         };
         standardCombo.SelectionChanged += async (_, _) =>
@@ -3038,24 +3161,30 @@ public partial class MainWindow : Window
                 return;
             LinuxV4l2Input? captureInput = inputCombo.SelectedItem as LinuxV4l2Input;
             LinuxV4l2Standard? captureStandard = standardCombo.SelectedItem as LinuxV4l2Standard;
+            DirectShowVideoInput? directShowInput = inputCombo.SelectedItem as DirectShowVideoInput;
+            DirectShowVideoStandard? directShowStandard = standardCombo.SelectedItem as DirectShowVideoStandard;
             if (OperatingSystem.IsLinux() && (captureInput is null || captureStandard is null))
+                return;
+            if (OperatingSystem.IsWindows() && (directShowInput is null || directShowStandard is null))
                 return;
             _sessionState.LastCaptureCardPresetName = preset.Name;
             _sessionState.LastLiveCaptureInterface = captureInterface.Path;
-            _sessionState.LastLiveCaptureInput = captureInput?.Index;
-            _sessionState.LastLiveCaptureStandard = captureStandard?.Id;
+            _sessionState.LastLiveCaptureInput = captureInput?.Index ?? directShowInput?.PinIndex;
+            _sessionState.LastLiveCaptureStandard = captureStandard?.Id
+                ?? (directShowStandard is null ? null : (ulong)(int)directShowStandard.Value);
             SaveSessionState();
             StopPreview();
             dialog.Close();
             if (OperatingSystem.IsLinux())
-                await StartLinuxLiveVbiCaptureAsync(
-                    captureInterface, captureInput!, captureStandard!, preset,
-                    selectedVideoInterface,
-                    recordRawVbiCheckBox.IsChecked == true);
-            else
-                await ShowMessageAsync(
-                    "Live VBI capture",
-                    $"Selected {captureInterface.Name} with {preset.Name}.\n\nLive transport for this platform is not connected yet.");
+                await StartLiveVbiCaptureAsync(
+                    captureInterface, preset, selectedVideoInterface,
+                    recordRawVbiCheckBox.IsChecked == true,
+                    captureInput, captureStandard, null, null);
+            else if (OperatingSystem.IsWindows())
+                await StartLiveVbiCaptureAsync(
+                    captureInterface, preset, null,
+                    recordRawVbiCheckBox.IsChecked == true,
+                    null, null, directShowInput, directShowStandard);
         };
 
         dialog.Closed += (_, _) =>
@@ -3067,21 +3196,27 @@ public partial class MainWindow : Window
         await dialog.ShowDialog(this);
     }
 
-    private async Task StartLinuxLiveVbiCaptureAsync(
+    private async Task StartLiveVbiCaptureAsync(
         LiveCaptureInterface captureInterface,
-        LinuxV4l2Input captureInput,
-        LinuxV4l2Standard captureStandard,
         CaptureCardPreset preset,
         string? videoInterfacePath,
-        bool recordRawVbi)
+        bool recordRawVbi,
+        LinuxV4l2Input? linuxInput,
+        LinuxV4l2Standard? linuxStandard,
+        DirectShowVideoInput? directShowInput,
+        DirectShowVideoStandard? directShowStandard)
     {
-        LinuxVbiCaptureStream? input = null;
+        LiveVbiCaptureStream? input = null;
         try
         {
-            input = new LinuxVbiCaptureStream(
-                captureInterface.Path,
-                captureInput.Index,
-                captureStandard.Id);
+            if (OperatingSystem.IsLinux() && linuxInput is not null && linuxStandard is not null)
+                input = new LinuxVbiCaptureStream(
+                    captureInterface.Path, linuxInput.Index, linuxStandard.Id);
+            else if (OperatingSystem.IsWindows() && directShowInput is not null && directShowStandard is not null)
+                input = new WindowsDirectShowVbiCaptureStream(
+                    captureInterface.Name, directShowInput, directShowStandard);
+            else
+                throw new PlatformNotSupportedException("No live VBI transport is available for this platform.");
         }
         catch (Exception ex)
         {
@@ -3201,7 +3336,7 @@ public partial class MainWindow : Window
             };
             var videoPreviewInfoText = new TextBlock
             {
-                Text = videoInterfacePath is null
+                Text = videoInterfacePath is null && input is not WindowsDirectShowVbiCaptureStream
                     ? "No related video interface was found."
                     : "Waiting for the first raw YUV video frame…",
                 Foreground = Brushes.LightGray,
@@ -3216,9 +3351,11 @@ public partial class MainWindow : Window
             int rawPreviewEnabled = showRawPreview ? 1 : 0;
             var showVideoPreviewCheckBox = new CheckBox
             {
-                Content = "Live video preview (every 5 seconds)",
+                Content = OperatingSystem.IsWindows()
+                    ? "Live video preview (real time)"
+                    : "Live video preview (every 5 seconds)",
                 IsChecked = _sessionState.ShowVideoCapturePreview ?? true,
-                IsEnabled = videoInterfacePath is not null,
+                IsEnabled = videoInterfacePath is not null || input is WindowsDirectShowVbiCaptureStream,
             };
             int videoPreviewEnabled = showVideoPreviewCheckBox.IsChecked == true ? 1 : 0;
             var showLiveCheckBox = new CheckBox
@@ -3622,7 +3759,37 @@ public partial class MainWindow : Window
             int rawPreviewHasFrame = 0;
             int rawPreviewWorkerBusy = 0;
             int videoSnapshotNumber = 0;
+            int directShowVideoFramePending = 0;
             CancellationTokenSource? videoPreviewPipeCancellation = null;
+            if (input is WindowsDirectShowVbiCaptureStream directShowCapture)
+            {
+                directShowCapture.VideoFrameCaptured = frame =>
+                {
+                    if (!videoPreviewActive || Volatile.Read(ref videoPreviewEnabled) == 0) return;
+                    // Never queue more than one UI frame. Dropping an obsolete
+                    // preview frame keeps the VBI delivery path real-time.
+                    if (Interlocked.Exchange(ref directShowVideoFramePending, 1) != 0) return;
+                    byte[] pixels = ScaleBgraFrame(
+                        frame.Bgra, frame.Width, frame.Height, frame.Stride,
+                        videoPreviewWidth, videoPreviewHeight);
+                    int frameNumber = Interlocked.Increment(ref videoSnapshotNumber);
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        try
+                        {
+                            if (!videoPreviewActive) return;
+                            UpdateBgraBitmap(videoPreviewBitmap, pixels, videoPreviewWidth, videoPreviewHeight);
+                            videoPreviewImage.InvalidateVisual();
+                            videoPreviewInfoText.Text =
+                                $"DirectShow live video · frame {frameNumber:N0} · {frame.Width}×{frame.Height}";
+                        }
+                        finally
+                        {
+                            Interlocked.Exchange(ref directShowVideoFramePending, 0);
+                        }
+                    }, DispatcherPriority.Render);
+                };
+            }
             rawPreviewFieldCombo.SelectionChanged += (_, _) =>
             {
                 Volatile.Write(
@@ -3963,6 +4130,11 @@ public partial class MainWindow : Window
             }
             void StartVideoPreviewPipe()
             {
+                if (input is WindowsDirectShowVbiCaptureStream)
+                {
+                    videoPreviewInfoText.Text = "Waiting for the next DirectShow video frame…";
+                    return;
+                }
                 if (videoInterfacePath is null || !videoPreviewActive
                     || videoPreviewCancellation.IsCancellationRequested)
                     return;
@@ -4092,12 +4264,14 @@ public partial class MainWindow : Window
                 videoPreviewCancellation.Cancel();
                 StopVideoPreviewPipe();
                 input.RawFrameCaptured = null;
+                if (input is WindowsDirectShowVbiCaptureStream directShowCapture)
+                    directShowCapture.VideoFrameCaptured = null;
                 rawPreviewBitmap.Dispose();
                 videoPreviewImage.Source = null;
                 videoPreviewBitmap.Dispose();
             };
 
-            if (videoInterfacePath is not null)
+            if (videoInterfacePath is not null || input is WindowsDirectShowVbiCaptureStream)
                 StartVideoPreviewPipe();
 
             PageAssembler? liveAssembler = null;
@@ -4400,47 +4574,13 @@ public partial class MainWindow : Window
             return DiscoverDeviceFiles(["cu.*", "tty.*"], "Serial");
         if (OperatingSystem.IsLinux())
             return DiscoverDeviceFiles(["vbi*"], "Video4Linux VBI");
-        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(_ffmpegPath))
+        if (!OperatingSystem.IsWindows())
             return new List<LiveCaptureInterface>();
 
         try
         {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = _ffmpegPath,
-                Arguments = "-hide_banner -list_devices true -f dshow -i dummy",
-                UseShellExecute = false,
-                RedirectStandardError = true,
-                RedirectStandardOutput = true,
-                CreateNoWindow = true,
-            };
-            using Process? process = Process.Start(startInfo);
-            if (process is null) return new List<LiveCaptureInterface>();
-            string output = await process.StandardError.ReadToEndAsync();
-            await process.WaitForExitAsync();
-            var devices = new List<LiveCaptureInterface>();
-            bool videoSection = false;
-            foreach (string line in output.Split('\n'))
-            {
-                if (line.Contains("DirectShow video devices", StringComparison.OrdinalIgnoreCase))
-                {
-                    videoSection = true;
-                    continue;
-                }
-                if (line.Contains("DirectShow audio devices", StringComparison.OrdinalIgnoreCase))
-                {
-                    videoSection = false;
-                    continue;
-                }
-                if (!videoSection) continue;
-                int firstQuote = line.IndexOf('"');
-                int lastQuote = line.LastIndexOf('"');
-                if (firstQuote < 0 || lastQuote <= firstQuote) continue;
-                string name = line[(firstQuote + 1)..lastQuote];
-                if (name.StartsWith('@')) continue;
-                devices.Add(new LiveCaptureInterface(name, name, "DirectShow"));
-            }
-            return devices.DistinctBy(item => item.Path).ToList();
+            IReadOnlyList<string> names = await Task.Run(WindowsDirectShowCapture.DiscoverDeviceNames);
+            return names.Select(name => new LiveCaptureInterface(name, name, "DirectShow")).ToList();
         }
         catch
         {
@@ -4638,6 +4778,28 @@ public partial class MainWindow : Window
             output[target + 3] = 255;
         }
         return output;
+    }
+
+    private static byte[] ScaleBgraFrame(
+        byte[] source, int sourceWidth, int sourceHeight, int sourceStride,
+        int targetWidth, int targetHeight)
+    {
+        var target = new byte[checked(targetWidth * targetHeight * 4)];
+        for (int y = 0; y < targetHeight; y++)
+        {
+            int sourceY = Math.Min(sourceHeight - 1, y * sourceHeight / targetHeight);
+            for (int x = 0; x < targetWidth; x++)
+            {
+                int sourceX = Math.Min(sourceWidth - 1, x * sourceWidth / targetWidth);
+                int from = sourceY * sourceStride + sourceX * 4;
+                int to = (y * targetWidth + x) * 4;
+                target[to] = source[from];
+                target[to + 1] = source[from + 1];
+                target[to + 2] = source[from + 2];
+                target[to + 3] = 255;
+            }
+        }
+        return target;
     }
 
     private static string FourCc(uint value) => new string(new[]
