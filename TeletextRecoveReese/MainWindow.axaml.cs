@@ -3693,7 +3693,7 @@ public partial class MainWindow : Window
             var dialog = new Window
             {
                 Title = "Live VBI capture",
-                Height = Math.Clamp(ClientSize.Height - 40, 560, 820),
+                Height = Math.Clamp(ClientSize.Height - 80, 520, 700),
                 SizeToContent = SizeToContent.Width,
                 CanResize = false,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -3763,7 +3763,7 @@ public partial class MainWindow : Window
                         new Border
                         {
                             [Grid.RowProperty] = 1,
-                            Padding = new Thickness(18, 10, 18, 18),
+                            Padding = new Thickness(18, 8, 18, 12),
                             Child = stopButton,
                         },
                     },
