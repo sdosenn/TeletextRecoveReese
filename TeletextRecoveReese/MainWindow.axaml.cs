@@ -341,7 +341,8 @@ public partial class MainWindow : Window
     {
         new() { Name = "SAA7131 PCI", Chipset = "SAA7131", Interface = "PCI", SampleRate = 27000000, LineLength = 2048, LineStart = 0, LineStartEnd = 60, SampleType = "UInt8", FieldLines = 17, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
         new() { Name = "SAA7131 USB", Chipset = "SAA7131", Interface = "USB", SampleRate = 27000000, LineLength = 1440, LineStart = 0, LineStartEnd = 20, SampleType = "UInt8", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
-        new() { Name = "August VGB100 USB", Chipset = "August VGB100", Interface = "USB", SampleRate = 27000000, LineLength = 1440, LineStart = 0, LineStartEnd = 20, SampleType = "UInt8", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
+        new() { Name = "SAA7135 PCI", Chipset = "SAA7135", Interface = "PCI / DirectShow", SampleRate = 27000000, LineLength = 1600, LineStart = 0, LineStartEnd = 60, SampleType = "UInt8", FieldLines = 18, FieldRangeStart = 0, FieldRangeEnd = 18, IsBuiltIn = true },
+        new() { Name = "August VGB100 / Elgato Video Capture", Chipset = "August VGB100 / Elgato Video Capture", Interface = "USB", SampleRate = 27000000, LineLength = 1440, LineStart = 0, LineStartEnd = 20, SampleType = "UInt8", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
         new() { Name = "BT8x8 PCI", Chipset = "BT8x8", Interface = "PCI", SampleRate = 35468950, LineLength = 2048, LineStart = 60, LineStartEnd = 130, SampleType = "UInt8", FieldLines = 16, FieldRangeStart = 0, FieldRangeEnd = 16, IsBuiltIn = true },
         new() { Name = "CX88 PCI", Chipset = "CX88", Interface = "PCI", SampleRate = 35468950, LineLength = 2048, LineStart = 90, LineStartEnd = 150, SampleType = "UInt8", FieldLines = 18, FieldRangeStart = 1, FieldRangeEnd = 17, IsBuiltIn = true },
         new() { Name = "VHS-decode Full TBC", Chipset = "VHS-decode", Interface = "TBC file", SampleRate = 17730000, LineLength = 1135, LineStart = 160, LineStartEnd = 190, SampleType = "UInt16", FieldLines = 313, FieldRangeStart = 6, FieldRangeEnd = 22, IsBuiltIn = true },
@@ -3692,60 +3693,79 @@ public partial class MainWindow : Window
             var dialog = new Window
             {
                 Title = "Live VBI capture",
-                SizeToContent = SizeToContent.WidthAndHeight,
+                Height = Math.Clamp(ClientSize.Height - 40, 560, 820),
+                SizeToContent = SizeToContent.Width,
                 CanResize = false,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Content = new StackPanel
+                Content = new Grid
                 {
-                    Width = 790,
-                    Margin = new Thickness(18),
-                    Spacing = 12,
+                    Width = 826,
+                    RowDefinitions = new RowDefinitions("*,Auto"),
                     Children =
                     {
-                        new Grid
+                        new ScrollViewer
                         {
-                            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-                            ColumnSpacing = 14,
-                            Children =
+                            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+                            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                            Content = new StackPanel
                             {
-                                new StackPanel
+                                Width = 790,
+                                Margin = new Thickness(18, 18, 18, 10),
+                                Spacing = 12,
+                                Children =
                                 {
-                                    Spacing = 8,
-                                    Children =
+                                    new Grid
                                     {
-                                        rawPreviewHeader,
-                                        rawPreviewBorder,
-                                        rawPreviewInfoText,
-                                        clockOffsetsPanel,
-                                    },
-                                },
-                                new StackPanel
-                                {
-                                    [Grid.ColumnProperty] = 1,
-                                    Width = 240,
-                                    Spacing = 8,
-                                    Children =
-                                    {
-                                        new TextBlock
+                                        ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                                        ColumnSpacing = 14,
+                                        Children =
                                         {
-                                            Text = "Video input",
-                                            FontWeight = FontWeight.SemiBold,
+                                            new StackPanel
+                                            {
+                                                Spacing = 8,
+                                                Children =
+                                                {
+                                                    rawPreviewHeader,
+                                                    rawPreviewBorder,
+                                                    rawPreviewInfoText,
+                                                    clockOffsetsPanel,
+                                                },
+                                            },
+                                            new StackPanel
+                                            {
+                                                [Grid.ColumnProperty] = 1,
+                                                Width = 240,
+                                                Spacing = 8,
+                                                Children =
+                                                {
+                                                    new TextBlock
+                                                    {
+                                                        Text = "Video input",
+                                                        FontWeight = FontWeight.SemiBold,
+                                                    },
+                                                    videoPreviewBorder,
+                                                    videoPreviewInfoText,
+                                                    showRawPreviewCheckBox,
+                                                    showVideoPreviewCheckBox,
+                                                    runDeconvolutionCheckBox,
+                                                    showLiveControls,
+                                                },
+                                            },
                                         },
-                                        videoPreviewBorder,
-                                        videoPreviewInfoText,
-                                        showRawPreviewCheckBox,
-                                        showVideoPreviewCheckBox,
-                                        runDeconvolutionCheckBox,
-                                        showLiveControls,
                                     },
+                                    phaseText,
+                                    progressBar,
+                                    detailText,
+                                    timingText,
                                 },
                             },
                         },
-                        phaseText,
-                        progressBar,
-                        detailText,
-                        timingText,
-                        stopButton,
+                        new Border
+                        {
+                            [Grid.RowProperty] = 1,
+                            Padding = new Thickness(18, 10, 18, 18),
+                            Child = stopButton,
+                        },
                     },
                 },
             };
