@@ -1,20 +1,20 @@
 # TeletextRecoveReese
 
-An AI-built editor for restoring VHS Teletext recoveries, developed with OpenAI
-Codex — with a name that makes a Kyle Reese pun, much to his horror.
+Cross-platform tool for VHS teletext recoveries, developed with OpenAI
+Codex.<br>
+Capture VBI, deconvolve and restore teletext from VHS tapes all in one cross-platform application.
 
 <img width="780" height="488" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/ebddef02-19d4-4bae-8d66-f8500a5df900" />
-
-TeletextRecoveReese processes every captured version of a page and helps combine
-the best surviving parts into a new, editable `.t42` stream.
 
 ## Download
 
 <p align="center">
-  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.4-beta">
-    <img src="https://img.shields.io/badge/Download_latest_release-0.4_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.4 beta">
+  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.5-beta">
+    <img src="https://img.shields.io/badge/Download_latest_release-0.5_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.5 beta">
   </a>
 </p>
+
+<img width="780" height="452" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/4263db68-66a8-4cfc-b447-ec28574045d8" />
 
 ## ☕ Support the recovery effort
 
@@ -197,9 +197,3 @@ practical solutions demonstrated by these projects:
 
 Thanks to their respective authors and contributors for building the foundations, solving
 hard problems, and sharing their work with the Teletext preservation community.
-
----
-
-## Message from Reese
-
-<img width="584" height="500" alt="Reese" src="https://github.com/user-attachments/assets/81d6b8dd-63d3-4289-8fb7-4ed07bf13981" />
