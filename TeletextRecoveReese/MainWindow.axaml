@@ -96,6 +96,9 @@
                 <NativeMenu>
                     <NativeMenuItem Header="Font…" Click="OnNativeChooseFontClicked" />
                     <NativeMenuItem Header="Capture Card Presets…" Click="OnNativeCaptureCardPresetsClicked" />
+                    <NativeMenuItem Header="Disable video preview in live VBI capture"
+                                    ToggleType="CheckBox"
+                                    Click="OnNativeDisableLiveVbiVideoPreviewClicked" />
                 </NativeMenu>
             </NativeMenuItem>
         </NativeMenu>
@@ -185,6 +188,11 @@
             <MenuItem Header="_Options">
                 <MenuItem Header="_Font..." Click="OnChooseFontClicked" />
                 <MenuItem Header="_Capture Card Presets..." Click="OnCaptureCardPresetsClicked" />
+                <Separator />
+                <MenuItem x:Name="DisableLiveVbiVideoPreviewMenuItem"
+                          Header="Disable video preview in live VBI capture"
+                          ToggleType="CheckBox"
+                          Click="OnDisableLiveVbiVideoPreviewClicked" />
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="_About" Click="AboutButton_Click" />

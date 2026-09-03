@@ -54,17 +54,18 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
 
     public WindowsDirectShowVbiCaptureStream(
         string deviceName, DirectShowVideoInput input, DirectShowVideoStandard standard,
-        int configuredLineLength, int configuredFieldLines)
+        int configuredLineLength, int configuredFieldLines,
+        bool enableVideoPreview = true)
     {
         if (!OperatingSystem.IsWindows())
             throw new PlatformNotSupportedException("DirectShow VBI capture is available on Windows.");
-        try { Build(deviceName, input, standard, configuredLineLength, configuredFieldLines); }
+        try { Build(deviceName, input, standard, configuredLineLength, configuredFieldLines, enableVideoPreview); }
         catch { Dispose(); throw; }
     }
 
     private void Build(
         string deviceName, DirectShowVideoInput input, DirectShowVideoStandard standard,
-        int configuredLineLength, int configuredFieldLines)
+        int configuredLineLength, int configuredFieldLines, bool enableVideoPreview)
     {
         DsDevice device = DsDevice.GetDevicesOfCat(FilterCategory.VideoInputDevice)
             .FirstOrDefault(candidate => string.Equals(candidate.Name, deviceName, StringComparison.OrdinalIgnoreCase))
@@ -124,7 +125,8 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
             Release(vbiPin); Release(grabberIn); Release(grabberOut); Release(rendererIn);
         }
 
-        BuildVideoBranch();
+        if (enableVideoPreview)
+            BuildVideoBranch();
 
         _mediaControl = (IMediaControl)_graph;
         DsError.ThrowExceptionForHR(_mediaControl.Run());

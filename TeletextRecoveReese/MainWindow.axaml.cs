@@ -209,6 +209,7 @@ public partial class MainWindow : Window
         public ulong? LastLiveCaptureStandard { get; set; }
         public bool? ShowRawVbiPreview { get; set; }
         public bool? ShowVideoCapturePreview { get; set; }
+        public bool? DisableLiveVbiVideoPreview { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
         public bool? RecordRawVbiToDisk { get; set; }
     }
@@ -416,6 +417,7 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeOpenRecentMenuItem;
     private NativeMenuItem? _nativeG0SubsetMenuItem;
     private NativeMenuItem? _nativeCreateSquashedStreamMenuItem;
+    private NativeMenuItem? _nativeDisableLiveVbiVideoPreviewMenuItem;
     private readonly string? _ffmpegPath;
     private bool _showX26EnhancementsSidebar = true;
     private bool _showVideoBookmarks = true;
@@ -2260,6 +2262,32 @@ public partial class MainWindow : Window
     private void OnNativeChooseFontClicked(object? sender, EventArgs e) =>
         OnChooseFontClicked(sender, new RoutedEventArgs());
 
+    private void OnDisableLiveVbiVideoPreviewClicked(object? sender, RoutedEventArgs e) =>
+        SetDisableLiveVbiVideoPreview(DisableLiveVbiVideoPreviewMenuItem.IsChecked, saveSession: true);
+
+    private void OnNativeDisableLiveVbiVideoPreviewClicked(object? sender, EventArgs e)
+    {
+        // Cocoa updates the exported checkbox at a different point in the click
+        // cycle, so toggle from the saved model value.
+        bool disabled = !(_sessionState.DisableLiveVbiVideoPreview ?? false);
+        SetDisableLiveVbiVideoPreview(disabled, saveSession: true);
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_nativeDisableLiveVbiVideoPreviewMenuItem is not null)
+                _nativeDisableLiveVbiVideoPreviewMenuItem.IsChecked = disabled;
+        }, DispatcherPriority.Background);
+    }
+
+    private void SetDisableLiveVbiVideoPreview(bool disabled, bool saveSession)
+    {
+        DisableLiveVbiVideoPreviewMenuItem.IsChecked = disabled;
+        if (_nativeDisableLiveVbiVideoPreviewMenuItem is not null)
+            _nativeDisableLiveVbiVideoPreviewMenuItem.IsChecked = disabled;
+        _sessionState.DisableLiveVbiVideoPreview = disabled;
+        if (saveSession)
+            SaveSessionState();
+    }
+
     private void OnNativeCaptureCardPresetsClicked(object? sender, EventArgs e) =>
         OnCaptureCardPresetsClicked(sender, new RoutedEventArgs());
 
@@ -2533,6 +2561,13 @@ public partial class MainWindow : Window
             _nativeToolbarOnBottomMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
                 .FirstOrDefault(item => item.Header?.ToString() == "Toolbar on Bottom");
         }
+
+        _nativeDisableLiveVbiVideoPreviewMenuItem = menu.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => item.Header?.ToString() == "Options")?
+            .Menu?.Items.OfType<NativeMenuItem>()
+            .FirstOrDefault(item => item.Header?.ToString()
+                == "Disable video preview in live VBI capture");
     }
 
     /// <summary>Copies one row (0=header, 1-24=body) from the currently displayed
@@ -2664,10 +2699,32 @@ public partial class MainWindow : Window
             Foreground = Brushes.LightGray,
             TextWrapping = TextWrapping.Wrap,
         };
-        var previewImage = new Image { Stretch = Stretch.Uniform };
+        bool disableVideoPreview = _sessionState.DisableLiveVbiVideoPreview ?? false;
+        var previewImage = new Image
+        {
+            Stretch = Stretch.Uniform,
+            IsVisible = !disableVideoPreview,
+        };
+        var previewDisabledText = new TextBlock
+        {
+            Text = "Live video preview is disabled in Options.",
+            Foreground = Brushes.LightGray,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(24),
+            IsVisible = disableVideoPreview,
+        };
+        var previewContent = new Grid
+        {
+            Children = { previewImage, previewDisabledText },
+        };
         var previewStatusText = new TextBlock
         {
-            Text = OperatingSystem.IsWindows()
+            Text = disableVideoPreview
+                ? "Live video preview is disabled in Options; only the VBI interface will be opened."
+                : OperatingSystem.IsWindows()
                 ? "DirectShow preview will appear after a capture device is selected."
                 : _ffmpegPath is null
                 ? "FFmpeg is required to display the live video preview."
@@ -2685,7 +2742,7 @@ public partial class MainWindow : Window
             Background = Brushes.Black,
             BorderBrush = new SolidColorBrush(Color.Parse("#3f3f46")),
             BorderThickness = new Thickness(1),
-            Child = previewImage,
+            Child = previewContent,
         };
         var refreshButton = new Button { Content = "Refresh", Width = 90 };
         var useButton = new Button { Content = "Start capture", Width = 110, IsDefault = true };
@@ -2821,6 +2878,12 @@ public partial class MainWindow : Window
             if (suppressPreviewRestart) return;
             StopPreview();
             ClearPreviewImage();
+            if (disableVideoPreview)
+            {
+                previewStatusText.Text =
+                    "Live video preview is disabled in Options; only the VBI interface will be opened.";
+                return;
+            }
             if (OperatingSystem.IsWindows())
             {
                 if (interfaceCombo.SelectedItem is not LiveCaptureInterface captureInterface
@@ -3216,7 +3279,8 @@ public partial class MainWindow : Window
             else if (OperatingSystem.IsWindows() && directShowInput is not null && directShowStandard is not null)
                 input = new WindowsDirectShowVbiCaptureStream(
                     captureInterface.Name, directShowInput, directShowStandard,
-                    preset.LineLength, preset.FieldLines);
+                    preset.LineLength, preset.FieldLines,
+                    enableVideoPreview: !(_sessionState.DisableLiveVbiVideoPreview ?? false));
             else
                 throw new PlatformNotSupportedException("No live VBI transport is available for this platform.");
         }
@@ -3317,6 +3381,7 @@ public partial class MainWindow : Window
             };
             const int videoPreviewWidth = 240;
             const int videoPreviewHeight = 180;
+            bool disableVideoPreview = _sessionState.DisableLiveVbiVideoPreview ?? false;
             var videoPreviewBitmap = new WriteableBitmap(
                 new PixelSize(videoPreviewWidth, videoPreviewHeight),
                 new Vector(96, 96),
@@ -3328,6 +3393,22 @@ public partial class MainWindow : Window
                 Width = videoPreviewWidth,
                 Height = videoPreviewHeight,
                 Stretch = Stretch.Uniform,
+                IsVisible = !disableVideoPreview,
+            };
+            var videoPreviewDisabledText = new TextBlock
+            {
+                Text = "Live video preview is disabled in Options.",
+                Foreground = Brushes.LightGray,
+                TextAlignment = TextAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(12),
+                IsVisible = disableVideoPreview,
+            };
+            var videoPreviewContent = new Grid
+            {
+                Children = { videoPreviewImage, videoPreviewDisabledText },
             };
             var videoPreviewBorder = new Border
             {
@@ -3336,11 +3417,13 @@ public partial class MainWindow : Window
                 Background = Brushes.Black,
                 BorderBrush = new SolidColorBrush(Color.Parse("#3f3f46")),
                 BorderThickness = new Thickness(1),
-                Child = videoPreviewImage,
+                Child = videoPreviewContent,
             };
             var videoPreviewInfoText = new TextBlock
             {
-                Text = videoInterfacePath is null && input is not WindowsDirectShowVbiCaptureStream
+                Text = disableVideoPreview
+                    ? "Only the VBI interface is active; video preview was not opened."
+                    : videoInterfacePath is null && input is not WindowsDirectShowVbiCaptureStream
                     ? "No related video interface was found."
                     : "Waiting for the first raw YUV video frame…",
                 Foreground = Brushes.LightGray,
@@ -3358,8 +3441,9 @@ public partial class MainWindow : Window
                 Content = OperatingSystem.IsWindows()
                     ? "Live video preview (real time)"
                     : "Live video preview (every 5 seconds)",
-                IsChecked = _sessionState.ShowVideoCapturePreview ?? true,
-                IsEnabled = videoInterfacePath is not null || input is WindowsDirectShowVbiCaptureStream,
+                IsChecked = !disableVideoPreview && (_sessionState.ShowVideoCapturePreview ?? true),
+                IsEnabled = !disableVideoPreview
+                            && (videoInterfacePath is not null || input is WindowsDirectShowVbiCaptureStream),
             };
             int videoPreviewEnabled = showVideoPreviewCheckBox.IsChecked == true ? 1 : 0;
             var showLiveCheckBox = new CheckBox
@@ -3779,7 +3863,7 @@ public partial class MainWindow : Window
             int videoSnapshotNumber = 0;
             int directShowVideoFramePending = 0;
             CancellationTokenSource? videoPreviewPipeCancellation = null;
-            if (input is WindowsDirectShowVbiCaptureStream directShowCapture)
+            if (!disableVideoPreview && input is WindowsDirectShowVbiCaptureStream directShowCapture)
             {
                 directShowCapture.VideoFrameCaptured = frame =>
                 {
@@ -4254,7 +4338,8 @@ public partial class MainWindow : Window
                 videoPreviewBitmap.Dispose();
             };
 
-            if (videoInterfacePath is not null || input is WindowsDirectShowVbiCaptureStream)
+            if (!disableVideoPreview
+                && (videoInterfacePath is not null || input is WindowsDirectShowVbiCaptureStream))
                 StartVideoPreviewPipe();
 
             PageAssembler? liveAssembler = null;
@@ -6199,6 +6284,9 @@ public partial class MainWindow : Window
             _nativeSuppressFlashMenuItem.IsChecked = suppressFlash;
 
         SetToolbarOnBottom(_sessionState.ToolbarOnBottom ?? false, saveSession: false);
+        SetDisableLiveVbiVideoPreview(
+            _sessionState.DisableLiveVbiVideoPreview ?? false,
+            saveSession: false);
     }
 
     private void OnColorClicked(object? sender, RoutedEventArgs e)
