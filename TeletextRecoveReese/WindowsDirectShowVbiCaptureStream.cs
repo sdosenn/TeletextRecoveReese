@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using DirectShowLib;
@@ -33,6 +34,7 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
     private VideoCallback? _videoCallback;
     private int _videoWidth, _videoHeight, _videoStride;
     private bool _videoBottomUp;
+    private byte[]? _videoPixels;
     private byte[]? _firstField;
     private byte[]? _readFrame;
     private int _readOffset;
@@ -57,17 +59,19 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
     public WindowsDirectShowVbiCaptureStream(
         string deviceName, DirectShowVideoInput input, DirectShowVideoStandard standard,
         int configuredLineLength, int configuredFieldLines,
-        bool enableVideoPreview = true)
+        bool enableVideoPreview = true,
+        bool configureInput = true)
     {
         if (!OperatingSystem.IsWindows())
             throw new PlatformNotSupportedException("DirectShow VBI capture is available on Windows.");
-        try { Build(deviceName, input, standard, configuredLineLength, configuredFieldLines, enableVideoPreview); }
+        try { Build(deviceName, input, standard, configuredLineLength, configuredFieldLines, enableVideoPreview, configureInput); }
         catch { Dispose(); throw; }
     }
 
     private void Build(
         string deviceName, DirectShowVideoInput input, DirectShowVideoStandard standard,
-        int configuredLineLength, int configuredFieldLines, bool enableVideoPreview)
+        int configuredLineLength, int configuredFieldLines,
+        bool enableVideoPreview, bool configureInput)
     {
         DsDevice device = DsDevice.GetDevicesOfCat(FilterCategory.VideoInputDevice)
             .FirstOrDefault(candidate => string.Equals(candidate.Name, deviceName, StringComparison.OrdinalIgnoreCase))
@@ -83,8 +87,11 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
             _crossbarFilter = WindowsDirectShowCapture.FindCrossbarFilter(device.Name, device.DevicePath)
                 ?? throw new InvalidOperationException("The selected DirectShow crossbar is unavailable.");
             DsError.ThrowExceptionForHR(_graph.AddFilter(_crossbarFilter, "Video Crossbar"));
-            var crossbar = (IAMCrossbar)_crossbarFilter;
-            DsError.ThrowExceptionForHR(crossbar.Route(input.OutputPinIndex, inputPin));
+            if (configureInput)
+            {
+                var crossbar = (IAMCrossbar)_crossbarFilter;
+                DsError.ThrowExceptionForHR(crossbar.Route(input.OutputPinIndex, inputPin));
+            }
             IPin? xbarOut = DsFindPin.ByDirection(_crossbarFilter, PinDirection.Output, input.OutputPinIndex);
             IPin? analogIn = DsFindPin.ByDirection(_source, PinDirection.Input, 0);
             if (xbarOut is null || analogIn is null)
@@ -93,7 +100,8 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
             finally { Release(xbarOut); Release(analogIn); }
         }
 
-        if (standard.Value != AnalogVideoStandard.None && _source is IAMAnalogVideoDecoder decoder)
+        if (configureInput && standard.Value != AnalogVideoStandard.None
+            && _source is IAMAnalogVideoDecoder decoder)
             DsError.ThrowExceptionForHR(decoder.put_TVFormat(standard.Value));
 
         IPin vbiPin = DsFindPin.ByCategory(_source, PinCategory.VBI, 0)
@@ -184,7 +192,8 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
         bool delivered = false;
         try
         {
-            var pixels = new byte[_videoStride * _videoHeight];
+            int pixelBytes = checked(_videoStride * _videoHeight);
+            byte[] pixels = _videoPixels ??= ArrayPool<byte>.Shared.Rent(pixelBytes);
             for (int row = 0; row < _videoHeight; row++)
             {
                 int sourceRow = _videoBottomUp ? _videoHeight - row - 1 : row;
@@ -325,6 +334,11 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
         try { _grabber?.SetCallback(null!, 0); } catch { }
         try { _videoGrabber?.SetCallback(null!, 0); } catch { }
         try { _mediaControl?.Stop(); } catch { }
+        if (_videoPixels is not null)
+        {
+            ArrayPool<byte>.Shared.Return(_videoPixels);
+            _videoPixels = null;
+        }
         Release(_videoNullRenderer); Release(_videoGrabberFilter);
         Release(_nullRenderer); Release(_grabberFilter); Release(_crossbarFilter);
         Release(_source); Release(_captureGraph); Release(_graph);

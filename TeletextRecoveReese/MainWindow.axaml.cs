@@ -33,11 +33,20 @@ public partial class MainWindow : Window
         : IVbiDecodedPacketProgress
     {
         private volatile bool _enabled = enabled;
+        private readonly object _dispatchLock = new();
+        private IReadOnlyList<byte[]>? _pending;
+        private bool _dispatchQueued;
 
         public bool Enabled
         {
             get => _enabled;
-            set => _enabled = value;
+            set
+            {
+                _enabled = value;
+                if (value) return;
+                lock (_dispatchLock)
+                    _pending = null;
+            }
         }
 
         public bool IsEnabled => _enabled;
@@ -45,10 +54,37 @@ public partial class MainWindow : Window
         public void Report(IReadOnlyList<byte[]> value)
         {
             if (!_enabled) return;
-            Dispatcher.UIThread.Post(() =>
+            lock (_dispatchLock)
             {
-                if (_enabled) handler(value);
-            }, DispatcherPriority.Background);
+                // Live display updates are expendable: the complete stream is
+                // written to disk independently. Keep only the newest batch while
+                // the UI is busy instead of growing an unbounded dispatcher queue.
+                _pending = value;
+                if (_dispatchQueued) return;
+                _dispatchQueued = true;
+            }
+            Dispatcher.UIThread.Post(Drain, DispatcherPriority.Background);
+        }
+
+        private void Drain()
+        {
+            IReadOnlyList<byte[]>? value;
+            lock (_dispatchLock)
+            {
+                value = _pending;
+                _pending = null;
+            }
+
+            if (_enabled && value is not null)
+                handler(value);
+
+            lock (_dispatchLock)
+            {
+                if (_enabled && _pending is not null)
+                    Dispatcher.UIThread.Post(Drain, DispatcherPriority.Background);
+                else
+                    _dispatchQueued = false;
+            }
         }
     }
 
@@ -2844,7 +2880,7 @@ public partial class MainWindow : Window
         var previewStatusText = new TextBlock
         {
             Text = disableVideoPreview
-                ? "Live video preview is disabled in Options; only the VBI interface will be opened."
+                ? "Only VBI interface will be opened."
                 : OperatingSystem.IsWindows()
                 ? "DirectShow preview will appear after a capture device is selected."
                 : _ffmpegPath is null
@@ -3002,7 +3038,7 @@ public partial class MainWindow : Window
             if (disableVideoPreview)
             {
                 previewStatusText.Text =
-                    "Live video preview is disabled in Options; only the VBI interface will be opened.";
+                    "Only VBI interface will be opened.";
                 return;
             }
             if (OperatingSystem.IsWindows())
@@ -3398,10 +3434,26 @@ public partial class MainWindow : Window
                 input = new LinuxVbiCaptureStream(
                     captureInterface.Path, linuxInput.Index, linuxStandard.Id);
             else if (OperatingSystem.IsWindows() && directShowInput is not null && directShowStandard is not null)
-                input = new WindowsDirectShowVbiCaptureStream(
-                    captureInterface.Name, directShowInput, directShowStandard,
-                    preset.LineLength, preset.FieldLines,
-                    enableVideoPreview: !(_sessionState.DisableLiveVbiVideoPreview ?? false));
+            {
+                bool enableVideoPreview = !(_sessionState.DisableLiveVbiVideoPreview ?? false);
+                try
+                {
+                    input = new WindowsDirectShowVbiCaptureStream(
+                        captureInterface.Name, directShowInput, directShowStandard,
+                        preset.LineLength, preset.FieldLines, enableVideoPreview);
+                }
+                catch when (!enableVideoPreview)
+                {
+                    // Another application may already own the video pin and its
+                    // crossbar/decoder controls while leaving the VBI pin shareable.
+                    // Retry without changing routing or TV standard; the existing
+                    // application/device configuration remains in effect.
+                    input = new WindowsDirectShowVbiCaptureStream(
+                        captureInterface.Name, directShowInput, directShowStandard,
+                        preset.LineLength, preset.FieldLines,
+                        enableVideoPreview: false, configureInput: false);
+                }
+            }
             else
                 throw new PlatformNotSupportedException("No live VBI transport is available for this platform.");
         }
@@ -4576,7 +4628,9 @@ public partial class MainWindow : Window
                     }
                     foreach (byte[] packet in packets)
                     {
-                        _broadcastPackets.Add(packet);
+                        // DeconvolveAsync already writes the complete decoded stream
+                        // to its temporary .t42 file. Do not duplicate that growing
+                        // stream in memory merely to drive the expendable live view.
                         liveAssembler!.Feed(packet, livePacketIndex++);
                         latestHeaderPage =
                             liveAssembler.LastUpdatedPage ?? latestHeaderPage;
@@ -4589,6 +4643,12 @@ public partial class MainWindow : Window
                                  && finalized.PageNumber == lockedPageNumber)
                             lockedLivePage = finalized;
                     }
+                    // The live pane is only a monitor. PageStore normally preserves
+                    // every completed page version for later recovery work, which
+                    // makes an unbounded live capture retain thousands of full page
+                    // grids. The decoded packet stream remains the source of truth;
+                    // retain only pages referenced by the current preview/lock.
+                    _store.Clear();
                     if (pageLocked)
                     {
                         if (!validPageLock || latestHeaderPage is null) return;
