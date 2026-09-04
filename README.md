@@ -9,8 +9,8 @@ Capture VBI, deconvolve and restore teletext from VHS tapes all in one cross-pla
 ## Download
 
 <p align="center">
-  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.5-beta">
-    <img src="https://img.shields.io/badge/Download_latest_release-0.5_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.5 beta">
+  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.6-beta">
+    <img src="https://img.shields.io/badge/Download_latest_release-0.6_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.5 beta">
   </a>
 </p>
 
