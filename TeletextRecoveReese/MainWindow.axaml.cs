@@ -3986,12 +3986,14 @@ public partial class MainWindow : Window
             CancellationTokenSource? videoPreviewPipeCancellation = null;
             if (!disableVideoPreview && input is WindowsDirectShowVbiCaptureStream directShowCapture)
             {
+                directShowCapture.TryAcquireVideoFrame = () =>
+                    videoPreviewActive
+                    && Volatile.Read(ref videoPreviewEnabled) != 0
+                    && Interlocked.CompareExchange(ref directShowVideoFramePending, 1, 0) == 0;
+                directShowCapture.ReleaseVideoFrame = () =>
+                    Interlocked.Exchange(ref directShowVideoFramePending, 0);
                 directShowCapture.VideoFrameCaptured = frame =>
                 {
-                    if (!videoPreviewActive || Volatile.Read(ref videoPreviewEnabled) == 0) return;
-                    // Never queue more than one UI frame. Dropping an obsolete
-                    // preview frame keeps the VBI delivery path real-time.
-                    if (Interlocked.Exchange(ref directShowVideoFramePending, 1) != 0) return;
                     byte[] pixels = ScaleBgraFrame(
                         frame.Bgra, frame.Width, frame.Height, frame.Stride,
                         videoPreviewWidth, videoPreviewHeight);
@@ -4453,7 +4455,11 @@ public partial class MainWindow : Window
                 StopVideoPreviewPipe();
                 input.RawFrameCaptured = null;
                 if (input is WindowsDirectShowVbiCaptureStream directShowCapture)
+                {
+                    directShowCapture.TryAcquireVideoFrame = null;
+                    directShowCapture.ReleaseVideoFrame = null;
                     directShowCapture.VideoFrameCaptured = null;
+                }
                 rawPreviewBitmap.Dispose();
                 videoPreviewImage.Source = null;
                 videoPreviewBitmap.Dispose();

@@ -50,6 +50,8 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
     public override int SecondFieldLines => _fieldLines;
     public override long CapturedFrames => Interlocked.Read(ref _capturedFrames);
     public override Action<byte[]>? RawFrameCaptured { get; set; }
+    public Func<bool>? TryAcquireVideoFrame { get; set; }
+    public Action? ReleaseVideoFrame { get; set; }
     public Action<DirectShowPreviewFrame>? VideoFrameCaptured { get; set; }
 
     public WindowsDirectShowVbiCaptureStream(
@@ -173,15 +175,30 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
 
     private int OnVideoBuffer(IntPtr buffer, int bufferLen)
     {
-        if (_disposed || VideoFrameCaptured is null || bufferLen < _videoStride * _videoHeight) return 0;
-        var pixels = new byte[_videoStride * _videoHeight];
-        for (int row = 0; row < _videoHeight; row++)
+        Action<DirectShowPreviewFrame>? callback = VideoFrameCaptured;
+        Func<bool>? tryAcquire = TryAcquireVideoFrame;
+        if (_disposed || callback is null || tryAcquire is null
+            || bufferLen < _videoStride * _videoHeight || !tryAcquire())
+            return 0;
+
+        bool delivered = false;
+        try
         {
-            int sourceRow = _videoBottomUp ? _videoHeight - row - 1 : row;
-            Marshal.Copy(IntPtr.Add(buffer, sourceRow * _videoStride), pixels, row * _videoStride, _videoStride);
+            var pixels = new byte[_videoStride * _videoHeight];
+            for (int row = 0; row < _videoHeight; row++)
+            {
+                int sourceRow = _videoBottomUp ? _videoHeight - row - 1 : row;
+                Marshal.Copy(IntPtr.Add(buffer, sourceRow * _videoStride), pixels, row * _videoStride, _videoStride);
+            }
+            callback(new DirectShowPreviewFrame(pixels, _videoWidth, _videoHeight, _videoStride));
+            delivered = true;
         }
-        try { VideoFrameCaptured(new DirectShowPreviewFrame(pixels, _videoWidth, _videoHeight, _videoStride)); }
         catch { }
+        finally
+        {
+            if (!delivered)
+                try { ReleaseVideoFrame?.Invoke(); } catch { }
+        }
         return 0;
     }
 
@@ -314,7 +331,8 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
         _videoNullRenderer = _videoGrabberFilter = null;
         _nullRenderer = _grabberFilter = _crossbarFilter = _source = null;
         _captureGraph = null; _graph = null; _grabber = null; _mediaControl = null;
-        _videoGrabber = null; _videoCallback = null; VideoFrameCaptured = null;
+        _videoGrabber = null; _videoCallback = null;
+        TryAcquireVideoFrame = null; ReleaseVideoFrame = null; VideoFrameCaptured = null;
         base.Dispose(disposing);
     }
 
