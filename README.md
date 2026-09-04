@@ -1,18 +1,22 @@
 # TeletextRecoveReese
 
-Cross-platform tool for VHS teletext recoveries, developed with OpenAI
+Cross-platform tool for VHS teletext recovery, developed with OpenAI
 Codex.<br>
-Capture VBI, deconvolve and restore teletext from VHS tapes all in one cross-platform application.
+Capture VBI, deconvolve and restore teletext from VHS tapes all in one cross-platform GUI application.
 
-<img width="780" height="488" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/ebddef02-19d4-4bae-8d66-f8500a5df900" />
-
-## Download
-
-<p align="center">
+<p align="left">
   <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.6-beta-hf">
     <img src="https://img.shields.io/badge/Download_latest_release-0.6_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.5 beta">
   </a>
 </p>
+
+<img width="780" height="488" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/ebddef02-19d4-4bae-8d66-f8500a5df900" />
+
+## Realtime VBI capture and deconvolving chain
+Deconvolve data in real time and see teletext in this precise moment on the tape that's playing.<br>
+No need to store data to disk and separately deconvolve it later.<br>
+Do it all in one pass. Or better yet, hot swap tapes to quickly date taped broadcasts.
+
 
 <img width="780" height="452" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/4263db68-66a8-4cfc-b447-ec28574045d8" />
 
