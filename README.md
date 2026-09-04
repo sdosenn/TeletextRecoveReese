@@ -10,12 +10,13 @@ Capture VBI, deconvolve and restore teletext from VHS tapes all in one cross-pla
   </a>
 </p>
 
-<img width="780" height="488" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/ebddef02-19d4-4bae-8d66-f8500a5df900" />
+<img width="850" height="608" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/44b0fcb3-55d9-4319-93ae-7e0ebbebd968" />
+
 
 ## Realtime VBI capture and deconvolving chain
-Deconvolve data in real time and see teletext in this precise moment on the tape that's playing.<br>
-No need to store data to disk and separately deconvolve it later.<br>
-Do it all in one pass. Or better yet, hot swap tapes to quickly date taped broadcasts.
+Deconvolve data in real time and see teletext in the precise moment on the tape that's playing.<br>
+No need to store data to disk and separately deconvolve it later. Do it all in one pass.<br>
+Or better yet, hot swap tapes to quickly date taped broadcasts.
 
 
 <img width="780" height="452" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/4263db68-66a8-4cfc-b447-ec28574045d8" />
