@@ -236,7 +236,11 @@ internal sealed class WindowsDirectShowVbiCaptureStream : LiveVbiCaptureStream, 
                 }
                 VbiInfoHeader format = Marshal.PtrToStructure<VbiInfoHeader>(value.formatPtr);
                 int lines = checked((int)(format.EndLine - format.StartLine + 1));
-                int difference = Math.Abs(lines - configuredFieldLines);
+                // Auto detect leaves the field count at zero: in that case accept
+                // the first raw VBI format advertised by the driver.
+                int difference = configuredFieldLines > 0
+                    ? Math.Abs(lines - configuredFieldLines)
+                    : 0;
                 if (difference < bestDifference)
                 {
                     if (best is not null) DsUtils.FreeAMMediaType(best);

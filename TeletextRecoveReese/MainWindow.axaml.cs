@@ -27,6 +27,126 @@ namespace TeletextRecoveReese;
 
 public partial class MainWindow : Window
 {
+    /// <summary>
+    /// Coalesces disposable preview work so a capture callback cannot accumulate
+    /// an unbounded Dispatcher queue while the UI is busy rendering.
+    /// </summary>
+    private sealed class LatestUiPreview<T>(Action<T> handler) where T : class
+    {
+        private readonly object _lock = new();
+        private T? _pending;
+        private bool _dispatchQueued;
+
+        public void Post(T value)
+        {
+            lock (_lock)
+            {
+                _pending = value;
+                if (_dispatchQueued) return;
+                _dispatchQueued = true;
+            }
+            Dispatcher.UIThread.Post(Drain, DispatcherPriority.Render);
+        }
+
+        public void Clear()
+        {
+            lock (_lock)
+                _pending = null;
+        }
+
+        private void Drain()
+        {
+            T? value;
+            lock (_lock)
+            {
+                value = _pending;
+                _pending = null;
+            }
+
+            try
+            {
+                if (value is not null)
+                    handler(value);
+            }
+            finally
+            {
+                lock (_lock)
+                {
+                    if (_pending is not null)
+                        Dispatcher.UIThread.Post(Drain, DispatcherPriority.Render);
+                    else
+                        _dispatchQueued = false;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Builds a broadcast address/version index without constructing page grids.
+    /// The raw packets remain in memory and are decoded only for the selected page.
+    /// </summary>
+    private sealed class BroadcastPacketIndexer(PageStore store)
+    {
+        private readonly PageInstance?[] _active = new PageInstance?[9];
+
+        public void Feed(byte[] packet, int packetIndex)
+        {
+            if (packet.Length != 42) return;
+            var low = Hamming.Decode84(packet[0]);
+            var high = Hamming.Decode84(packet[1]);
+            if (low.UncorrectableError || high.UncorrectableError) return;
+
+            int mrag = low.Value | (high.Value << 4);
+            int row = (mrag >> 3) & 0x1F;
+            int magazineBits = mrag & 0x07;
+            int magazine = magazineBits == 0 ? 8 : magazineBits;
+            if (row == 0)
+            {
+                Finalize(magazine);
+                var units = Hamming.Decode84(packet[2]);
+                var tens = Hamming.Decode84(packet[3]);
+                if (units.UncorrectableError || tens.UncorrectableError) return;
+
+                var sub1Low = Hamming.Decode84(packet[4]);
+                var sub1High = Hamming.Decode84(packet[5]);
+                var sub2Low = Hamming.Decode84(packet[6]);
+                var sub2High = Hamming.Decode84(packet[7]);
+                bool badSubpage = sub1Low.UncorrectableError || sub1High.UncorrectableError
+                    || sub2Low.UncorrectableError || sub2High.UncorrectableError;
+                int subpage = badSubpage
+                    ? 0
+                    : ((sub1Low.Value | (sub1High.Value << 4))
+                        | ((sub2Low.Value | (sub2High.Value << 4)) << 8)) & 0x3F7F;
+                var instance = new PageInstance
+                {
+                    Magazine = magazine,
+                    PageNumber = units.Value | (tens.Value << 4),
+                    Subpage = subpage,
+                };
+                instance.BroadcastRowPacketIndices[0] = packetIndex;
+                _active[magazine] = instance;
+            }
+            else if (row is >= 1 and <= 24 && _active[magazine] is { } instance)
+            {
+                instance.BroadcastRowPacketIndices[row] = packetIndex;
+                instance.RowsReceived.Add(row);
+            }
+        }
+
+        public void FinalizeAll()
+        {
+            for (int magazine = 1; magazine <= 8; magazine++)
+                Finalize(magazine);
+        }
+
+        private void Finalize(int magazine)
+        {
+            if (_active[magazine] is not { } instance) return;
+            store.AddInstance(instance);
+            _active[magazine] = null;
+        }
+    }
+
     private sealed class ToggleablePacketProgress(
         bool enabled,
         Action<IReadOnlyList<byte[]>> handler)
@@ -209,6 +329,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<(int DesignationCode, int TripletNumber), EnhancementListEntry>
         _enhancementEntriesByTriplet = new();
     private readonly HashSet<TeletextPage> _broadcastEnhancementsScanned = new();
+    private PageInstance? _decodedBroadcastInstance;
 
     private sealed class SessionState
     {
@@ -269,8 +390,11 @@ public partial class MainWindow : Window
         public float CriFcRangeThreshold { get; set; } = 28;
         public double CriFcConfidenceThreshold { get; set; } = 0.35;
         public bool IsBuiltIn { get; set; }
+        public bool IsAutoDetected { get; set; }
 
-        public override string ToString() => IsBuiltIn ? Name : $"{Name} (Custom)";
+        public override string ToString() => IsAutoDetected
+            ? Name
+            : IsBuiltIn ? Name : $"{Name} (Custom)";
     }
 
     private sealed class ToggleableDeconvolutionControl(
@@ -968,15 +1092,29 @@ public partial class MainWindow : Window
 
     private static async Task<CaptureCardPreset?> ShowNewCaptureCardPresetAsync(
         Window owner,
-        IReadOnlyCollection<CaptureCardPreset> existingPresets)
+        IReadOnlyCollection<CaptureCardPreset> existingPresets,
+        CaptureCardPreset? initial = null)
     {
-        var name = new TextBox { Width = 250, PlaceholderText = "Card manufacturer and model" };
-        var chipset = new TextBox { Width = 250, PlaceholderText = "e.g. SAA7131" };
+        var name = new TextBox
+        {
+            Width = 250,
+            PlaceholderText = "Card manufacturer and model",
+            Text = initial?.Name ?? string.Empty,
+        };
+        var chipset = new TextBox
+        {
+            Width = 250,
+            PlaceholderText = "e.g. SAA7131",
+            Text = initial?.Chipset ?? string.Empty,
+        };
+        string[] interfaceChoices = ["PCI", "PCIe", "USB", "DirectShow", "V4L2", "TBC file", "Other"];
         var cardInterface = new ComboBox
         {
             Width = 250,
-            ItemsSource = new[] { "PCI", "PCIe", "USB", "TBC file", "Other" },
-            SelectedIndex = 0,
+            ItemsSource = interfaceChoices,
+            SelectedItem = interfaceChoices.Contains(initial?.Interface ?? string.Empty)
+                ? initial!.Interface
+                : interfaceChoices[0],
         };
         var sampleRate = new NumericUpDown { Width = 250, Minimum = 1, Maximum = 1000000000, Value = 27000000, Increment = 1000 };
         var lineLength = new NumericUpDown { Width = 250, Minimum = 1, Maximum = 100000, Value = 2048 };
@@ -994,6 +1132,21 @@ public partial class MainWindow : Window
             Width = 250, Minimum = 0, Maximum = 1, Value = 0.35m,
             Increment = 0.01m, FormatString = "0.00",
         };
+        if (initial is not null)
+        {
+            sampleRate.Value = (decimal)initial.SampleRate;
+            lineLength.Value = initial.LineLength;
+            lineStart.Value = initial.LineStart;
+            lineStartEnd.Value = initial.LineStartEnd;
+            sampleType.SelectedItem = initial.SampleType;
+            fieldLines.Value = initial.FieldLines;
+            fieldRangeStart.Value = initial.FieldRangeStart;
+            fieldRangeEnd.Value = initial.FieldRangeEnd;
+            stdDevThreshold.Value = (decimal)initial.StandardDeviationThreshold;
+            signalThreshold.Value = (decimal)initial.SignalLevelThreshold;
+            criFcRangeThreshold.Value = (decimal)initial.CriFcRangeThreshold;
+            criFcConfidenceThreshold.Value = (decimal)initial.CriFcConfidenceThreshold;
+        }
         var error = new TextBlock { Foreground = Brushes.OrangeRed, TextWrapping = TextWrapping.Wrap };
         var saveButton = new Button { Content = "Save", Width = 90, IsDefault = true };
         var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
@@ -1684,7 +1837,7 @@ public partial class MainWindow : Window
         }
 
         byte[] block = CreateByteBlock(
-            versions[targetVersion].Page,
+            GetBroadcastPage(versions[targetVersion]),
             column,
             row,
             width,
@@ -2832,6 +2985,17 @@ public partial class MainWindow : Window
         List<CaptureCardPreset> presets = BuiltInCaptureCardPresets
             .Concat(_sessionState.CustomCaptureCardPresets)
             .ToList();
+        // The live driver reports its raw VBI format only after its stream is open.
+        // This transient choice is deliberately not offered for VBI files.
+        presets.Insert(0, new CaptureCardPreset
+        {
+            Name = "Auto detect",
+            Chipset = "Driver reported",
+            Interface = "Live capture",
+            LineLength = 0,
+            FieldLines = 0,
+            IsAutoDetected = true,
+        });
         var interfaceCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         var cardNameText = new TextBlock
         {
@@ -3002,6 +3166,8 @@ public partial class MainWindow : Window
         string? selectedVideoInterface = null;
         Process? previewProcess = null;
         WindowsDirectShowPreview? directShowPreview = null;
+        LatestUiPreview<DirectShowPreviewFrame>? directShowPreviewUpdates = null;
+        LatestUiPreview<byte[]>? mjpegPreviewUpdates = null;
         CancellationTokenSource? previewCancellation = null;
         int previewGeneration = 0;
         bool suppressInterfaceSelection = false;
@@ -3016,6 +3182,10 @@ public partial class MainWindow : Window
 
         void StopPreview()
         {
+            directShowPreviewUpdates?.Clear();
+            directShowPreviewUpdates = null;
+            mjpegPreviewUpdates?.Clear();
+            mjpegPreviewUpdates = null;
             directShowPreview?.Dispose();
             directShowPreview = null;
             previewCancellation?.Cancel();
@@ -3052,37 +3222,39 @@ public partial class MainWindow : Window
                 previewStatusText.Text = $"Opening DirectShow preview from {captureInterface.Name}…";
                 try
                 {
+                    var previewUpdates = new LatestUiPreview<DirectShowPreviewFrame>(frame =>
+                    {
+                        if (windowsGeneration != previewGeneration) return;
+                        try
+                        {
+                            var bitmap = new WriteableBitmap(
+                                new PixelSize(frame.Width, frame.Height),
+                                new Vector(96, 96),
+                                PixelFormat.Bgra8888,
+                                AlphaFormat.Opaque);
+                            using (ILockedFramebuffer locked = bitmap.Lock())
+                            {
+                                for (int row = 0; row < frame.Height; row++)
+                                    Marshal.Copy(
+                                        frame.Bgra, row * frame.Stride,
+                                        IntPtr.Add(locked.Address, row * locked.RowBytes),
+                                        frame.Stride);
+                            }
+                            if (previewImage.Source is IDisposable oldSource)
+                                oldSource.Dispose();
+                            previewImage.Source = bitmap;
+                        }
+                        catch (Exception ex)
+                        {
+                            previewStatusText.Text = $"DirectShow preview frame failed: {ex.Message}";
+                        }
+                    });
+                    directShowPreviewUpdates = previewUpdates;
                     directShowPreview = await Task.Run(() => new WindowsDirectShowPreview(
                         captureInterface.Name,
                         selectedDirectShowInput,
                         selectedDirectShowStandard,
-                        frame => Dispatcher.UIThread.Post(() =>
-                        {
-                            if (windowsGeneration != previewGeneration) return;
-                            try
-                            {
-                                var bitmap = new WriteableBitmap(
-                                    new PixelSize(frame.Width, frame.Height),
-                                    new Vector(96, 96),
-                                    PixelFormat.Bgra8888,
-                                    AlphaFormat.Opaque);
-                                using (ILockedFramebuffer locked = bitmap.Lock())
-                                {
-                                    for (int row = 0; row < frame.Height; row++)
-                                        Marshal.Copy(
-                                            frame.Bgra, row * frame.Stride,
-                                            IntPtr.Add(locked.Address, row * locked.RowBytes),
-                                            frame.Stride);
-                                }
-                                if (previewImage.Source is IDisposable oldSource)
-                                    oldSource.Dispose();
-                                previewImage.Source = bitmap;
-                            }
-                            catch (Exception ex)
-                            {
-                                previewStatusText.Text = $"DirectShow preview frame failed: {ex.Message}";
-                            }
-                        }, DispatcherPriority.Background)));
+                        frame => previewUpdates.Post(frame)));
                     previewStatusText.Text = $"Live DirectShow preview · {selectedDirectShowInput.Name} · {selectedDirectShowStandard.Name}";
                 }
                 catch (Exception ex)
@@ -3138,22 +3310,23 @@ public partial class MainWindow : Window
                 previewCancellation = new CancellationTokenSource();
                 CancellationToken token = previewCancellation.Token;
                 previewStatusText.Text = $"Live preview · 4:3 · 25 fps · {selectedVideoInterface} · {selectedInput.Name} · {selectedStandard.Name}";
-                _ = ReadMjpegFramesAsync(previewProcess.StandardOutput.BaseStream, token, frame =>
+                var previewUpdates = new LatestUiPreview<byte[]>(frame =>
                 {
-                    Dispatcher.UIThread.Post(() =>
+                    if (generation != previewGeneration) return;
+                    try
                     {
-                        if (generation != previewGeneration) return;
-                        try
-                        {
-                            using var stream = new MemoryStream(frame, writable: false);
-                            var bitmap = new Bitmap(stream);
-                            if (previewImage.Source is IDisposable oldSource)
-                                oldSource.Dispose();
-                            previewImage.Source = bitmap;
-                        }
-                        catch { }
-                    }, DispatcherPriority.Background);
+                        using var stream = new MemoryStream(frame, writable: false);
+                        var bitmap = new Bitmap(stream);
+                        if (previewImage.Source is IDisposable oldSource)
+                            oldSource.Dispose();
+                        previewImage.Source = bitmap;
+                    }
+                    catch { }
                 });
+                mjpegPreviewUpdates = previewUpdates;
+                _ = ReadMjpegFramesAsync(
+                    previewProcess.StandardOutput.BaseStream, token,
+                    frame => previewUpdates.Post(frame));
             }
             catch (Exception ex)
             {
@@ -3388,7 +3561,8 @@ public partial class MainWindow : Window
                 return;
             if (OperatingSystem.IsWindows() && (directShowInput is null || directShowStandard is null))
                 return;
-            _sessionState.LastCaptureCardPresetName = preset.Name;
+            if (!preset.IsAutoDetected)
+                _sessionState.LastCaptureCardPresetName = preset.Name;
             _sessionState.LastLiveCaptureInterface = captureInterface.Path;
             _sessionState.LastLiveCaptureInput = captureInput?.Index ?? directShowInput?.PinIndex;
             _sessionState.LastLiveCaptureStandard = captureStandard?.Id
@@ -3415,6 +3589,28 @@ public partial class MainWindow : Window
         };
         dialog.Opened += async (_, _) => await RefreshInterfacesAsync();
         await dialog.ShowDialog(this);
+    }
+
+    private static CaptureCardPreset CreateDriverDetectedPreset(
+        string captureDeviceName,
+        LiveVbiCaptureStream input)
+    {
+        int lineLength = input.SamplesPerLine;
+        int fieldLines = Math.Max(input.FirstFieldLines, input.SecondFieldLines);
+        return new CaptureCardPreset
+        {
+            Name = captureDeviceName,
+            Chipset = OperatingSystem.IsWindows() ? "DirectShow driver" : "V4L2 driver",
+            Interface = OperatingSystem.IsWindows() ? "DirectShow" : "V4L2",
+            SampleRate = input.SamplingRate,
+            LineLength = lineLength,
+            LineStart = 0,
+            LineStartEnd = Math.Clamp(lineLength, 1, 60),
+            SampleType = "UInt8",
+            FieldLines = fieldLines,
+            FieldRangeStart = 0,
+            FieldRangeEnd = fieldLines,
+        };
     }
 
     private async Task StartLiveVbiCaptureAsync(
@@ -3465,20 +3661,25 @@ public partial class MainWindow : Window
 
         await using (input)
         {
+            bool usingAutoDetectedPreset = preset.IsAutoDetected;
+            CaptureCardPreset resolvedPreset = usingAutoDetectedPreset
+                ? CreateDriverDetectedPreset(captureInterface.Name, input)
+                : preset;
+            preset = resolvedPreset;
             var options = new VbiCaptureOptions(
-                preset.Name,
+                resolvedPreset.Name,
                 input.SamplingRate,
                 input.SamplesPerLine,
-                preset.LineStart,
-                preset.LineStartEnd,
+                resolvedPreset.LineStart,
+                resolvedPreset.LineStartEnd,
                 IsUInt16: false,
                 FieldLines: input.LinesPerFrame,
                 FieldRangeStart: 0,
                 FieldRangeEnd: input.LinesPerFrame,
-                StandardDeviationThreshold: preset.StandardDeviationThreshold,
-                SignalLevelThreshold: preset.SignalLevelThreshold,
-                CriFcRangeThreshold: preset.CriFcRangeThreshold,
-                CriFcConfidenceThreshold: preset.CriFcConfidenceThreshold);
+                StandardDeviationThreshold: resolvedPreset.StandardDeviationThreshold,
+                SignalLevelThreshold: resolvedPreset.SignalLevelThreshold,
+                CriFcRangeThreshold: resolvedPreset.CriFcRangeThreshold,
+                CriFcConfidenceThreshold: resolvedPreset.CriFcConfidenceThreshold);
             string temporaryOutput = Path.Combine(
                 Path.GetTempPath(), $"TeletextRecoveReese-live-{Guid.NewGuid():N}.t42");
             string? temporaryRawCapture = recordRawVbi
@@ -4029,6 +4230,8 @@ public partial class MainWindow : Window
             bool allowClose = false;
             bool rawPreviewActive = true;
             bool videoPreviewActive = true;
+            var rawPreviewUpdates = new LatestUiPreview<Action>(render => render());
+            var videoPreviewUpdates = new LatestUiPreview<Action>(render => render());
             long lastRawPreviewTimestamp = 0;
             long rawPreviewFrameNumber = 0;
             int rawPreviewHasFrame = 0;
@@ -4177,7 +4380,7 @@ public partial class MainWindow : Window
                                     detectedUpdates.Add((field, physicalLine, offset));
                                 }
                             }
-                            Dispatcher.UIThread.Post(() =>
+                            rawPreviewUpdates.Post(() =>
                             {
                                 if (!rawPreviewActive) return;
                                 UpdateClockBank();
@@ -4245,7 +4448,7 @@ public partial class MainWindow : Window
                             }
                         }
                         if (peakFitUpdated)
-                            Dispatcher.UIThread.Post(UpdateClockBank);
+                            rawPreviewUpdates.Post(UpdateClockBank);
 
                         if (!renderPreview) return;
                         int[] clockSearchOffsets = Enumerable.Range(
@@ -4310,7 +4513,7 @@ public partial class MainWindow : Window
                             out byte minimumSample, out byte maximumSample);
                         long frameNumber = Interlocked.Increment(ref rawPreviewFrameNumber);
                         Volatile.Write(ref rawPreviewHasFrame, 1);
-                        Dispatcher.UIThread.Post(() =>
+                        rawPreviewUpdates.Post(() =>
                         {
                             if (!rawPreviewActive) return;
                             try
@@ -4328,11 +4531,11 @@ public partial class MainWindow : Window
                             {
                                 rawPreviewInfoText.Text = $"Raw VBI preview render failed: {ex.Message}";
                             }
-                        }, DispatcherPriority.Render);
+                        });
                     }
                     catch (Exception ex)
                     {
-                        Dispatcher.UIThread.Post(() =>
+                        rawPreviewUpdates.Post(() =>
                         {
                             if (!rawPreviewActive) return;
                             rawPreviewInfoText.Text = $"Raw VBI preview processing failed: {ex.Message}";
@@ -4398,7 +4601,7 @@ public partial class MainWindow : Window
                                 byte[] pixels = BuildVideoPreviewBgra(
                                     frame, videoPreviewWidth, videoPreviewHeight);
                                 int frameNumber = Interlocked.Increment(ref videoSnapshotNumber);
-                                Dispatcher.UIThread.Post(() =>
+                                videoPreviewUpdates.Post(() =>
                                 {
                                     if (!videoPreviewActive) return;
                                     try
@@ -4415,7 +4618,7 @@ public partial class MainWindow : Window
                                     {
                                         videoPreviewInfoText.Text = $"Video preview render failed: {ex.Message}";
                                     }
-                                }, DispatcherPriority.Render);
+                                });
 
                                 // When initially disabled, keep the requested first
                                 // frozen frame and immediately close /dev/video.
@@ -4428,7 +4631,7 @@ public partial class MainWindow : Window
                     }
                     catch (Exception ex)
                     {
-                        Dispatcher.UIThread.Post(() =>
+                        videoPreviewUpdates.Post(() =>
                         {
                             if (videoPreviewActive && !pipeToken.IsCancellationRequested)
                                 videoPreviewInfoText.Text = $"Video preview unavailable: {ex.Message}";
@@ -4503,6 +4706,8 @@ public partial class MainWindow : Window
             {
                 rawPreviewActive = false;
                 videoPreviewActive = false;
+                rawPreviewUpdates.Clear();
+                videoPreviewUpdates.Clear();
                 videoPreviewCancellation.Cancel();
                 StopVideoPreviewPipe();
                 input.RawFrameCaptured = null;
@@ -4649,6 +4854,7 @@ public partial class MainWindow : Window
                     // grids. The decoded packet stream remains the source of truth;
                     // retain only pages referenced by the current preview/lock.
                     _store.Clear();
+                    _broadcastEnhancementsScanned.Clear();
                     if (pageLocked)
                     {
                         if (!validPageLock || latestHeaderPage is null) return;
@@ -4777,6 +4983,23 @@ public partial class MainWindow : Window
                 long packetCount = File.Exists(temporaryOutput)
                     ? new FileInfo(temporaryOutput).Length / 42
                     : lastProgress.PacketsWritten;
+                if (usingAutoDetectedPreset && packetCount > 0
+                    && await OfferDriverDetectedPresetAsync(packetCount))
+                {
+                    _sessionState.CustomCaptureCardPresets ??= new List<CaptureCardPreset>();
+                    CaptureCardPreset? savedPreset = await ShowNewCaptureCardPresetAsync(
+                        this,
+                        BuiltInCaptureCardPresets
+                            .Concat(_sessionState.CustomCaptureCardPresets)
+                            .ToList(),
+                        preset);
+                    if (savedPreset is not null)
+                    {
+                        _sessionState.CustomCaptureCardPresets.Add(savedPreset);
+                        _sessionState.LastCaptureCardPresetName = savedPreset.Name;
+                        SaveSessionState();
+                    }
+                }
                 LiveCaptureCompletionChoice completionChoice =
                     await ShowLiveCaptureCompletionDialogAsync(
                         temporaryRawCapture, packetCount);
@@ -5823,12 +6046,11 @@ public partial class MainWindow : Window
             _store.Clear();
             _broadcastPackets.Clear();
             ClearBroadcastPane();
-            await AssembleStreamAsync(
+            await IndexBroadcastStreamAsync(
                 stream,
                 _store,
                 _broadcastPackets,
-                percent => UpdateLoadingProgress(true, percent),
-                decodeEnhancements: false);
+                percent => UpdateLoadingProgress(true, percent));
             _broadcastFilePath = filePath;
             BroadcastFilePathText.Text = FormatFileFooter(filePath, _store.TotalInstanceCount);
             PopulatePageCombo();
@@ -5922,13 +6144,13 @@ public partial class MainWindow : Window
             ClearBroadcastPane();
             _squashPaneEstablished = false;
 
-            var assembler = new PageAssembler(_store, decodeEnhancements: false);
+            var indexer = new BroadcastPacketIndexer(_store);
             int total = Math.Max(packets.Count, 1);
             for (int index = 0; index < packets.Count; index++)
             {
                 byte[] packet = (byte[])packets[index].Clone();
                 _broadcastPackets.Add(packet);
-                assembler.Feed(packet, index);
+                indexer.Feed(packet, index);
 
                 if ((index & 0x3FF) == 0)
                 {
@@ -5936,7 +6158,7 @@ public partial class MainWindow : Window
                     await Task.Yield();
                 }
             }
-            assembler.FinalizeAll();
+            indexer.FinalizeAll();
             UpdateLoadingProgress(true, 100);
 
             _broadcastFilePath = filePath;
@@ -5960,6 +6182,7 @@ public partial class MainWindow : Window
     private void ClearBroadcastPane()
     {
         StopFlashRoll();
+        _decodedBroadcastInstance = null;
         _broadcastReadOnlyExplanationShown = false;
         _broadcastFileG0Subset = null;
         _broadcastEnhancementsScanned.Clear();
@@ -6046,6 +6269,51 @@ public partial class MainWindow : Window
         }
 
         assembler.FinalizeAll();
+        reportProgress(100);
+    }
+
+    private static async Task IndexBroadcastStreamAsync(
+        Stream stream,
+        PageStore store,
+        List<byte[]> capturedPackets,
+        Action<int> reportProgress)
+    {
+        var indexer = new BroadcastPacketIndexer(store);
+        var packet = new byte[42];
+        int filled = 0;
+        long startPosition = stream.CanSeek ? stream.Position : 0;
+        long totalBytes = stream.CanSeek ? Math.Max(stream.Length - startPosition, 1) : 0;
+        long processedBytes = 0;
+        int lastPercent = -1;
+
+        reportProgress(0);
+        while (true)
+        {
+            int bytesRead = await stream.ReadAsync(packet.AsMemory(filled, packet.Length - filled));
+            if (bytesRead == 0) break;
+            filled += bytesRead;
+            processedBytes += bytesRead;
+
+            if (totalBytes > 0)
+            {
+                int percent = (int)Math.Min(100, processedBytes * 100 / totalBytes);
+                if (percent != lastPercent)
+                {
+                    lastPercent = percent;
+                    reportProgress(percent);
+                    await Task.Yield();
+                }
+            }
+
+            if (filled != packet.Length) continue;
+            byte[] capturedPacket = (byte[])packet.Clone();
+            int packetIndex = capturedPackets.Count;
+            capturedPackets.Add(capturedPacket);
+            indexer.Feed(capturedPacket, packetIndex);
+            filled = 0;
+        }
+
+        indexer.FinalizeAll();
         reportProgress(100);
     }
 
@@ -6943,6 +7211,35 @@ public partial class MainWindow : Window
         SelectSquashAddress(addresses[target]);
     }
 
+    private TeletextPage GetBroadcastPage(PageInstance instance)
+    {
+        if (!ReferenceEquals(_decodedBroadcastInstance, instance))
+        {
+            if (_decodedBroadcastInstance?.Page is { } previous)
+            {
+                _broadcastEnhancementsScanned.Remove(previous);
+                _decodedBroadcastInstance.Page = null!;
+            }
+            _decodedBroadcastInstance = instance;
+        }
+
+        if (instance.Page is { } page) return page;
+        page = new TeletextPage
+        {
+            Magazine = instance.Magazine,
+            PageNumber = instance.PageNumber,
+            SubPage = instance.Subpage,
+        };
+        for (int row = 0; row < 25; row++)
+        {
+            int packetIndex = instance.BroadcastRowPacketIndices[row];
+            if (packetIndex >= 0 && packetIndex < _broadcastPackets.Count)
+                PageAssembler.ApplyRow(page, row, _broadcastPackets[packetIndex], packetIndex);
+        }
+        instance.Page = page;
+        return page;
+    }
+
     private void SelectBroadcastAddress(
         (int magazine, int page, int subpage) address,
         int versionIndex,
@@ -6967,7 +7264,7 @@ public partial class MainWindow : Window
         for (int i = 0; i < instances.Count; i++)
             VersionComboBox.Items.Add($"v{i}");
         VersionComboBox.SelectedIndex = versionIndex;
-        var selectedPage = instances[versionIndex].Page;
+        var selectedPage = GetBroadcastPage(instances[versionIndex]);
         PrepareBroadcastPageForDisplay(selectedPage);
         BroadcastGrid.Page = selectedPage;
         _suppressComboEvents = false;
@@ -7517,7 +7814,7 @@ public partial class MainWindow : Window
         var instances = _store.GetInstances(magazine, page, subpage);
         if (VersionComboBox.SelectedIndex >= instances.Count) return;
 
-        var selectedPage = instances[VersionComboBox.SelectedIndex].Page;
+        var selectedPage = GetBroadcastPage(instances[VersionComboBox.SelectedIndex]);
         PrepareBroadcastPageForDisplay(selectedPage);
         BroadcastGrid.Page = selectedPage;
         UpdateBroadcastVersionButtons();
@@ -7595,7 +7892,7 @@ public partial class MainWindow : Window
 
         var instances = _store.GetInstances(magazine, page, subpage);
         if (versionIndex < 0 || versionIndex >= instances.Count) return;
-        var previewPage = instances[versionIndex].Page;
+        var previewPage = GetBroadcastPage(instances[versionIndex]);
         PrepareBroadcastPageForDisplay(previewPage);
         _previewingBroadcastVersion = true;
         BroadcastGrid.Page = previewPage;
@@ -7614,7 +7911,7 @@ public partial class MainWindow : Window
         var instances = _store.GetInstances(magazine, page, subpage);
         int selected = VersionComboBox.SelectedIndex;
         if (selected < 0 || selected >= instances.Count) return;
-        var selectedPage = instances[selected].Page;
+        var selectedPage = GetBroadcastPage(instances[selected]);
         PrepareBroadcastPageForDisplay(selectedPage);
         BroadcastGrid.Page = selectedPage;
     }
@@ -7662,7 +7959,7 @@ public partial class MainWindow : Window
 
         _flashRollOffset = (_flashRollOffset + 1) % instances.Count;
         int versionIndex = (_flashRollStartVersion + _flashRollOffset) % instances.Count;
-        var page = instances[versionIndex].Page;
+        var page = GetBroadcastPage(instances[versionIndex]);
         PrepareBroadcastPageForDisplay(page);
         BroadcastGrid.Page = page;
     }
@@ -7688,7 +7985,7 @@ public partial class MainWindow : Window
             int selected = VersionComboBox.SelectedIndex;
             if (selected >= 0 && selected < instances.Count)
             {
-                var selectedPage = instances[selected].Page;
+                var selectedPage = GetBroadcastPage(instances[selected]);
                 PrepareBroadcastPageForDisplay(selectedPage);
                 BroadcastGrid.Page = selectedPage;
             }
@@ -8408,6 +8705,45 @@ public partial class MainWindow : Window
         return open;
     }
 
+    private async Task<bool> OfferDriverDetectedPresetAsync(long packetCount)
+    {
+        bool createPreset = false;
+        var laterButton = new Button { Content = "Not now", Width = 90, IsCancel = true };
+        var createButton = new Button { Content = "Create preset…", Width = 125, IsDefault = true };
+        var dialog = new Window
+        {
+            Title = "Driver settings detected",
+            Width = 510,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(22),
+                Spacing = 18,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = $"Recovered {packetCount:N0} Teletext packets using the driver-reported VBI format. Create a reusable capture-card preset with the detected sample rate, line length and field count?",
+                        TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { laterButton, createButton },
+                    },
+                },
+            },
+        };
+        laterButton.Click += (_, _) => dialog.Close();
+        createButton.Click += (_, _) => { createPreset = true; dialog.Close(); };
+        await dialog.ShowDialog(this);
+        return createPreset;
+    }
+
     private async Task<LiveCaptureCompletionChoice> ShowLiveCaptureCompletionDialogAsync(
         string? rawCapturePath,
         long packetCount)
@@ -8827,17 +9163,6 @@ public partial class MainWindow : Window
 
     private List<TeletextPage> GetVideoExportPages(out TeletextGridControl grid)
     {
-        bool useBroadcast = BroadcastGrid.IsActive
-            || (!SquashPaneGrid.IsVisible && BroadcastPaneGrid.IsVisible);
-        if (useBroadcast)
-        {
-            grid = BroadcastGrid;
-            return _store.GetKnownAddresses()
-                .SelectMany(address => _store.GetInstances(address.magazine, address.page, address.subpage))
-                .Select(instance => instance.Page)
-                .ToList();
-        }
-
         grid = SquashGrid;
         return _squashStore.GetKnownAddresses()
             .Select(address => _squashStore.GetInstances(address.magazine, address.page, address.subpage))
@@ -8857,7 +9182,7 @@ public partial class MainWindow : Window
         List<TeletextPage> pages = GetVideoExportPages(out TeletextGridControl grid);
         if (pages.Count == 0)
         {
-            await ShowMessageAsync("Export video", "There are no pages to export.");
+            await ShowMessageAsync("Export video", "Video export is available for a squashed capture.");
             return;
         }
 
