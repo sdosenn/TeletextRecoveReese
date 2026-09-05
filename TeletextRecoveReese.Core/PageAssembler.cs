@@ -1172,6 +1172,7 @@ public class PageAssembler
             if (gridX >= 40) break;
 
             bool isControlCode = raw <= 0x1F;
+            TeletextColor foregroundBeforeControl = currentFg;
 
             if (isControlCode)
             {
@@ -1227,6 +1228,10 @@ public class PageAssembler
                     cell.IsMosaic = true;
                     cell.MosaicPattern = heldPattern;
                     cell.MosaicHeld = true;
+                    // Spacing attributes are set-after. In particular, a mosaic
+                    // colour control code displays the held pattern using the
+                    // previous colour; its new colour starts in the next cell.
+                    cell.Foreground = foregroundBeforeControl;
                 }
                 else if (isMosaicColorCode)
                 {
@@ -1237,6 +1242,7 @@ public class PageAssembler
                     cell.IsMosaic = true;
                     cell.MosaicPattern = 0;
                     cell.MosaicHeld = false;
+                    cell.Foreground = currentFg;
                 }
                 else
                 {
@@ -1245,10 +1251,10 @@ public class PageAssembler
                     // if mosaicMode happens to already be active - it doesn't itself
                     // define graphics content.
                     cell.IsMosaic = false;
+                    cell.MosaicHeld = false;
                     cell.Character = ' ';
+                    cell.Foreground = currentFg;
                 }
-
-                cell.Foreground = currentFg;
             }
             else if (mosaicMode && raw is not (>= 0x40 and <= 0x5F))
             {

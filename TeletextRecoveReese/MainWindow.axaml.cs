@@ -1686,9 +1686,48 @@ public partial class MainWindow : Window
             if (page != null)
             {
                 EnsurePageHistory(page);
-                // Mosaic toggle if cell is mosaic: only Q/A/Z/W/S/X
-                if (IsMosaicModeBeforeCell(page, x, y))
+                bool mosaicModeBeforeCell = IsMosaicModeBeforeCell(page, x, y);
+                // Space always removes a spacing control code from the selected
+                // cell, even when an earlier mosaic colour code left graphics
+                // mode active for this position. Re-decode the complete row so
+                // all following cells immediately reflect the removed attribute.
+                if (actualChar == ' ' && IsControlCodeAtCell(page, x, y))
                 {
+                    byte[] raw = (byte[])page.RawRows[y]!.Clone();
+                    raw[2 + x] = WithOddParity(0x20);
+                    PageAssembler.ApplyRow(page, y, raw);
+                    PageAssembler.ApplyLevel15Enhancements(page);
+                    CommitPageEdit(page);
+                    activeGrid.InvalidateVisual();
+                    return;
+                }
+
+                // Match QTeletextMaker's input model: lower-case q/w/a/s/z/x
+                // edit the sixels, while Shift produces an upper-case G0 code in
+                // the 0x40-0x5F blast-through range and types it normally.
+                bool isBlastThroughInput = mosaicModeBeforeCell
+                    && shiftModifier
+                    && char.ToUpperInvariant(actualChar) is >= '\x40' and <= '\x5F';
+                if (isBlastThroughInput)
+                    actualChar = char.ToUpperInvariant(actualChar);
+                if (mosaicModeBeforeCell && !isBlastThroughInput)
+                {
+                    // G0 columns 4 and 5 (0x40-0x5F) are valid blast-through
+                    // characters even while graphics mode is active. Space removes
+                    // such a character by restoring the empty G1 mosaic code. Do
+                    // not give Space any meaning on ordinary mosaic cells, so the
+                    // existing sixel editing workflow remains unchanged.
+                    if (actualChar == ' ' && IsBlastThroughCharacterAtCell(page, x, y))
+                    {
+                        byte[] raw = (byte[])page.RawRows[y]!.Clone();
+                        raw[2 + x] = WithOddParity(0x20);
+                        PageAssembler.ApplyRow(page, y, raw);
+                        PageAssembler.ApplyLevel15Enhancements(page);
+                        CommitPageEdit(page);
+                        activeGrid.InvalidateVisual();
+                        return;
+                    }
+
                     char c = char.ToUpperInvariant(actualChar);
                     int bit = c == 'Q' ? 0 : c == 'A' ? 2 : c == 'Z' ? 4 : c == 'W' ? 1 : c == 'S' ? 3 : c == 'X' ? 5 : -1;
                     if (bit < 0) return;
@@ -2042,6 +2081,28 @@ public partial class MainWindow : Window
         }
 
         return mosaicMode;
+    }
+
+    private static bool IsBlastThroughCharacterAtCell(
+        TeletextPage page, int column, int row)
+    {
+        if (column is < 0 or >= 40 || row is < 0 or >= 25
+            || page.RawRows[row] is not { Length: 42 } raw)
+            return false;
+
+        byte code = (byte)(raw[2 + column] & 0x7F);
+        return code is >= 0x40 and <= 0x5F;
+    }
+
+    private static bool IsControlCodeAtCell(
+        TeletextPage page, int column, int row)
+    {
+        if (column is < 0 or >= 40 || row is < 0 or >= 25
+            || (row == 0 && column < 8)
+            || page.RawRows[row] is not { Length: 42 } raw)
+            return false;
+
+        return (raw[2 + column] & 0x7F) <= 0x1F;
     }
 
     private static bool TryGetLevel15Diacritic(
