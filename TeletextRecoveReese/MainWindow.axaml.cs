@@ -126,10 +126,11 @@ public partial class MainWindow : Window
                 instance.BroadcastRowPacketIndices[0] = packetIndex;
                 _active[magazine] = instance;
             }
-            else if (row is >= 1 and <= 24 && _active[magazine] is { } instance)
+            else if (row is >= 1 and <= 25 && _active[magazine] is { } instance)
             {
                 instance.BroadcastRowPacketIndices[row] = packetIndex;
-                instance.RowsReceived.Add(row);
+                if (row <= 24)
+                    instance.RowsReceived.Add(row);
             }
         }
 
@@ -214,6 +215,7 @@ public partial class MainWindow : Window
     private readonly List<byte[]> _squashPackets = new();
     private readonly HashSet<int> _deletedSquashPacketIndices = new();
     private readonly bool _loadLastSession;
+    private readonly bool _startNewSession;
 
     private sealed record TeletextStreamIdentity(
         string? ServiceName,
@@ -280,9 +282,13 @@ public partial class MainWindow : Window
 
     private sealed class PageSnapshot
     {
-        public byte[]?[] Rows { get; } = new byte[25][];
+        public byte[]?[] Rows { get; } = new byte[26][];
         public List<(byte[] RawPacket, int PacketIndex)> EnhancementPackets { get; } = new();
+        public byte[]? FastextPacket { get; set; }
+        public int FastextPacketIndex { get; set; } = -1;
     }
+
+    private sealed record FastextFieldTag(int LinkIndex, bool IsSubpage);
 
     private sealed class PageHistory
     {
@@ -339,6 +345,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<(int DesignationCode, int TripletNumber), EnhancementListEntry>
         _enhancementEntriesByTriplet = new();
     private readonly HashSet<TeletextPage> _broadcastEnhancementsScanned = new();
+    private readonly HashSet<TeletextPage> _broadcastFastextScanned = new();
     private PageInstance? _decodedBroadcastInstance;
 
     private sealed class SessionState
@@ -623,17 +630,23 @@ public partial class MainWindow : Window
     private int _flashRollOffset;
     private (int magazine, int page, int subpage)? _flashRollAddress;
     private int _fitWindowRequest;
+    private bool _updatingFastextUi;
+    private readonly TextBox[] _squashFastextPageFields = new TextBox[6];
+    private readonly TextBox[] _squashFastextSubpageFields = new TextBox[6];
+    private readonly TextBox[] _broadcastFastextPageFields = new TextBox[6];
+    private readonly TextBox[] _broadcastFastextSubpageFields = new TextBox[6];
 
     private static readonly DataFormat<byte[]> TeletextClipboardFormat =
         DataFormat.CreateBytesApplicationFormat("com.teletextrecovereese.raw-byte-block.v2");
 
-    public MainWindow() : this(false)
+    public MainWindow() : this(false, false)
     {
     }
 
-    public MainWindow(bool loadLastSession)
+    public MainWindow(bool loadLastSession, bool startNewSession = false)
     {
         _loadLastSession = loadLastSession;
+        _startNewSession = startNewSession;
         InitializeComponent();
         Title = AppVersion.DisplayName;
         if (OperatingSystem.IsMacOS())
@@ -674,6 +687,7 @@ public partial class MainWindow : Window
             _sessionState.ShowX26EnhancementsSidebar ?? true,
             resizeWindow: false);
         InitializeTransferButtons();
+        InitializeFastextToolbars();
         SquashGrid.IsActive = true;
         BroadcastGrid.IsActive = false;
         BroadcastGrid.ClearSelection();
@@ -705,7 +719,8 @@ public partial class MainWindow : Window
         Opened -= OnWindowOpened;
         InitializeStartupFontChoices(_sessionState.GridFontFamily);
         ApplyGridFont(_sessionState.GridFontFamily, persist: false);
-        if (_loadLastSession || (_sessionState.RestorePreviousSession ?? false))
+        if (!_startNewSession
+            && (_loadLastSession || (_sessionState.RestorePreviousSession ?? false)))
             await RestoreSessionFilesAsync();
     }
 
@@ -1665,7 +1680,7 @@ public partial class MainWindow : Window
 
     private async void OnKeyDown(object? sender, KeyEventArgs e)
     {
-        if (VideoBookmarkTextBox.IsKeyboardFocusWithin)
+        if (VideoBookmarkTextBox.IsKeyboardFocusWithin || IsFastextEditorFocused())
             return;
 
         var activeGrid = IsActiveGrid();
@@ -1962,6 +1977,10 @@ public partial class MainWindow : Window
         _blockBrowseHasPendingEdit = false;
         ResetBlockVersionBrowse();
     }
+
+    private bool IsFastextEditorFocused() =>
+        _squashFastextPageFields.Any(field => field?.IsKeyboardFocusWithin == true)
+        || _squashFastextSubpageFields.Any(field => field?.IsKeyboardFocusWithin == true);
 
     private void BrowseSelectedBlockVersion(int direction)
     {
@@ -2478,6 +2497,242 @@ public partial class MainWindow : Window
         }
     }
 
+    private void InitializeFastextToolbars()
+    {
+        BuildFastextToolbar(
+            SquashFastextGrid,
+            editable: true,
+            _squashFastextPageFields,
+            _squashFastextSubpageFields);
+        BuildFastextToolbar(
+            BroadcastFastextGrid,
+            editable: false,
+            _broadcastFastextPageFields,
+            _broadcastFastextSubpageFields);
+        UpdateFastextToolbars();
+    }
+
+    private void BuildFastextToolbar(
+        Panel container,
+        bool editable,
+        TextBox[] pageFields,
+        TextBox[] subpageFields)
+    {
+        string[] labels = ["Red", "Green", "Yellow", "Cyan", "Index", "Next"];
+        string[] colours = ["#E51C23", "#16C43B", "#F2DF16", "#19C7D4", "#E2E2E2", "#BDBDBD"];
+        container.Children.Clear();
+        for (int linkIndex = 0; linkIndex < 6; linkIndex++)
+        {
+            var pageField = CreateFastextField(linkIndex, isSubpage: false, editable, colours[linkIndex]);
+            var subpageField = CreateFastextField(linkIndex, isSubpage: true, editable, colours[linkIndex]);
+            pageFields[linkIndex] = pageField;
+            subpageFields[linkIndex] = subpageField;
+            ToolTip.SetTip(pageField, $"{labels[linkIndex]} target page");
+            ToolTip.SetTip(subpageField, $"{labels[linkIndex]} target subpage");
+            var divider = new Border
+            {
+                BorderBrush = new SolidColorBrush(Color.Parse("#777777")),
+                BorderThickness = new Thickness(1, 0, 0, 0),
+            };
+            Grid.SetColumn(divider, 1);
+            Grid.SetColumn(subpageField, 2);
+            var targetGrid = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("31,1,40"),
+            };
+            targetGrid.Children.Add(pageField);
+            targetGrid.Children.Add(divider);
+            targetGrid.Children.Add(subpageField);
+            container.Children.Add(new Border
+            {
+                Margin = new Thickness(1, 0),
+                BorderBrush = new SolidColorBrush(Color.Parse("#777777")),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(2),
+                ClipToBounds = true,
+                Child = targetGrid,
+            });
+        }
+    }
+
+    private TextBox CreateFastextField(
+        int linkIndex,
+        bool isSubpage,
+        bool editable,
+        string colour)
+    {
+        var background = new SolidColorBrush(Color.Parse(colour));
+        var field = new TextBox
+        {
+            Tag = new FastextFieldTag(linkIndex, isSubpage),
+            Height = 24,
+            MinWidth = 0,
+            MinHeight = 0,
+            Padding = new Thickness(0),
+            Background = background,
+            Foreground = Brushes.Black,
+            SelectionBrush = new SolidColorBrush(Color.Parse("#80FFFFFF")),
+            SelectionForegroundBrush = Brushes.Black,
+            CaretBrush = Brushes.Black,
+            BorderThickness = new Thickness(0),
+            FontFamily = new FontFamily("Menlo,DejaVu Sans Mono,monospace"),
+            FontSize = 10,
+            FontWeight = FontWeight.Bold,
+            TextAlignment = TextAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            IsReadOnly = !editable,
+            Focusable = editable,
+        };
+        // Fluent's dark theme replaces a TextBox background while it has focus.
+        // Keep every Fastext half in its link colour through all interaction states.
+        field.Resources["TextControlBackground"] = background;
+        field.Resources["TextControlBackgroundPointerOver"] = background;
+        field.Resources["TextControlBackgroundFocused"] = background;
+        field.Resources["TextControlBackgroundDisabled"] = background;
+        field.Resources["TextControlForeground"] = Brushes.Black;
+        field.Resources["TextControlForegroundPointerOver"] = Brushes.Black;
+        field.Resources["TextControlForegroundFocused"] = Brushes.Black;
+        field.Resources["TextControlForegroundDisabled"] = Brushes.Black;
+        field.Resources["TextControlBorderBrush"] = Brushes.Transparent;
+        field.Resources["TextControlBorderBrushPointerOver"] = Brushes.Transparent;
+        field.Resources["TextControlBorderBrushFocused"] = Brushes.Transparent;
+        field.Resources["TextControlBorderBrushDisabled"] = Brushes.Transparent;
+        field.Resources["TextControlBorderThemeThickness"] = new Thickness(0);
+        field.Resources["TextControlBorderThemeThicknessFocused"] = new Thickness(0);
+        if (editable)
+            field.LostFocus += OnSquashFastextFieldLostFocus;
+        return field;
+    }
+
+    private void OnSquashFastextFieldLostFocus(object? sender, RoutedEventArgs e)
+    {
+        if (_updatingFastextUi
+            || sender is not TextBox { Tag: FastextFieldTag tag }
+            || SquashGrid.Page is not { } page)
+            return;
+
+        FastextLink? existing = page.FastextLinks.ElementAtOrDefault(tag.LinkIndex);
+        int targetPage = existing is { IsValid: true }
+            ? existing.PageNumber
+            : (page.Magazine << 8) | page.PageNumber;
+        int targetSubpage = existing is { IsValid: true } ? existing.SubPage : 0;
+
+        string pageText = _squashFastextPageFields[tag.LinkIndex].Text?.Trim() ?? string.Empty;
+        string subpageText = _squashFastextSubpageFields[tag.LinkIndex].Text?.Trim() ?? string.Empty;
+        if (!IsEmptyFastextPlaceholder(pageText)
+            && !TryParseFastextPage(pageText, out targetPage))
+        {
+            UpdateFastextToolbar(page, _squashFastextPageFields, _squashFastextSubpageFields);
+            return;
+        }
+        if (!IsEmptyFastextPlaceholder(subpageText)
+            && !subpageText.Equals("ANY", StringComparison.OrdinalIgnoreCase)
+            && (!int.TryParse(subpageText, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out targetSubpage)
+                || (targetSubpage & ~0x3F7F) != 0))
+        {
+            UpdateFastextToolbar(page, _squashFastextPageFields, _squashFastextSubpageFields);
+            return;
+        }
+        if (subpageText.Equals("ANY", StringComparison.OrdinalIgnoreCase))
+            targetSubpage = 0x3F7F;
+
+        EnsurePageHistory(page);
+        PageAssembler.SetFastextLink(page, tag.LinkIndex, targetPage, targetSubpage);
+        CommitPageEdit(page);
+        UpdateFastextToolbars();
+    }
+
+    private static bool IsEmptyFastextPlaceholder(string text) =>
+        string.IsNullOrWhiteSpace(text) || text.All(character => character == '-');
+
+    private static bool TryParseFastextPage(string text, out int pageNumber)
+    {
+        pageNumber = 0;
+        return text.Length == 3
+            && int.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out pageNumber)
+            && (pageNumber >> 8) is >= 1 and <= 8;
+    }
+
+    private void UpdateFastextToolbars()
+    {
+        UpdateFastextToolbar(
+            SquashGrid.Page,
+            _squashFastextPageFields,
+            _squashFastextSubpageFields);
+        UpdateFastextToolbar(
+            BroadcastGrid.Page,
+            _broadcastFastextPageFields,
+            _broadcastFastextSubpageFields);
+        UpdatePageCrcDisplays();
+    }
+
+    private void UpdatePageCrcDisplays()
+    {
+        UpdatePageCrcDisplay(
+            SquashGrid.Page,
+            SquashPageCrcText,
+            SquashCalculatedCrcText,
+            SquashCalculatedCrcBorder);
+        UpdatePageCrcDisplay(
+            BroadcastGrid.Page,
+            BroadcastPageCrcText,
+            BroadcastCalculatedCrcText,
+            BroadcastCalculatedCrcBorder);
+    }
+
+    private static void UpdatePageCrcDisplay(
+        TeletextPage? page,
+        TextBlock transmittedText,
+        TextBlock calculatedText,
+        Border calculatedBorder)
+    {
+        if (page is null)
+        {
+            transmittedText.Text = "----";
+            calculatedText.Text = "----";
+            calculatedBorder.Background = new SolidColorBrush(Color.Parse("#505054"));
+            return;
+        }
+
+        ushort calculated = TeletextPageCrc.Calculate(page);
+        ushort? transmitted = TeletextPageCrc.ReadTransmitted(page);
+        transmittedText.Text = transmitted?.ToString("X4", CultureInfo.InvariantCulture) ?? "----";
+        calculatedText.Text = calculated.ToString("X4", CultureInfo.InvariantCulture);
+        calculatedBorder.Background = new SolidColorBrush(Color.Parse(
+            transmitted is null ? "#505054" : transmitted.Value == calculated ? "#247A38" : "#A52B32"));
+        ToolTip.SetTip(calculatedBorder, transmitted is null
+            ? "No page CRC is present in packet X/27/0"
+            : transmitted.Value == calculated
+                ? "Calculated CRC matches the page CRC"
+                : "Calculated CRC does not match the page CRC");
+    }
+
+    private void UpdateFastextToolbar(
+        TeletextPage? page,
+        TextBox[] pageFields,
+        TextBox[] subpageFields)
+    {
+        _updatingFastextUi = true;
+        try
+        {
+            for (int linkIndex = 0; linkIndex < 6; linkIndex++)
+            {
+                FastextLink? link = page?.FastextLinks.ElementAtOrDefault(linkIndex);
+                bool valid = link is { IsValid: true };
+                pageFields[linkIndex].Text = valid ? link!.PageNumber.ToString("X3") : "---";
+                subpageFields[linkIndex].Text = valid
+                    ? link!.SubPage == 0x3F7F ? "ANY" : link.SubPage.ToString("X4")
+                    : "----";
+                pageFields[linkIndex].Opacity = valid ? 1 : 0.62;
+                subpageFields[linkIndex].Opacity = valid ? 1 : 0.62;
+            }
+        }
+        finally
+        {
+            _updatingFastextUi = false;
+        }
+    }
+
     private void OnTransferRowPointerEntered(object? sender, PointerEventArgs e)
     {
         if (sender is not Button { Tag: int row }) return;
@@ -2589,10 +2844,12 @@ public partial class MainWindow : Window
 
     private void SetToolbarOnBottom(bool onBottom, bool saveSession)
     {
-        Grid.SetRow(SquashToolbarsStack, onBottom ? 2 : 1);
+        Grid.SetRow(SquashToolbarsStack, onBottom ? 3 : 1);
         Grid.SetRow(SquashContentGrid, onBottom ? 1 : 2);
-        Grid.SetRow(BroadcastToolbarsStack, onBottom ? 2 : 1);
+        Grid.SetRow(SquashFastextToolbar, onBottom ? 2 : 3);
+        Grid.SetRow(BroadcastToolbarsStack, onBottom ? 3 : 1);
         Grid.SetRow(BroadcastContentGrid, onBottom ? 1 : 2);
+        Grid.SetRow(BroadcastFastextToolbar, onBottom ? 2 : 3);
 
         ToolbarOnBottomMenuItem.IsChecked = onBottom;
         if (_nativeToolbarOnBottomMenuItem is not null)
@@ -5124,6 +5381,7 @@ public partial class MainWindow : Window
                     // retain only pages referenced by the current preview/lock.
                     _store.Clear();
                     _broadcastEnhancementsScanned.Clear();
+                    _broadcastFastextScanned.Clear();
                     if (pageLocked)
                     {
                         if (!validPageLock || latestHeaderPage is null) return;
@@ -5139,12 +5397,14 @@ public partial class MainWindow : Window
                         BroadcastGrid.Page = CreateWaitingPageDisplay(
                             body, latestHeaderPage,
                             lockedMagazine, lockedPageNumber);
+                        UpdateFastextToolbars();
                         BroadcastGrid.InvalidateVisual();
                         return;
                     }
                     if (latestPage is null) return;
                     ApplyFileG0SubsetToPage(latestPage, broadcast: true);
                     BroadcastGrid.Page = latestPage;
+                    UpdateFastextToolbars();
                     BroadcastGrid.InvalidateVisual();
                 });
             if (packetReporter.Enabled) InitializeLivePreview();
@@ -6022,6 +6282,7 @@ public partial class MainWindow : Window
             {
                 ApplyFileG0SubsetToPage(latestPage, broadcast: true);
                 BroadcastGrid.Page = latestPage;
+                UpdateFastextToolbars();
                 BroadcastGrid.InvalidateVisual();
                 BroadcastFilePathText.Text =
                     $"{Path.GetFileName(inputPath)} — live — {latestPage.Magazine}{latestPage.PageNumber:X2}-{latestPage.SubPage:X4} — {_broadcastPackets.Count:N0} packets";
@@ -6462,12 +6723,14 @@ public partial class MainWindow : Window
         _broadcastReadOnlyExplanationShown = false;
         _broadcastFileG0Subset = null;
         _broadcastEnhancementsScanned.Clear();
+        _broadcastFastextScanned.Clear();
         _suppressComboEvents = true;
         MagazineComboBox.Items.Clear();
         PageNumberComboBox.Items.Clear();
         SubpageComboBox.Items.Clear();
         VersionComboBox.Items.Clear();
         BroadcastGrid.Page = null;
+        UpdateFastextToolbars();
         BroadcastGrid.ClearSelection();
         _broadcastFilePath = null;
         _broadcastFileOpen = false;
@@ -6486,6 +6749,7 @@ public partial class MainWindow : Window
         SquashSubpageComboBox.Items.Clear();
         _squashPage = new TeletextPage();
         SquashGrid.Page = null;
+        UpdateFastextToolbars();
         SquashGrid.ClearSelection();
         EnhancementItemsControl.Items.Clear();
         EnhancementInfoText.Text = "X/26 enhancements (0)";
@@ -6935,8 +7199,12 @@ public partial class MainWindow : Window
     private static PageSnapshot CapturePage(TeletextPage page)
     {
         var snapshot = new PageSnapshot();
-        for (int row = 0; row < 25; row++)
+        for (int row = 0; row < 26; row++)
             snapshot.Rows[row] = page.RawRows[row] is { } raw ? (byte[])raw.Clone() : null;
+        snapshot.FastextPacket = page.FastextPacket is { } fastext
+            ? (byte[])fastext.Clone()
+            : null;
+        snapshot.FastextPacketIndex = page.FastextPacketIndex;
         foreach (var packet in page.EnhancementPackets.OrderBy(packet => packet.DesignationCode))
             snapshot.EnhancementPackets.Add(((byte[])packet.RawPacket.Clone(), packet.PacketIndex));
         return snapshot;
@@ -6944,7 +7212,7 @@ public partial class MainWindow : Window
 
     private static bool SnapshotsEqual(PageSnapshot left, PageSnapshot right)
     {
-        for (int row = 0; row < 25; row++)
+        for (int row = 0; row < 26; row++)
         {
             var a = left.Rows[row];
             var b = right.Rows[row];
@@ -6956,6 +7224,15 @@ public partial class MainWindow : Window
             {
                 return false;
             }
+        }
+        if (left.FastextPacketIndex != right.FastextPacketIndex) return false;
+        if (left.FastextPacket is null || right.FastextPacket is null)
+        {
+            if (left.FastextPacket is not null || right.FastextPacket is not null) return false;
+        }
+        else if (!left.FastextPacket.AsSpan().SequenceEqual(right.FastextPacket))
+        {
+            return false;
         }
         if (left.EnhancementPackets.Count != right.EnhancementPackets.Count) return false;
         for (int index = 0; index < left.EnhancementPackets.Count; index++)
@@ -6981,6 +7258,7 @@ public partial class MainWindow : Window
         if (SnapshotsEqual(history.States[history.Position], snapshot))
         {
             UpdateUndoToolbar();
+            UpdatePageCrcDisplays();
             return;
         }
 
@@ -6997,6 +7275,7 @@ public partial class MainWindow : Window
         history.Position++;
         UpdateDirtyFromHistories();
         UpdateUndoToolbar();
+        UpdatePageCrcDisplays();
     }
 
     private void RestorePage(TeletextPage page, PageSnapshot snapshot)
@@ -7008,7 +7287,7 @@ public partial class MainWindow : Window
         // being restored and leave stale display state at its former destination.
         page.EnhancementPackets.Clear();
         PageAssembler.ApplyLevel15Enhancements(page);
-        for (int row = 0; row < 25; row++)
+        for (int row = 0; row < 26; row++)
         {
             if (snapshot.Rows[row] is { } raw)
             {
@@ -7017,11 +7296,28 @@ public partial class MainWindow : Window
             else
             {
                 page.RawRows[row] = null;
-                for (int column = 0; column < 40; column++)
-                    page.Grid[column, row] = Cell.Default;
+                if (row < 25)
+                {
+                    for (int column = 0; column < 40; column++)
+                        page.Grid[column, row] = Cell.Default;
+                }
             }
         }
         PageAssembler.ReplaceEnhancementPackets(page, snapshot.EnhancementPackets);
+        if (snapshot.FastextPacket is { } fastext)
+        {
+            PageAssembler.ApplyFastextPacket(
+                page,
+                (byte[])fastext.Clone(),
+                snapshot.FastextPacketIndex);
+        }
+        else
+        {
+            page.FastextPacket = null;
+            page.FastextPacketIndex = -1;
+            page.FastextLinks.Clear();
+        }
+        UpdateFastextToolbars();
     }
 
     private void SyncEnhancementPacketDeletions(TeletextPage page, PageSnapshot snapshot)
@@ -7708,6 +8004,7 @@ public partial class MainWindow : Window
             if (_decodedBroadcastInstance?.Page is { } previous)
             {
                 _broadcastEnhancementsScanned.Remove(previous);
+                _broadcastFastextScanned.Remove(previous);
                 _decodedBroadcastInstance.Page = null!;
             }
             _decodedBroadcastInstance = instance;
@@ -7720,7 +8017,7 @@ public partial class MainWindow : Window
             PageNumber = instance.PageNumber,
             SubPage = instance.Subpage,
         };
-        for (int row = 0; row < 25; row++)
+        for (int row = 0; row < 26; row++)
         {
             int packetIndex = instance.BroadcastRowPacketIndices[row];
             if (packetIndex >= 0 && packetIndex < _broadcastPackets.Count)
@@ -7757,6 +8054,7 @@ public partial class MainWindow : Window
         var selectedPage = GetBroadcastPage(instances[versionIndex]);
         PrepareBroadcastPageForDisplay(selectedPage);
         BroadcastGrid.Page = selectedPage;
+        UpdateFastextToolbars();
         _suppressComboEvents = false;
         UpdateBroadcastVersionButtons();
         UpdateNavigationButtons();
@@ -7783,6 +8081,7 @@ public partial class MainWindow : Window
         _squashPage = instances[0].Page;
         ApplyFileG0SubsetToPage(_squashPage, broadcast: false);
         SquashGrid.Page = _squashPage;
+        UpdateFastextToolbars();
         UpdateEnhancementList(_squashPage);
         _suppressComboEvents = false;
         UpdateNavigationButtons();
@@ -8317,6 +8616,7 @@ public partial class MainWindow : Window
         var selectedPage = GetBroadcastPage(instances[VersionComboBox.SelectedIndex]);
         PrepareBroadcastPageForDisplay(selectedPage);
         BroadcastGrid.Page = selectedPage;
+        UpdateFastextToolbars();
         UpdateBroadcastVersionButtons();
         UpdateNavigationButtons();
         UpdateVideoBookmarkUi();
@@ -8428,6 +8728,7 @@ public partial class MainWindow : Window
         PrepareBroadcastPageForDisplay(previewPage);
         _previewingBroadcastVersion = true;
         BroadcastGrid.Page = previewPage;
+        UpdateFastextToolbars();
     }
 
     private void RestoreSelectedBroadcastVersionAfterPreview()
@@ -8446,6 +8747,7 @@ public partial class MainWindow : Window
         var selectedPage = GetBroadcastPage(instances[selected]);
         PrepareBroadcastPageForDisplay(selectedPage);
         BroadcastGrid.Page = selectedPage;
+        UpdateFastextToolbars();
     }
 
     private void OnBroadcastFlashRollClicked(object? sender, RoutedEventArgs e)
@@ -8494,6 +8796,7 @@ public partial class MainWindow : Window
         var page = GetBroadcastPage(instances[versionIndex]);
         PrepareBroadcastPageForDisplay(page);
         BroadcastGrid.Page = page;
+        UpdateFastextToolbars();
     }
 
     private void StopFlashRoll()
@@ -8520,6 +8823,7 @@ public partial class MainWindow : Window
                 var selectedPage = GetBroadcastPage(instances[selected]);
                 PrepareBroadcastPageForDisplay(selectedPage);
                 BroadcastGrid.Page = selectedPage;
+                UpdateFastextToolbars();
             }
         }
 
@@ -8538,8 +8842,32 @@ public partial class MainWindow : Window
     private void PrepareBroadcastPageForDisplay(TeletextPage page)
     {
         ApplyFileG0SubsetToPage(page, broadcast: true);
+        EnsureBroadcastFastextLoaded(page);
         if (BroadcastGrid.ShowDiacriticMarkers)
             EnsureBroadcastEnhancementsLoaded(page);
+    }
+
+    private void EnsureBroadcastFastextLoaded(TeletextPage page)
+    {
+        if (!_broadcastFastextScanned.Add(page)) return;
+
+        int headerPacketIndex = page.RawRowPacketIndices[0];
+        if (headerPacketIndex < 0 || headerPacketIndex >= _broadcastPackets.Count) return;
+        for (int packetIndex = headerPacketIndex + 1; packetIndex < _broadcastPackets.Count; packetIndex++)
+        {
+            byte[] rawPacket = _broadcastPackets[packetIndex];
+            var low = Hamming.Decode84(rawPacket[0]);
+            var high = Hamming.Decode84(rawPacket[1]);
+            if (low.UncorrectableError || high.UncorrectableError) continue;
+            int address = low.Value | (high.Value << 4);
+            int row = (address >> 3) & 0x1F;
+            int magazineBits = address & 0x07;
+            int magazine = magazineBits == 0 ? 8 : magazineBits;
+            if (magazine != page.Magazine) continue;
+            if (row == 0) break;
+            if (row == 27 && PageAssembler.ApplyFastextPacket(page, rawPacket, packetIndex))
+                break;
+        }
     }
 
     private void EnsureBroadcastEnhancementsLoaded(TeletextPage page)
@@ -8643,6 +8971,7 @@ public partial class MainWindow : Window
             _squashPage = instances[0].Page;
             ApplyFileG0SubsetToPage(_squashPage, broadcast: false);
             SquashGrid.Page = _squashPage;
+            UpdateFastextToolbars();
             UpdateEnhancementList(_squashPage);
             _suppressComboEvents = false;
         }
@@ -10364,6 +10693,8 @@ public partial class MainWindow : Window
                         ?? CreateBlankPacket(page, row)).Clone());
                 foreach (var enhancement in page.EnhancementPackets.OrderBy(packet => packet.DesignationCode))
                     newPagePackets.Add((byte[])enhancement.RawPacket.Clone());
+                if (page.FastextPacket is { } fastext)
+                    newPagePackets.Add((byte[])fastext.Clone());
             }
             return newPagePackets;
         }
@@ -10379,6 +10710,7 @@ public partial class MainWindow : Window
         {
             int anchor = page.RawRowPacketIndices
                 .Concat(page.EnhancementPackets.Select(packet => packet.PacketIndex))
+                .Append(page.FastextPacketIndex)
                 .Where(index => index >= 0)
                 .DefaultIfEmpty(-1)
                 .Max();
@@ -10395,6 +10727,8 @@ public partial class MainWindow : Window
                         ?? CreateBlankPacket(page, row)).Clone());
                 foreach (var enhancement in page.EnhancementPackets.OrderBy(packet => packet.DesignationCode))
                     completePage.Add((byte[])enhancement.RawPacket.Clone());
+                if (page.FastextPacket is { } completeFastext)
+                    completePage.Add((byte[])completeFastext.Clone());
                 continue;
             }
 
@@ -10409,6 +10743,20 @@ public partial class MainWindow : Window
                     if (!insertAfter.TryGetValue(anchor, out var newEnhancements))
                         insertAfter[anchor] = newEnhancements = new List<byte[]>();
                     newEnhancements.Add((byte[])enhancement.RawPacket.Clone());
+                }
+            }
+
+            if (page.FastextPacket is { } fastext)
+            {
+                if (page.FastextPacketIndex >= 0 && page.FastextPacketIndex < output.Count)
+                {
+                    output[page.FastextPacketIndex] = (byte[])fastext.Clone();
+                }
+                else
+                {
+                    if (!insertAfter.TryGetValue(anchor, out var newFastextPackets))
+                        insertAfter[anchor] = newFastextPackets = new List<byte[]>();
+                    newFastextPackets.Add((byte[])fastext.Clone());
                 }
             }
 

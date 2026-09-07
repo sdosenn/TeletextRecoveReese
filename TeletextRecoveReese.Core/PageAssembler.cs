@@ -59,13 +59,17 @@ public class PageAssembler
         {
             HandleHeader(magazine, raw42, packetIndex);
         }
-        else if (row is >= 1 and <= 24)
+        else if (row is >= 1 and <= 25)
         {
             HandleTextRow(magazine, row, raw42, packetIndex);
         }
         else if (row == 26 && _decodeEnhancements)
         {
             HandleEnhancementPacket(magazine, raw42, packetIndex);
+        }
+        else if (row == 27)
+        {
+            HandleFastextPacket(magazine, raw42, packetIndex);
         }
 
         if (_inProgress.TryGetValue(magazine, out var updated))
@@ -125,7 +129,7 @@ public class PageAssembler
             return;
         }
 
-        if (!instance.RowsReceived.Add(row))
+        if (row <= 24 && !instance.RowsReceived.Add(row))
             RepeatedBodyRows++;
         ApplyRow(instance.Page, row, raw42, packetIndex);
     }
@@ -137,6 +141,106 @@ public class PageAssembler
         if (packet is null) return;
         instance.Page.EnhancementPackets.Add(packet);
         ApplyLevel15Enhancements(instance.Page);
+    }
+
+    private void HandleFastextPacket(int magazine, byte[] raw42, int packetIndex)
+    {
+        if (_inProgress.TryGetValue(magazine, out var instance))
+            ApplyFastextPacket(instance.Page, raw42, packetIndex);
+    }
+
+    public static bool ApplyFastextPacket(
+        TeletextPage page,
+        byte[] raw42,
+        int packetIndex = -1)
+    {
+        if (raw42.Length != 42) return false;
+        var designation = Hamming.Decode84(raw42[2]);
+        if (designation.UncorrectableError || designation.Value != 0) return false;
+
+        page.FastextPacket = (byte[])raw42.Clone();
+        page.FastextPacketIndex = packetIndex;
+        page.FastextLinks.Clear();
+        string[] labels = ["Red", "Green", "Yellow", "Cyan", "Index", "Next"];
+        for (int linkIndex = 0; linkIndex < 6; linkIndex++)
+        {
+            int offset = 3 + linkIndex * 6;
+            var pageLow = Hamming.Decode84(raw42[offset]);
+            var pageHigh = Hamming.Decode84(raw42[offset + 1]);
+            var subLowLow = Hamming.Decode84(raw42[offset + 2]);
+            var subLowHigh = Hamming.Decode84(raw42[offset + 3]);
+            var subHighLow = Hamming.Decode84(raw42[offset + 4]);
+            var subHighHigh = Hamming.Decode84(raw42[offset + 5]);
+            bool valid = !(pageLow.UncorrectableError
+                || pageHigh.UncorrectableError
+                || subLowLow.UncorrectableError
+                || subLowHigh.UncorrectableError
+                || subHighLow.UncorrectableError
+                || subHighHigh.UncorrectableError);
+
+            int pageByte = pageLow.Value | (pageHigh.Value << 4);
+            int subLow = subLowLow.Value | (subLowHigh.Value << 4);
+            int subHigh = subHighLow.Value | (subHighHigh.Value << 4);
+            int relativeMagazine = (subLow >> 7) | ((subHigh >> 5) & 0x06);
+            int magazineBits = relativeMagazine ^ (page.Magazine & 0x07);
+            int targetMagazine = magazineBits == 0 ? 8 : magazineBits;
+            page.FastextLinks.Add(new FastextLink
+            {
+                Label = labels[linkIndex],
+                PageNumber = (targetMagazine << 8) | pageByte,
+                SubPage = (subLow & 0x7F) | ((subHigh & 0x3F) << 8),
+                IsValid = valid,
+            });
+        }
+        return true;
+    }
+
+    public static void SetFastextLink(
+        TeletextPage page,
+        int linkIndex,
+        int pageNumber,
+        int subpage)
+    {
+        if (linkIndex is < 0 or >= 6) throw new ArgumentOutOfRangeException(nameof(linkIndex));
+        if (pageNumber is < 0x100 or > 0x8FF || (pageNumber >> 8) is < 1 or > 8)
+            throw new ArgumentOutOfRangeException(nameof(pageNumber));
+        if ((subpage & ~0x3F7F) != 0) throw new ArgumentOutOfRangeException(nameof(subpage));
+
+        byte[] packet = page.FastextPacket ?? CreateBlankFastextPacket(page);
+        int offset = 3 + linkIndex * 6;
+        int targetMagazine = (pageNumber >> 8) & 0x0F;
+        int pageByte = pageNumber & 0xFF;
+        int relativeMagazine = (targetMagazine & 0x07) ^ (page.Magazine & 0x07);
+        int subLow = (subpage & 0x7F) | ((relativeMagazine & 0x01) << 7);
+        int subHigh = ((subpage >> 8) & 0x3F) | ((relativeMagazine & 0x06) << 5);
+        EncodeByte(packet, offset, pageByte);
+        EncodeByte(packet, offset + 2, subLow);
+        EncodeByte(packet, offset + 4, subHigh);
+        ApplyFastextPacket(page, packet, page.FastextPacketIndex);
+    }
+
+    private static byte[] CreateBlankFastextPacket(TeletextPage page)
+    {
+        var packet = new byte[42];
+        int address = (27 << 3) | (page.Magazine & 0x07);
+        packet[0] = Hamming.Encode84(address & 0x0F);
+        packet[1] = Hamming.Encode84((address >> 4) & 0x0F);
+        packet[2] = Hamming.Encode84(0);
+        for (int linkIndex = 0; linkIndex < 6; linkIndex++)
+        {
+            int offset = 3 + linkIndex * 6;
+            EncodeByte(packet, offset, 0xFF);
+            EncodeByte(packet, offset + 2, 0x7F);
+            EncodeByte(packet, offset + 4, 0x3F);
+        }
+        packet[39] = Hamming.Encode84(0);
+        return packet;
+    }
+
+    private static void EncodeByte(byte[] destination, int offset, int value)
+    {
+        destination[offset] = Hamming.Encode84(value & 0x0F);
+        destination[offset + 1] = Hamming.Encode84((value >> 4) & 0x0F);
     }
 
     public static EnhancementPacket? DecodeEnhancementPacket(byte[] raw42, int packetIndex = -1)
@@ -195,6 +299,8 @@ public class PageAssembler
         page.RawRows[row] = raw42;
         if (packetIndex >= 0)
             page.RawRowPacketIndices[row] = packetIndex;
+        if (row == 25)
+            return;
         var payload = raw42[2..];
 
         bool nationalOptionChanged = false;

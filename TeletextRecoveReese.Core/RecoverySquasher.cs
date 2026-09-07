@@ -65,7 +65,7 @@ public static class RecoverySquasher
             var address = addresses[addressIndex];
             var versions = store.GetInstances(address.magazine, address.page, address.subpage);
 
-            for (int row = 0; row < 25; row++)
+            for (int row = 0; row < 26; row++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var candidates = versions
@@ -92,6 +92,14 @@ public static class RecoverySquasher
                 output.Add((byte[])selected.RawPacket.Clone());
             }
 
+            var fastextCandidates = versions
+                .Select(instance => instance.Page.FastextPacket)
+                .Where(packet => packet is { Length: 42 })
+                .Select(packet => packet!)
+                .ToList();
+            if (fastextCandidates.Count > 0)
+                output.Add(BuildFastextConsensus(fastextCandidates, address.magazine, cancellationToken));
+
             if ((addressIndex & 0x0F) == 0 || addressIndex == addresses.Count - 1)
                 reportProgress?.Invoke("Recovering pages", addressIndex + 1, addresses.Count);
         }
@@ -106,6 +114,48 @@ public static class RecoverySquasher
         }
 
         return output;
+    }
+
+    private static byte[] BuildFastextConsensus(
+        IReadOnlyList<byte[]> candidates,
+        int magazine,
+        CancellationToken cancellationToken)
+    {
+        byte[] result = (byte[])candidates
+            .OrderBy(FastextErrorCount)
+            .First()
+            .Clone();
+        int address = (27 << 3) | (magazine & 0x07);
+        result[0] = Hamming.Encode84(address & 0x0F);
+        result[1] = Hamming.Encode84((address >> 4) & 0x0F);
+
+        // Designation, six links and control are all Hamming 8/4 coded.
+        for (int offset = 2; offset <= 39; offset++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var winner = candidates
+                .Select(packet => Hamming.Decode84(packet[offset]))
+                .Where(decoded => !decoded.UncorrectableError)
+                .GroupBy(decoded => decoded.Value)
+                .OrderByDescending(group => group.Count())
+                .ThenBy(group => group.Key)
+                .FirstOrDefault();
+            if (winner is not null)
+                result[offset] = Hamming.Encode84(winner.Key);
+        }
+        return result;
+    }
+
+    private static int FastextErrorCount(byte[] packet)
+    {
+        int errors = 0;
+        for (int offset = 0; offset <= 39; offset++)
+        {
+            var decoded = Hamming.Decode84(packet[offset]);
+            if (decoded.UncorrectableError) errors += 10;
+            else if (decoded.CorrectableErrorFixed) errors++;
+        }
+        return errors;
     }
 
     private static byte[]? SelectBroadcastServicePacket(

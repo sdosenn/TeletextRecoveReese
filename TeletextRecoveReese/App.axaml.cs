@@ -29,9 +29,11 @@ public class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            bool loadLast = desktop.Args?.Any(argument =>
+            bool startNew = desktop.Args?.Any(argument =>
+                string.Equals(argument, "-startnew", StringComparison.OrdinalIgnoreCase)) == true;
+            bool loadLast = !startNew && desktop.Args?.Any(argument =>
                 string.Equals(argument, "-loadlast", StringComparison.OrdinalIgnoreCase)) == true;
-            desktop.MainWindow = new MainWindow(loadLast);
+            desktop.MainWindow = new MainWindow(loadLast, startNew);
         }
         base.OnFrameworkInitializationCompleted();
     }

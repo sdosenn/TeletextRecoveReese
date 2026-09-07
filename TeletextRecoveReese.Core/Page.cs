@@ -54,6 +54,7 @@ public class FastextLink
     public int PageNumber { get; set; } // e.g. 0x123 (BCD, magazine+page)
     public int SubPage { get; set; }
     public string Label { get; set; } = string.Empty;
+    public bool IsValid { get; set; }
 }
 
 public sealed class EnhancementTriplet
@@ -96,13 +97,18 @@ public class TeletextPage
     /// Grid is a decoded VIEW of these bytes, not the other way around. Keeping the
     /// raw bytes means a transfer or save can write back exactly what was broadcast,
     /// bit-for-bit, rather than only a re-encoded approximation of the decoded text.</summary>
-    public byte[]?[] RawRows { get; } = new byte[25][];
+    /// <remarks>Index 25 stores the non-visible X/25 packet because it participates
+    /// in the page CRC even though the editor grid displays only rows 0-24.</remarks>
+    public byte[]?[] RawRows { get; } = new byte[26][];
 
     /// <summary>Index of each display row's source packet in the complete capture.
     /// A value of -1 means that no packet for that row existed in the loaded file.</summary>
-    public int[] RawRowPacketIndices { get; } = new int[25];
+    public int[] RawRowPacketIndices { get; } = new int[26];
 
     public List<FastextLink> FastextLinks { get; } = new(); // Level 1.5
+    /// <summary>Exact X/27/0 packet containing the six Fastext links.</summary>
+    public byte[]? FastextPacket { get; set; }
+    public int FastextPacketIndex { get; set; } = -1;
     public List<EnhancementPacket> EnhancementPackets { get; } = new(); // X/26/0-X/26/15
     public List<string> SidePanelRows { get; } = new(); // Level 2.5+, reserved for later
 
