@@ -96,7 +96,99 @@ public static class RecoverySquasher
                 reportProgress?.Invoke("Recovering pages", addressIndex + 1, addresses.Count);
         }
 
+        if (output.Count > 0)
+        {
+            byte[]? broadcastServicePacket = SelectBroadcastServicePacket(
+                broadcastPackets,
+                cancellationToken);
+            if (broadcastServicePacket is not null)
+                output.Add(broadcastServicePacket);
+        }
+
         return output;
+    }
+
+    private static byte[]? SelectBroadcastServicePacket(
+        IReadOnlyList<byte[]> packets,
+        CancellationToken cancellationToken)
+    {
+        (int Day, int Month)? headerDate = FindMostCommonHeaderDate(packets, cancellationToken);
+        var candidates = new List<(byte[] Packet, DateOnly Date)>();
+        foreach (byte[] packet in packets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (BroadcastServiceData.TryDecodeFormat1Date(packet, out DateOnly date))
+                candidates.Add((packet, date));
+        }
+        if (candidates.Count == 0) return null;
+
+        IEnumerable<(byte[] Packet, DateOnly Date)> trusted = candidates;
+        if (headerDate is { } expected)
+        {
+            var exact = candidates.Where(candidate =>
+                candidate.Date.Day == expected.Day && candidate.Date.Month == expected.Month).ToList();
+            if (exact.Count > 0)
+            {
+                trusted = exact;
+            }
+            else
+            {
+                var adjacent = candidates.Where(candidate =>
+                {
+                    DateOnly previous = candidate.Date.AddDays(-1);
+                    DateOnly next = candidate.Date.AddDays(1);
+                    return (previous.Day == expected.Day && previous.Month == expected.Month)
+                        || (next.Day == expected.Day && next.Month == expected.Month);
+                }).ToList();
+                if (adjacent.Count == 0) return null;
+                trusted = adjacent;
+            }
+        }
+
+        DateOnly selectedDate = trusted
+            .GroupBy(candidate => candidate.Date)
+            .OrderByDescending(group => group.Count())
+            .ThenBy(group => group.Key)
+            .First().Key;
+        byte[] selected = (byte[])trusted.First(candidate => candidate.Date == selectedDate).Packet.Clone();
+
+        // Repair the three Hamming-coded routing bytes before storing the packet.
+        selected[0] = Hamming.Encode84(0);
+        selected[1] = Hamming.Encode84(15); // magazine 8 (0) + row 30
+        selected[2] = Hamming.Encode84(Hamming.Decode84(selected[2]).Value);
+        return selected;
+    }
+
+    private static (int Day, int Month)? FindMostCommonHeaderDate(
+        IReadOnlyList<byte[]> packets,
+        CancellationToken cancellationToken)
+    {
+        var counts = new Dictionary<(int Day, int Month), int>();
+        foreach (byte[] packet in packets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (packet.Length != 42) continue;
+            var low = Hamming.Decode84(packet[0]);
+            var high = Hamming.Decode84(packet[1]);
+            if (low.UncorrectableError || high.UncorrectableError) continue;
+            int address = low.Value | (high.Value << 4);
+            if (((address >> 3) & 0x1F) != 0) continue;
+
+            int day = ((packet[27] & 0x7F) - '0') * 10 + (packet[28] & 0x7F) - '0';
+            int month = ((packet[30] & 0x7F) - '0') * 10 + (packet[31] & 0x7F) - '0';
+            if ((packet[29] & 0x7F) != '.'
+                || day is < 1 or > 31
+                || month is < 1 or > 12)
+                continue;
+            counts[(day, month)] = counts.GetValueOrDefault((day, month)) + 1;
+        }
+
+        return counts
+            .OrderByDescending(pair => pair.Value)
+            .ThenBy(pair => pair.Key.Month)
+            .ThenBy(pair => pair.Key.Day)
+            .Select(pair => ((int Day, int Month)?)pair.Key)
+            .FirstOrDefault();
     }
 
     private static bool AddressPassesFilters(

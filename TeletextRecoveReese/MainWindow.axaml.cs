@@ -215,9 +215,12 @@ public partial class MainWindow : Window
     private readonly HashSet<int> _deletedSquashPacketIndices = new();
     private readonly bool _loadLastSession;
 
-    private sealed record TeletextStreamIdentity(string? ServiceName, string? Date)
+    private sealed record TeletextStreamIdentity(
+        string? ServiceName,
+        string? Date,
+        string? FullDate)
     {
-        public static TeletextStreamIdentity Empty { get; } = new(null, null);
+        public static TeletextStreamIdentity Empty { get; } = new(null, null, null);
     }
 
     // Guards against SelectionChanged handlers firing (and re-triggering each other)
@@ -6650,10 +6653,14 @@ public partial class MainWindow : Window
     {
         var serviceCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var dateCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var fullDateCounts = new Dictionary<DateOnly, int>();
         Span<char> header = stackalloc char[32];
 
         foreach (byte[] packet in packets)
         {
+            if (BroadcastServiceData.TryDecodeFormat1Date(packet, out DateOnly fullDate))
+                fullDateCounts[fullDate] = fullDateCounts.GetValueOrDefault(fullDate) + 1;
+
             if (!TryDecodePacketAddress(packet, out _, out int row) || row != 0)
                 continue;
 
@@ -6682,9 +6689,83 @@ public partial class MainWindow : Window
             .Select(pair => pair.Key)
             .FirstOrDefault();
 
+        string? headerDate = MostCommon(dateCounts);
+        DateOnly? selectedFullDate = SelectFullDate(fullDateCounts, headerDate);
+        string? displayedFullDate = selectedFullDate is { } decodedDate
+            ? BuildDisplayedFullDate(decodedDate, headerDate)
+            : null;
+
         return new TeletextStreamIdentity(
             MostCommon(serviceCounts),
-            MostCommon(dateCounts));
+            headerDate,
+            displayedFullDate);
+    }
+
+    private static DateOnly? SelectFullDate(
+        IReadOnlyDictionary<DateOnly, int> counts,
+        string? headerDate)
+    {
+        IEnumerable<KeyValuePair<DateOnly, int>> candidates = counts;
+        if (TryParseHeaderDayMonth(headerDate, out int day, out int month))
+        {
+            var exact = counts.Where(pair => pair.Key.Day == day && pair.Key.Month == month).ToList();
+            if (exact.Count > 0)
+            {
+                candidates = exact;
+            }
+            else
+            {
+                var adjacent = counts.Where(pair =>
+                {
+                    DateOnly previous = pair.Key.AddDays(-1);
+                    DateOnly next = pair.Key.AddDays(1);
+                    return (previous.Day == day && previous.Month == month)
+                        || (next.Day == day && next.Month == month);
+                }).ToList();
+                if (adjacent.Count == 0) return null;
+                candidates = adjacent;
+            }
+        }
+
+        return candidates
+            .OrderByDescending(pair => pair.Value)
+            .ThenBy(pair => pair.Key)
+            .Select(pair => (DateOnly?)pair.Key)
+            .FirstOrDefault();
+    }
+
+    private static string BuildDisplayedFullDate(DateOnly decodedDate, string? headerDate)
+    {
+        if (!TryParseHeaderDayMonth(headerDate, out int day, out int month))
+            return decodedDate.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
+
+        DateOnly closest = decodedDate;
+        int closestDistance = int.MaxValue;
+        for (int year = decodedDate.Year - 1; year <= decodedDate.Year + 1; year++)
+        {
+            if (!DateOnly.TryParseExact(
+                    $"{day:D2}.{month:D2}.{year:D4}",
+                    "dd.MM.yyyy",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out DateOnly candidate))
+                continue;
+            int distance = Math.Abs(candidate.DayNumber - decodedDate.DayNumber);
+            if (distance < closestDistance)
+            {
+                closest = candidate;
+                closestDistance = distance;
+            }
+        }
+        return closest.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
+    }
+
+    private static bool TryParseHeaderDayMonth(string? date, out int day, out int month)
+    {
+        day = month = 0;
+        return date is { Length: 5 }
+            && int.TryParse(date.AsSpan(0, 2), out day)
+            && int.TryParse(date.AsSpan(3, 2), out month);
     }
 
     private static bool TryReadHeaderDate(ReadOnlySpan<char> header, out string date)
@@ -6722,7 +6803,8 @@ public partial class MainWindow : Window
     private static string SuggestedTeletextFileName(
         TeletextStreamIdentity identity,
         string fallback,
-        string? prefix = null)
+        string? prefix = null,
+        string extension = "t42")
     {
         if (string.IsNullOrWhiteSpace(identity.ServiceName)
             || string.IsNullOrWhiteSpace(identity.Date))
@@ -6738,7 +6820,7 @@ public partial class MainWindow : Window
         string safePrefix = string.IsNullOrWhiteSpace(prefix)
             ? string.Empty
             : $"{prefix.Trim()}-";
-        return $"{safePrefix}{safeServiceName}-{identity.Date}.t42";
+        return $"{safePrefix}{safeServiceName}-{identity.Date}.{extension.TrimStart('.')}";
     }
 
     private void UpdateSquashFileFooter() =>
@@ -6769,6 +6851,9 @@ public partial class MainWindow : Window
         string broadcastFileName = string.IsNullOrWhiteSpace(_broadcastFilePath)
             ? "Untitled"
             : Path.GetFileName(_broadcastFilePath);
+        squashFileName = AppendFullDate(squashFileName, _squashStreamIdentity);
+        squashPaneFileName = AppendFullDate(squashPaneFileName, _squashStreamIdentity);
+        broadcastFileName = AppendFullDate(broadcastFileName, _broadcastStreamIdentity);
 
         if (dualPane)
         {
@@ -6793,6 +6878,11 @@ public partial class MainWindow : Window
 
         UpdateHeaderNavigationVisibility();
     }
+
+    private static string AppendFullDate(string fileName, TeletextStreamIdentity identity) =>
+        string.IsNullOrWhiteSpace(identity.FullDate)
+            ? fileName
+            : $"{fileName} ({identity.FullDate})";
 
     private void UpdateHeaderNavigationVisibility()
     {
@@ -9787,10 +9877,14 @@ public partial class MainWindow : Window
         await settingsDialog.ShowDialog(this);
         if (settings is not { } selected) return;
 
+        _squashStreamIdentity = AnalyzeTeletextStreamIdentity(BuildSquashOutputPackets());
         using var outputFile = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "Save teletext video",
-            SuggestedFileName = "teletext-video.mkv",
+            SuggestedFileName = SuggestedTeletextFileName(
+                _squashStreamIdentity,
+                "teletext-video.mkv",
+                extension: "mkv"),
             DefaultExtension = "mkv",
             FileTypeChoices = new[]
             {
