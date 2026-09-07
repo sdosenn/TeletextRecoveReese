@@ -215,6 +215,11 @@ public partial class MainWindow : Window
     private readonly HashSet<int> _deletedSquashPacketIndices = new();
     private readonly bool _loadLastSession;
 
+    private sealed record TeletextStreamIdentity(string? ServiceName, string? Date)
+    {
+        public static TeletextStreamIdentity Empty { get; } = new(null, null);
+    }
+
     // Guards against SelectionChanged handlers firing (and re-triggering each other)
     // while we're populating combo boxes programmatically.
     private bool _suppressComboEvents;
@@ -222,6 +227,8 @@ public partial class MainWindow : Window
     private TeletextPage _squashPage = new();
     private string? _squashFilePath;
     private string? _broadcastFilePath;
+    private TeletextStreamIdentity _squashStreamIdentity = TeletextStreamIdentity.Empty;
+    private TeletextStreamIdentity _broadcastStreamIdentity = TeletextStreamIdentity.Empty;
     private bool _squashDirty;
     private bool _broadcastFileOpen;
     private bool _squashFileOpen;
@@ -583,6 +590,8 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeCreateSquashedStreamMenuItem;
     private NativeMenuItem? _nativeOpenLiveVbiCaptureMenuItem;
     private NativeMenuItem? _nativeSaveCapturedStreamMenuItem;
+    private NativeMenuItem? _nativeCloseSquashedPageMenuItem;
+    private NativeMenuItem? _nativeCloseFullBroadcastMenuItem;
     private NativeMenuItem? _nativeDisableLiveVbiVideoPreviewMenuItem;
     private NativeMenuItem? _nativeRestorePreviousSessionMenuItem;
     private readonly string? _ffmpegPath;
@@ -987,7 +996,14 @@ public partial class MainWindow : Window
             TextWrapping = TextWrapping.Wrap,
         };
         var newButton = new Button { Content = "New…", Width = 90 };
-        var deleteButton = new Button { Content = "Delete", Width = 90, IsEnabled = false };
+        var deleteButton = new Button
+        {
+            Content = "Delete",
+            Width = 90,
+            IsEnabled = false,
+            Background = new SolidColorBrush(Color.Parse("#B42318")),
+            Foreground = Brushes.White,
+        };
         var closeButton = new Button { Content = "Close", Width = 90, IsCancel = true };
 
         List<CaptureCardPreset> GetPresets() => BuiltInCaptureCardPresets
@@ -1425,7 +1441,15 @@ public partial class MainWindow : Window
                     return;
             }
 
-            if (_squashDirty && !await ConfirmCloseWithoutSavingAsync()) return;
+            if (_squashDirty)
+            {
+                UnsavedCaptureCloseChoice choice = await ConfirmUnsavedSquashOnCloseAsync(
+                    "closing the application");
+                if (choice == UnsavedCaptureCloseChoice.Cancel) return;
+                if (choice == UnsavedCaptureCloseChoice.Save
+                    && !await SaveSquashAsync(forcePicker: false))
+                    return;
+            }
 
             _closeConfirmed = true;
             Close();
@@ -1447,7 +1471,13 @@ public partial class MainWindow : Window
     {
         UnsavedCaptureCloseChoice choice = UnsavedCaptureCloseChoice.Cancel;
         var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
-        var discardButton = new Button { Content = "Close without saving", Width = 155 };
+        var discardButton = new Button
+        {
+            Content = "Close without saving",
+            Width = 155,
+            Background = new SolidColorBrush(Color.Parse("#B42318")),
+            Foreground = Brushes.White,
+        };
         var saveButton = new Button { Content = "Save…", Width = 90, IsDefault = true };
         var dialog = new Window
         {
@@ -1492,19 +1522,22 @@ public partial class MainWindow : Window
         return choice;
     }
 
-    private async Task<bool> ConfirmCloseWithoutSavingAsync()
+    private async Task<UnsavedCaptureCloseChoice> ConfirmUnsavedSquashOnCloseAsync(
+        string action)
     {
-        bool confirmed = false;
+        UnsavedCaptureCloseChoice choice = UnsavedCaptureCloseChoice.Cancel;
         var closeButton = new Button
         {
             Content = "Close without saving",
             Width = 155,
+            Background = new SolidColorBrush(Color.Parse("#B42318")),
+            Foreground = Brushes.White,
         };
+        var saveButton = new Button { Content = "Save…", Width = 90, IsDefault = true };
         var cancelButton = new Button
         {
             Content = "Cancel",
             Width = 90,
-            IsDefault = true,
             IsCancel = true,
         };
         var dialog = new Window
@@ -1522,7 +1555,7 @@ public partial class MainWindow : Window
                 {
                     new TextBlock
                     {
-                        Text = "The edited pages have not been saved. Close the application and discard these changes?",
+                        Text = $"The edited Squashed pages have not been saved. Save them before {action}?",
                         TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
                     },
                     new StackPanel
@@ -1530,15 +1563,101 @@ public partial class MainWindow : Window
                         Orientation = Orientation.Horizontal,
                         HorizontalAlignment = HorizontalAlignment.Right,
                         Spacing = 8,
-                        Children = { cancelButton, closeButton },
+                        Children = { cancelButton, closeButton, saveButton },
                     }
                 }
             }
         };
-        closeButton.Click += (_, _) => { confirmed = true; dialog.Close(); };
+        closeButton.Click += (_, _) =>
+        {
+            choice = UnsavedCaptureCloseChoice.Discard;
+            dialog.Close();
+        };
+        saveButton.Click += (_, _) =>
+        {
+            choice = UnsavedCaptureCloseChoice.Save;
+            dialog.Close();
+        };
         cancelButton.Click += (_, _) => dialog.Close();
         await dialog.ShowDialog(this);
-        return confirmed;
+        return choice;
+    }
+
+    private async void OnCloseSquashedPageClicked(object? sender, RoutedEventArgs e)
+    {
+        if (!SquashPaneGrid.IsVisible || !_squashFileOpen) return;
+
+        if (_squashDirty)
+        {
+            UnsavedCaptureCloseChoice choice = await ConfirmUnsavedSquashOnCloseAsync(
+                "closing the Squashed page");
+            if (choice == UnsavedCaptureCloseChoice.Cancel) return;
+            if (choice == UnsavedCaptureCloseChoice.Save
+                && !await SaveSquashAsync(forcePicker: false))
+                return;
+        }
+
+        _squashStore.Clear();
+        _squashPackets.Clear();
+        ClearSquashPane();
+        _squashFilePath = null;
+        _sessionState.SquashFilePath = null;
+        _sessionState.SquashMagazine = null;
+        _sessionState.SquashPage = null;
+        _sessionState.SquashSubpage = null;
+        SetSquashDirty(false);
+
+        if (_broadcastFileOpen)
+        {
+            _squashPaneEstablished = false;
+            BroadcastGrid.IsActive = true;
+            SquashGrid.IsActive = false;
+            UpdateWorkspacePaneVisibility();
+        }
+        else
+        {
+            _squashPaneEstablished = true;
+            InitializeBlankSquashDocument();
+        }
+
+        SaveSessionState();
+    }
+
+    private async void OnCloseFullBroadcastClicked(object? sender, RoutedEventArgs e)
+    {
+        if (!_broadcastFileOpen) return;
+
+        if (HasUnsavedCapturedStream())
+        {
+            UnsavedCaptureCloseChoice choice = await ConfirmUnsavedCapturedStreamOnCloseAsync();
+            if (choice == UnsavedCaptureCloseChoice.Cancel) return;
+            if (choice == UnsavedCaptureCloseChoice.Save
+                && !await SaveCapturedStreamAsync())
+                return;
+        }
+
+        _store.Clear();
+        _broadcastPackets.Clear();
+        ClearBroadcastPane();
+        BroadcastPaneGrid.IsVisible = false;
+        _sessionState.BroadcastFilePath = null;
+        _sessionState.BroadcastMagazine = null;
+        _sessionState.BroadcastPage = null;
+        _sessionState.BroadcastSubpage = null;
+        _sessionState.BroadcastVersion = null;
+
+        if (!_squashPaneEstablished)
+        {
+            _squashPaneEstablished = true;
+            if (!_squashFileOpen)
+                InitializeBlankSquashDocument();
+        }
+
+        SquashGrid.IsActive = true;
+        BroadcastGrid.IsActive = false;
+        UpdateWorkspacePaneVisibility();
+        UpdateNavigationButtons();
+        SaveSessionState();
     }
 
     private async void OnKeyDown(object? sender, KeyEventArgs e)
@@ -2505,6 +2624,12 @@ public partial class MainWindow : Window
     private void OnNativeSaveCapturedStreamClicked(object? sender, EventArgs e) =>
         OnSaveCapturedStreamClicked(sender, new RoutedEventArgs());
 
+    private void OnNativeCloseSquashedPageClicked(object? sender, EventArgs e) =>
+        OnCloseSquashedPageClicked(sender, new RoutedEventArgs());
+
+    private void OnNativeCloseFullBroadcastClicked(object? sender, EventArgs e) =>
+        OnCloseFullBroadcastClicked(sender, new RoutedEventArgs());
+
     private void OnNativeExportScreenshotClicked(object? sender, EventArgs e) =>
         OnExportScreenshotClicked(sender, new RoutedEventArgs());
 
@@ -2936,6 +3061,12 @@ public partial class MainWindow : Window
             _nativeSaveCapturedStreamMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
                 .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Save Captured Stream…", StringComparison.Ordinal));
+            _nativeCloseSquashedPageMenuItem = fileMenu.Items
+                .OfType<NativeMenuItem>()
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Close Squashed Page", StringComparison.Ordinal));
+            _nativeCloseFullBroadcastMenuItem = fileMenu.Items
+                .OfType<NativeMenuItem>()
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Close Full Broadcast", StringComparison.Ordinal));
             _nativeExportVideoMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
                 .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Export Video…", StringComparison.Ordinal));
@@ -3065,6 +3196,47 @@ public partial class MainWindow : Window
         await using var stream = await file.OpenReadAsync();
         await LoadBroadcastStreamAsync(stream, displayPath);
         await RememberFileAsync(file.Path.IsFile ? file.Path.LocalPath : null, broadcast: true);
+    }
+
+    private void OnTeletextGridDragOver(object? sender, DragEventArgs e)
+    {
+        bool hasFile = e.DataTransfer.TryGetFiles()?.OfType<IStorageFile>().Any() == true;
+        e.DragEffects = hasFile ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void OnTeletextGridDrop(object? sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        IStorageFile? file = e.DataTransfer.TryGetFiles()?.OfType<IStorageFile>().FirstOrDefault();
+        if (file is null) return;
+
+        bool broadcast = ReferenceEquals(sender, BroadcastGrid);
+        try
+        {
+            string displayPath = file.Path.IsFile ? file.Path.LocalPath : file.Path.ToString();
+            CaptureRecentFilePositions();
+            await using var stream = await file.OpenReadAsync();
+
+            if (broadcast)
+            {
+                await LoadBroadcastStreamAsync(stream, displayPath);
+                await RememberFileAsync(
+                    file.Path.IsFile ? file.Path.LocalPath : null,
+                    broadcast: true);
+            }
+            else
+            {
+                bool openedAsBroadcast = await LoadSquashStreamAsync(stream, displayPath);
+                await RememberFileAsync(
+                    file.Path.IsFile ? file.Path.LocalPath : null,
+                    broadcast: openedAsBroadcast);
+            }
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Could not open dropped file", ex.Message);
+        }
     }
 
     private sealed record LiveCaptureInterface(string Name, string Path, string Kind)
@@ -5974,10 +6146,13 @@ public partial class MainWindow : Window
                 return;
             }
 
+            _broadcastStreamIdentity = AnalyzeTeletextStreamIdentity(_broadcastPackets);
             IStorageFile? savedOutputFile = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
                 Title = "Save deconvolved T42 capture (Cancel to open without saving)",
-                SuggestedFileName = $"{Path.GetFileNameWithoutExtension(inputPath)}.t42",
+                SuggestedFileName = SuggestedTeletextFileName(
+                    _broadcastStreamIdentity,
+                    $"{Path.GetFileNameWithoutExtension(inputPath)}.t42"),
                 DefaultExtension = "t42",
                 FileTypeChoices = new[]
                 {
@@ -6145,6 +6320,7 @@ public partial class MainWindow : Window
                 _store,
                 _broadcastPackets,
                 percent => UpdateLoadingProgress(true, percent));
+            _broadcastStreamIdentity = AnalyzeTeletextStreamIdentity(_broadcastPackets);
             _broadcastFilePath = filePath;
             BroadcastFilePathText.Text = FormatFileFooter(filePath, _store.TotalInstanceCount);
             PopulatePageCombo();
@@ -6181,6 +6357,7 @@ public partial class MainWindow : Window
                 _squashPackets,
                 percent => UpdateLoadingProgress(false, percent),
                 decodeEnhancements: false);
+            _squashStreamIdentity = AnalyzeTeletextStreamIdentity(_squashPackets);
             detectedFullBroadcast = _squashStore.GetKnownAddresses().Any(address =>
                 _squashStore.GetInstances(address.magazine, address.page, address.subpage).Count > 1);
 
@@ -6219,6 +6396,7 @@ public partial class MainWindow : Window
         if (!detectedFullBroadcast) return false;
 
         await LoadCapturedPacketsAsBroadcastAsync(_squashPackets, filePath);
+        _squashStreamIdentity = TeletextStreamIdentity.Empty;
         _sessionState.SquashFilePath = null;
         await ShowMessageAsync(
             "Full broadcast detected",
@@ -6254,6 +6432,7 @@ public partial class MainWindow : Window
             }
             indexer.FinalizeAll();
             UpdateLoadingProgress(true, 100);
+            _broadcastStreamIdentity = AnalyzeTeletextStreamIdentity(_broadcastPackets);
 
             _broadcastFilePath = filePath;
             BroadcastFilePathText.Text = FormatFileFooter(filePath, _store.TotalInstanceCount);
@@ -6289,6 +6468,7 @@ public partial class MainWindow : Window
         BroadcastGrid.ClearSelection();
         _broadcastFilePath = null;
         _broadcastFileOpen = false;
+        _broadcastStreamIdentity = TeletextStreamIdentity.Empty;
         _suppressComboEvents = false;
         UpdateBroadcastVersionButtons();
         UpdateNavigationButtons();
@@ -6311,6 +6491,7 @@ public partial class MainWindow : Window
         _deletedSquashPacketIndices.Clear();
         _structuralDirty = false;
         _squashFileOpen = false;
+        _squashStreamIdentity = TeletextStreamIdentity.Empty;
         _suppressComboEvents = false;
         UpdateNavigationButtons();
         UpdateUndoToolbar();
@@ -6464,6 +6645,102 @@ public partial class MainWindow : Window
             ? $"Pages: {pagesRead}"
             : $"{filePath} — Pages: {pagesRead}";
 
+    private static TeletextStreamIdentity AnalyzeTeletextStreamIdentity(
+        IReadOnlyList<byte[]> packets)
+    {
+        var serviceCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var dateCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        Span<char> header = stackalloc char[32];
+
+        foreach (byte[] packet in packets)
+        {
+            if (!TryDecodePacketAddress(packet, out _, out int row) || row != 0)
+                continue;
+
+            // Row 0 offsets 10-41 are the standard 32-character service header:
+            // page label, 12-character service name, DD.MM. date and clock.
+            for (int index = 0; index < header.Length; index++)
+            {
+                char value = (char)(packet[10 + index] & 0x7F);
+                header[index] = value <= 0x1F
+                    ? ' '
+                    : value <= '~' ? value : '\0';
+            }
+
+            if (!TryReadHeaderDate(header, out string date)) continue;
+            dateCounts[date] = dateCounts.GetValueOrDefault(date) + 1;
+
+            string serviceName = string.Join(' ', new string(header.Slice(4, 12))
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries));
+            if (!IsPlausibleServiceName(serviceName)) continue;
+            serviceCounts[serviceName] = serviceCounts.GetValueOrDefault(serviceName) + 1;
+        }
+
+        static string? MostCommon(Dictionary<string, int> counts) => counts
+            .OrderByDescending(pair => pair.Value)
+            .ThenBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(pair => pair.Key)
+            .FirstOrDefault();
+
+        return new TeletextStreamIdentity(
+            MostCommon(serviceCounts),
+            MostCommon(dateCounts));
+    }
+
+    private static bool TryReadHeaderDate(ReadOnlySpan<char> header, out string date)
+    {
+        date = string.Empty;
+        if (header.Length < 22
+            || header[17] is < '0' or > '9'
+            || header[18] is < '0' or > '9'
+            || header[19] != '.'
+            || header[20] is < '0' or > '9'
+            || header[21] is < '0' or > '9')
+            return false;
+
+        int day = (header[17] - '0') * 10 + header[18] - '0';
+        int month = (header[20] - '0') * 10 + header[21] - '0';
+        if (day is < 1 or > 31 || month is < 1 or > 12) return false;
+
+        date = new string(header.Slice(17, 5));
+        return true;
+    }
+
+    private static bool IsPlausibleServiceName(string serviceName)
+    {
+        if (serviceName.Length < 2 || serviceName.Count(character =>
+                character is >= 'A' and <= 'Z' or >= 'a' and <= 'z') < 2)
+            return false;
+
+        return serviceName.All(character =>
+            character is >= 'A' and <= 'Z'
+                or >= 'a' and <= 'z'
+                or >= '0' and <= '9'
+                or ' ' or '-' or '&' or '+' or '.' or '/');
+    }
+
+    private static string SuggestedTeletextFileName(
+        TeletextStreamIdentity identity,
+        string fallback,
+        string? prefix = null)
+    {
+        if (string.IsNullOrWhiteSpace(identity.ServiceName)
+            || string.IsNullOrWhiteSpace(identity.Date))
+            return fallback;
+
+        const string invalidFileNameCharacters = "<>:\"/\\|?*";
+        string safeServiceName = new(identity.ServiceName
+            .Select(character => invalidFileNameCharacters.Contains(character) ? '-' : character)
+            .ToArray());
+        safeServiceName = safeServiceName.Trim(' ', '.', '-');
+        if (safeServiceName.Length == 0) return fallback;
+
+        string safePrefix = string.IsNullOrWhiteSpace(prefix)
+            ? string.Empty
+            : $"{prefix.Trim()}-";
+        return $"{safePrefix}{safeServiceName}-{identity.Date}.t42";
+    }
+
     private void UpdateSquashFileFooter() =>
         SquashFilePathText.Text = FormatFileFooter(
             _squashFilePath,
@@ -6478,6 +6755,7 @@ public partial class MainWindow : Window
     private void UpdateWindowAndPaneTitles()
     {
         UpdateSaveCapturedStreamMenuVisibility();
+        UpdateClosePaneMenuAvailability();
         bool broadcastVisible = BroadcastPaneGrid.IsVisible;
         bool dualPane = broadcastVisible && _squashPaneEstablished;
         bool broadcastOnly = broadcastVisible && !_squashPaneEstablished;
@@ -6538,6 +6816,18 @@ public partial class MainWindow : Window
         SaveCapturedStreamMenuItem.IsVisible = visible;
         if (_nativeSaveCapturedStreamMenuItem is not null)
             _nativeSaveCapturedStreamMenuItem.IsVisible = visible;
+    }
+
+    private void UpdateClosePaneMenuAvailability()
+    {
+        bool canCloseSquash = SquashPaneGrid.IsVisible && _squashFileOpen;
+        bool canCloseBroadcast = BroadcastPaneGrid.IsVisible && _broadcastFileOpen;
+        CloseSquashedPageMenuItem.IsEnabled = canCloseSquash;
+        CloseFullBroadcastMenuItem.IsEnabled = canCloseBroadcast;
+        if (_nativeCloseSquashedPageMenuItem is not null)
+            _nativeCloseSquashedPageMenuItem.IsEnabled = canCloseSquash;
+        if (_nativeCloseFullBroadcastMenuItem is not null)
+            _nativeCloseFullBroadcastMenuItem.IsEnabled = canCloseBroadcast;
     }
 
     private PageHistory EnsurePageHistory(TeletextPage page)
@@ -8747,7 +9037,13 @@ public partial class MainWindow : Window
     private async Task<bool> ConfirmDeletePageAsync((int magazine, int page, int subpage) address)
     {
         bool confirmed = false;
-        var yesButton = new Button { Content = "Yes", Width = 90 };
+        var yesButton = new Button
+        {
+            Content = "Yes",
+            Width = 90,
+            Background = new SolidColorBrush(Color.Parse("#B42318")),
+            Foreground = Brushes.White,
+        };
         var noButton = new Button { Content = "No", Width = 90 };
         var dialog = new Window
         {
@@ -8821,7 +9117,13 @@ public partial class MainWindow : Window
     private async Task<bool> ConfirmOpenPartialVbiAsync(long packetCount)
     {
         bool open = false;
-        var discardButton = new Button { Content = "Discard", Width = 90 };
+        var discardButton = new Button
+        {
+            Content = "Discard",
+            Width = 90,
+            Background = new SolidColorBrush(Color.Parse("#B42318")),
+            Foreground = Brushes.White,
+        };
         var openButton = new Button { Content = "Open partial", Width = 110 };
         var dialog = new Window
         {
@@ -9053,11 +9355,14 @@ public partial class MainWindow : Window
 
     private async Task SaveOpenedLiveDecodedCaptureAsync(string temporaryOutput)
     {
+        _broadcastStreamIdentity = AnalyzeTeletextStreamIdentity(_broadcastPackets);
         IStorageFile? destination = await StorageProvider.SaveFilePickerAsync(
             new FilePickerSaveOptions
             {
                 Title = "Save decoded live capture",
-                SuggestedFileName = $"live-{DateTime.Now:yyyyMMdd-HHmmss}.t42",
+                SuggestedFileName = SuggestedTeletextFileName(
+                    _broadcastStreamIdentity,
+                    $"live-{DateTime.Now:yyyyMMdd-HHmmss}.t42"),
                 DefaultExtension = "t42",
                 FileTypeChoices = new[]
                 {
@@ -9115,7 +9420,13 @@ public partial class MainWindow : Window
 
         bool deleteTriplet = false;
         var okButton = new Button { Content = "OK", Width = 80 };
-        var deleteButton = new Button { Content = "Delete triplet", Width = 120 };
+        var deleteButton = new Button
+        {
+            Content = "Delete triplet",
+            Width = 120,
+            Background = new SolidColorBrush(Color.Parse("#B42318")),
+            Foreground = Brushes.White,
+        };
         var dialog = new Window
         {
             Title = title,
@@ -9205,11 +9516,14 @@ public partial class MainWindow : Window
     {
         if (!HasUnsavedCapturedStream()) return false;
 
+        _broadcastStreamIdentity = AnalyzeTeletextStreamIdentity(_broadcastPackets);
         IStorageFile? destination = await StorageProvider.SaveFilePickerAsync(
             new FilePickerSaveOptions
             {
                 Title = "Save captured full broadcast stream",
-                SuggestedFileName = $"captured-stream-{DateTime.Now:yyyyMMdd-HHmmss}.t42",
+                SuggestedFileName = SuggestedTeletextFileName(
+                    _broadcastStreamIdentity,
+                    $"captured-stream-{DateTime.Now:yyyyMMdd-HHmmss}.t42"),
                 DefaultExtension = "t42",
                 FileTypeChoices = new[]
                 {
@@ -9885,7 +10199,7 @@ public partial class MainWindow : Window
             $"Exported {exported} PNG images to the selected folder.");
     }
 
-    private async Task SaveSquashAsync(bool forcePicker)
+    private async Task<bool> SaveSquashAsync(bool forcePicker)
     {
         if (!forcePicker && !string.IsNullOrWhiteSpace(_squashFilePath)
             && Path.IsPathRooted(_squashFilePath))
@@ -9893,15 +10207,22 @@ public partial class MainWindow : Window
             await using var directStream = File.Create(_squashFilePath);
             await WriteSquashCaptureAsync(directStream);
             MarkHistoriesSaved();
-            return;
+            return true;
         }
 
+        // Recalculate from the Squashed grid's actual output so transferred or
+        // edited headers affect its own suggested name. Never inherit metadata
+        // from the Full Broadcast pane: each grid owns an independent identity.
+        _squashStreamIdentity = AnalyzeTeletextStreamIdentity(BuildSquashOutputPackets());
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "Save squashed T42 capture",
-            SuggestedFileName = string.IsNullOrWhiteSpace(_squashFilePath)
-                ? "squashed.t42"
-                : Path.GetFileName(_squashFilePath),
+            SuggestedFileName = SuggestedTeletextFileName(
+                _squashStreamIdentity,
+                string.IsNullOrWhiteSpace(_squashFilePath)
+                    ? "squashed.t42"
+                    : Path.GetFileName(_squashFilePath),
+                "Squashed"),
             DefaultExtension = "t42",
             FileTypeChoices = new[]
             {
@@ -9909,7 +10230,7 @@ public partial class MainWindow : Window
             }
         });
 
-        if (file is null) return;
+        if (file is null) return false;
 
         await using var stream = await file.OpenWriteAsync();
         if (stream.CanSeek) stream.SetLength(0);
@@ -9920,6 +10241,7 @@ public partial class MainWindow : Window
         UpdateSquashFileFooter();
         MarkHistoriesSaved();
         await RememberFileAsync(file.Path.IsFile ? file.Path.LocalPath : null, broadcast: false);
+        return true;
     }
 
     private async Task WriteSquashCaptureAsync(Stream stream)

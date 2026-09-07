@@ -27,6 +27,9 @@
                     <NativeMenuItem Header="Save As…" Gesture="Meta+Shift+S" Click="OnNativeSaveAsClicked" />
                     <NativeMenuItem Header="Save Captured Stream…" IsVisible="False" Click="OnNativeSaveCapturedStreamClicked" />
                     <NativeMenuItemSeparator />
+                    <NativeMenuItem Header="Close Squashed Page" Click="OnNativeCloseSquashedPageClicked" />
+                    <NativeMenuItem Header="Close Full Broadcast" Click="OnNativeCloseFullBroadcastClicked" />
+                    <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Export Screenshot…" Click="OnNativeExportScreenshotClicked" />
                     <NativeMenuItem Header="Batch Export Screenshots…" Click="OnNativeBatchExportScreenshotsClicked" />
                     <NativeMenuItem Header="Export Video…" IsEnabled="False" Click="OnNativeExportVideoClicked" />
@@ -123,6 +126,9 @@
                 <MenuItem Header="_Save" InputGesture="Ctrl+S" Click="OnSaveClicked" />
                 <MenuItem Header="Save _As..." Click="OnSaveAsClicked" />
                 <MenuItem x:Name="SaveCapturedStreamMenuItem" Header="Save _Captured Stream..." IsVisible="False" Click="OnSaveCapturedStreamClicked" />
+                <Separator />
+                <MenuItem x:Name="CloseSquashedPageMenuItem" Header="Close Squashed Page" Click="OnCloseSquashedPageClicked" />
+                <MenuItem x:Name="CloseFullBroadcastMenuItem" Header="Close Full Broadcast" Click="OnCloseFullBroadcastClicked" />
                 <Separator />
                 <MenuItem Header="Export _Screenshot..." Click="OnExportScreenshotClicked" />
                 <MenuItem Header="_Batch Export Screenshots..." Click="OnBatchExportScreenshotsClicked" />
@@ -388,7 +394,10 @@
                                 BorderThickness="1"
                                 CornerRadius="4">
                             <Grid>
-                                <local:TeletextGridControl x:Name="SquashGrid" />
+                                <local:TeletextGridControl x:Name="SquashGrid"
+                                                           DragDrop.AllowDrop="True"
+                                                           DragDrop.DragOver="OnTeletextGridDragOver"
+                                                           DragDrop.Drop="OnTeletextGridDrop" />
                                 <Border x:Name="SquashLoadingOverlay" Background="#D0101010" IsVisible="False" IsHitTestVisible="False">
                                     <TextBlock x:Name="SquashLoadingText"
                                                Text="Loading... 0%"
@@ -514,7 +523,10 @@
                     <Grid x:Name="BroadcastContentGrid" Grid.Row="2">
                         <Border Background="Black" HorizontalAlignment="Center" Padding="4" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4">
                             <Grid>
-                                <local:TeletextGridControl x:Name="BroadcastGrid" />
+                                <local:TeletextGridControl x:Name="BroadcastGrid"
+                                                           DragDrop.AllowDrop="True"
+                                                           DragDrop.DragOver="OnTeletextGridDragOver"
+                                                           DragDrop.Drop="OnTeletextGridDrop" />
                                 <Border x:Name="BroadcastLoadingOverlay" Background="#D0101010" IsVisible="False" IsHitTestVisible="False">
                                     <TextBlock x:Name="BroadcastLoadingText"
                                                Text="Loading... 0%"
