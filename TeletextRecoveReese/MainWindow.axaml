@@ -100,6 +100,9 @@
                     <NativeMenuItem Header="Disable video preview in live VBI capture"
                                     ToggleType="CheckBox"
                                     Click="OnNativeDisableLiveVbiVideoPreviewClicked" />
+                    <NativeMenuItem Header="Restore previous session on startup"
+                                    ToggleType="CheckBox"
+                                    Click="OnNativeRestorePreviousSessionClicked" />
                 </NativeMenu>
             </NativeMenuItem>
         </NativeMenu>
@@ -195,6 +198,10 @@
                           Header="Disable video preview in live VBI capture"
                           ToggleType="CheckBox"
                           Click="OnDisableLiveVbiVideoPreviewClicked" />
+                <MenuItem x:Name="RestorePreviousSessionMenuItem"
+                          Header="Restore previous session on startup"
+                          ToggleType="CheckBox"
+                          Click="OnRestorePreviousSessionClicked" />
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="_About" Click="AboutButton_Click" />
@@ -209,7 +216,21 @@
                 <!-- ==================== LEFT SIDE (Recovered squash) ==================== -->
                 <Grid x:Name="SquashPaneGrid" Grid.Column="0" RowDefinitions="Auto, Auto, Auto, Auto" RowSpacing="6" VerticalAlignment="Top">
                     <StackPanel x:Name="SquashHeaderStack" Grid.Row="0" Spacing="6">
-                        <TextBlock x:Name="SquashInfoText" Text="Squashed page" Foreground="#ffffff" FontSize="16" FontWeight="Bold" Margin="2,0"/>
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock x:Name="SquashInfoText" Text="Squashed page" Foreground="#ffffff" FontSize="16" FontWeight="Bold" Margin="2,0" VerticalAlignment="Center"/>
+                            <StackPanel x:Name="SquashHeaderNavigation"
+                                        Grid.Column="1"
+                                        Orientation="Horizontal"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Center"
+                                        Spacing="4"
+                                        IsVisible="False">
+                                <TextBlock x:Name="SquashHeaderAddressText" Text="P: 100, S:0000" VerticalAlignment="Center" FontWeight="Bold" Foreground="#ffffff" FontSize="16" Margin="0,0,8,0"/>
+                                <Button x:Name="SquashHeaderPreviousButton" IsEnabled="False" Content="&lt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" ToolTip.Tip="Previous page" Click="OnSquashPreviousClicked"/>
+                                <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="#ffffff" FontSize="13" Margin="2,0"/>
+                                <Button x:Name="SquashHeaderNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" ToolTip.Tip="Next page" Click="OnSquashNextClicked"/>
+                            </StackPanel>
+                        </Grid>
                     </StackPanel>
                     <StackPanel x:Name="SquashToolbarsStack" Grid.Row="1" Spacing="6">
                         <Border x:Name="SquashToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6">
@@ -424,7 +445,21 @@
                 <!-- ==================== RIGHT SIDE (Full broadcast stream) ==================== -->
                 <Grid Grid.Column="2" x:Name="BroadcastPaneGrid" RowDefinitions="Auto, Auto, Auto, Auto" RowSpacing="6" VerticalAlignment="Top">
                     <StackPanel x:Name="BroadcastHeaderStack" Grid.Row="0" Spacing="6">
-                        <TextBlock x:Name="BroadcastInfoText" Text="Full broadcast" Foreground="#ffffff" FontSize="16" FontWeight="Bold" Margin="2,0"/>
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock x:Name="BroadcastInfoText" Text="Full broadcast" Foreground="#ffffff" FontSize="16" FontWeight="Bold" Margin="2,0" VerticalAlignment="Center"/>
+                            <StackPanel x:Name="BroadcastHeaderNavigation"
+                                        Grid.Column="1"
+                                        Orientation="Horizontal"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Center"
+                                        Spacing="4"
+                                        IsVisible="False">
+                                <TextBlock x:Name="BroadcastHeaderAddressText" Text="P: 100, S:0000" VerticalAlignment="Center" FontWeight="Bold" Foreground="#ffffff" FontSize="16" Margin="0,0,8,0"/>
+                                <Button x:Name="BroadcastHeaderPreviousButton" IsEnabled="False" Content="&lt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" ToolTip.Tip="Previous page" Click="OnBroadcastPreviousClicked"/>
+                                <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="#ffffff" FontSize="13" Margin="2,0"/>
+                                <Button x:Name="BroadcastHeaderNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" ToolTip.Tip="Next page" Click="OnBroadcastNextClicked"/>
+                            </StackPanel>
+                        </Grid>
                     </StackPanel>
                     <StackPanel x:Name="BroadcastToolbarsStack" Grid.Row="1" Spacing="6">
                         <Border x:Name="BroadcastToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6">
@@ -443,7 +478,8 @@
                             </StackPanel>
                         </Border>
                         <Border x:Name="BroadcastEditToolbar" Background="#2d2d30" BorderBrush="#3f3f46" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44"
-                                SizeChanged="OnBroadcastVersionToolbarSizeChanged">
+                                SizeChanged="OnBroadcastVersionToolbarSizeChanged"
+                                PointerExited="OnBroadcastVersionToolbarPointerExited">
                             <Grid ColumnDefinitions="*,Auto">
                                 <StackPanel x:Name="BroadcastVersionButtonsGrid"
                                             Orientation="Horizontal"

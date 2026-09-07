@@ -368,6 +368,7 @@ public partial class MainWindow : Window
         public bool? ShowRawVbiPreview { get; set; }
         public bool? ShowVideoCapturePreview { get; set; }
         public bool? DisableLiveVbiVideoPreview { get; set; }
+        public bool? RestorePreviousSession { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
         public bool? RecordRawVbiToDisk { get; set; }
     }
@@ -583,6 +584,7 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeOpenLiveVbiCaptureMenuItem;
     private NativeMenuItem? _nativeSaveCapturedStreamMenuItem;
     private NativeMenuItem? _nativeDisableLiveVbiVideoPreviewMenuItem;
+    private NativeMenuItem? _nativeRestorePreviousSessionMenuItem;
     private readonly string? _ffmpegPath;
     private bool _showX26EnhancementsSidebar = true;
     private bool _showVideoBookmarks = true;
@@ -691,7 +693,7 @@ public partial class MainWindow : Window
         Opened -= OnWindowOpened;
         InitializeStartupFontChoices(_sessionState.GridFontFamily);
         ApplyGridFont(_sessionState.GridFontFamily, persist: false);
-        if (_loadLastSession)
+        if (_loadLastSession || (_sessionState.RestorePreviousSession ?? false))
             await RestoreSessionFilesAsync();
     }
 
@@ -2475,6 +2477,7 @@ public partial class MainWindow : Window
             _nativeToolbarOnBottomMenuItem.IsChecked = onBottom;
 
         _sessionState.ToolbarOnBottom = onBottom;
+        UpdateHeaderNavigationVisibility();
         if (saveSession)
             SaveSessionState();
 
@@ -2645,6 +2648,30 @@ public partial class MainWindow : Window
         if (_nativeDisableLiveVbiVideoPreviewMenuItem is not null)
             _nativeDisableLiveVbiVideoPreviewMenuItem.IsChecked = disabled;
         _sessionState.DisableLiveVbiVideoPreview = disabled;
+        if (saveSession)
+            SaveSessionState();
+    }
+
+    private void OnRestorePreviousSessionClicked(object? sender, RoutedEventArgs e) =>
+        SetRestorePreviousSession(RestorePreviousSessionMenuItem.IsChecked, saveSession: true);
+
+    private void OnNativeRestorePreviousSessionClicked(object? sender, EventArgs e)
+    {
+        bool restore = !(_sessionState.RestorePreviousSession ?? false);
+        SetRestorePreviousSession(restore, saveSession: true);
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_nativeRestorePreviousSessionMenuItem is not null)
+                _nativeRestorePreviousSessionMenuItem.IsChecked = restore;
+        }, DispatcherPriority.Background);
+    }
+
+    private void SetRestorePreviousSession(bool restore, bool saveSession)
+    {
+        RestorePreviousSessionMenuItem.IsChecked = restore;
+        if (_nativeRestorePreviousSessionMenuItem is not null)
+            _nativeRestorePreviousSessionMenuItem.IsChecked = restore;
+        _sessionState.RestorePreviousSession = restore;
         if (saveSession)
             SaveSessionState();
     }
@@ -2938,6 +2965,12 @@ public partial class MainWindow : Window
             .Menu?.Items.OfType<NativeMenuItem>()
             .FirstOrDefault(item => item.Header?.ToString()
                 == "Disable video preview in live VBI capture");
+        _nativeRestorePreviousSessionMenuItem = menu.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => item.Header?.ToString() == "Options")?
+            .Menu?.Items.OfType<NativeMenuItem>()
+            .FirstOrDefault(item => item.Header?.ToString()
+                == "Restore previous session on startup");
     }
 
     /// <summary>Copies one row (0=header, 1-24=body) from the currently displayed
@@ -6479,6 +6512,19 @@ public partial class MainWindow : Window
             SquashInfoText.IsVisible = false;
             SquashInfoText.Text = "Squashed page";
         }
+
+        UpdateHeaderNavigationVisibility();
+    }
+
+    private void UpdateHeaderNavigationVisibility()
+    {
+        bool dualPaneTitlesVisible = SquashPaneGrid.IsVisible
+            && BroadcastPaneGrid.IsVisible
+            && SquashInfoText.IsVisible
+            && BroadcastInfoText.IsVisible;
+        bool show = ToolbarOnBottomMenuItem.IsChecked && dualPaneTitlesVisible;
+        SquashHeaderNavigation.IsVisible = show;
+        BroadcastHeaderNavigation.IsVisible = show;
     }
 
     private bool HasUnsavedCapturedStream() =>
@@ -6818,6 +6864,9 @@ public partial class MainWindow : Window
         SetToolbarOnBottom(_sessionState.ToolbarOnBottom ?? false, saveSession: false);
         SetDisableLiveVbiVideoPreview(
             _sessionState.DisableLiveVbiVideoPreview ?? false,
+            saveSession: false);
+        SetRestorePreviousSession(
+            _sessionState.RestorePreviousSession ?? false,
             saveSession: false);
     }
 
@@ -7704,15 +7753,25 @@ public partial class MainWindow : Window
         int broadcastIndex = TryGetBroadcastAddress(out var broadcastAddress)
             ? broadcastAddresses.FindIndex(address => address == broadcastAddress)
             : -1;
+        BroadcastHeaderAddressText.Text = broadcastIndex >= 0
+            ? $"P: {broadcastAddress.magazine}{broadcastAddress.page:X2}, S:{broadcastAddress.subpage:X4}"
+            : string.Empty;
         BroadcastPreviousButton.IsEnabled = broadcastIndex > 0;
         BroadcastNextButton.IsEnabled = broadcastIndex >= 0 && broadcastIndex < broadcastAddresses.Count - 1;
+        BroadcastHeaderPreviousButton.IsEnabled = BroadcastPreviousButton.IsEnabled;
+        BroadcastHeaderNextButton.IsEnabled = BroadcastNextButton.IsEnabled;
 
         var squashAddresses = _squashStore.GetKnownAddresses().ToList();
         int squashIndex = TryGetSquashAddress(out var squashAddress)
             ? squashAddresses.FindIndex(address => address == squashAddress)
             : -1;
+        SquashHeaderAddressText.Text = squashIndex >= 0
+            ? $"P: {squashAddress.magazine}{squashAddress.page:X2}, S:{squashAddress.subpage:X4}"
+            : string.Empty;
         SquashPreviousButton.IsEnabled = squashIndex > 0;
         SquashNextButton.IsEnabled = squashIndex >= 0 && squashIndex < squashAddresses.Count - 1;
+        SquashHeaderPreviousButton.IsEnabled = SquashPreviousButton.IsEnabled;
+        SquashHeaderNextButton.IsEnabled = SquashNextButton.IsEnabled;
         SquashDeletePageButton.IsEnabled = squashIndex >= 0;
         UpdateRestorationProgress(squashAddresses.Count, squashIndex);
 
@@ -7887,9 +7946,26 @@ public partial class MainWindow : Window
     private void OnBroadcastVersionToolbarSizeChanged(object? sender, SizeChangedEventArgs e) =>
         UpdateBroadcastVersionButtons();
 
+    private void OnBroadcastVersionToolbarPointerExited(object? sender, PointerEventArgs e)
+    {
+        RestoreSelectedBroadcastVersionAfterPreview();
+        Dispatcher.UIThread.Post(UpdateBroadcastVersionButtons, DispatcherPriority.Background);
+    }
+
     private void UpdateBroadcastVersionButtons()
     {
         if (BroadcastVersionButtonsGrid is null) return;
+
+        // Keep the current button range stable while it is being used. Rebuilding
+        // immediately after a click moves a different version under the stationary
+        // pointer and causes an unintended hover preview. The toolbar's PointerExited
+        // handler refreshes and recentres the range around the new selection.
+        if (BroadcastEditToolbar.IsPointerOver)
+        {
+            UpdateBroadcastVersionButtonSelectionStyles();
+            return;
+        }
+
         BroadcastVersionButtonsGrid.Children.Clear();
 
         int total = VersionComboBox.Items.Count;
@@ -7920,6 +7996,7 @@ public partial class MainWindow : Window
             int capturedIndex = versionIndex;
             var button = new Button
             {
+                Tag = versionIndex,
                 Content = $"v{versionIndex}",
                 Width = 58,
                 Height = 30,
@@ -7940,6 +8017,20 @@ public partial class MainWindow : Window
             button.PointerEntered += (_, _) => PreviewBroadcastVersion(capturedIndex);
             button.PointerExited += (_, _) => RestoreSelectedBroadcastVersionAfterPreview();
             BroadcastVersionButtonsGrid.Children.Add(button);
+        }
+    }
+
+    private void UpdateBroadcastVersionButtonSelectionStyles()
+    {
+        int selected = VersionComboBox.SelectedIndex;
+        foreach (Button button in BroadcastVersionButtonsGrid.Children.OfType<Button>())
+        {
+            bool isSelected = button.Tag is int versionIndex && versionIndex == selected;
+            button.FontWeight = isSelected ? FontWeight.Bold : FontWeight.Normal;
+            button.Background = new SolidColorBrush(Color.Parse(
+                isSelected ? "#506FAF" : "#3A3A3D"));
+            button.BorderBrush = new SolidColorBrush(Color.Parse(
+                isSelected ? "#A8C8FF" : "#55555A"));
         }
     }
 
