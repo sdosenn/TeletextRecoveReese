@@ -374,6 +374,7 @@ public partial class MainWindow : Window
         public bool? ShowSquashDiacritics { get; set; }
         public bool? ShowBroadcastDiacritics { get; set; }
         public bool? SuppressFlash { get; set; }
+        public bool? ShowFastextCrcToolbar { get; set; }
         public bool? ToolbarOnBottom { get; set; }
         public string? VideoEncoder { get; set; }
         public double? VideoSecondsPerPage { get; set; }
@@ -601,6 +602,7 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeX26EnhancementsMenuItem;
     private NativeMenuItem? _nativeVideoBookmarksMenuItem;
     private NativeMenuItem? _nativeSuppressFlashMenuItem;
+    private NativeMenuItem? _nativeFastextCrcToolbarMenuItem;
     private NativeMenuItem? _nativeToolbarOnBottomMenuItem;
     private NativeMenuItem? _nativeExportVideoMenuItem;
     private NativeMenuItem? _nativeOpenRecentMenuItem;
@@ -3233,6 +3235,36 @@ public partial class MainWindow : Window
     private void OnToolbarOnBottomClicked(object? sender, RoutedEventArgs e) =>
         SetToolbarOnBottom(ToolbarOnBottomMenuItem.IsChecked, saveSession: true);
 
+    private void OnFastextCrcToolbarClicked(object? sender, RoutedEventArgs e) =>
+        SetFastextCrcToolbarVisibility(FastextCrcToolbarMenuItem.IsChecked, saveSession: true);
+
+    private void OnNativeFastextCrcToolbarClicked(object? sender, EventArgs e)
+    {
+        bool isVisible = !(_sessionState.ShowFastextCrcToolbar ?? true);
+        SetFastextCrcToolbarVisibility(isVisible, saveSession: true);
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_nativeFastextCrcToolbarMenuItem is not null)
+                _nativeFastextCrcToolbarMenuItem.IsChecked = isVisible;
+        }, DispatcherPriority.Background);
+    }
+
+    private void SetFastextCrcToolbarVisibility(bool isVisible, bool saveSession)
+    {
+        SquashFastextToolbar.IsVisible = isVisible;
+        BroadcastFastextToolbar.IsVisible = isVisible;
+        FastextCrcToolbarMenuItem.IsChecked = isVisible;
+        if (_nativeFastextCrcToolbarMenuItem is not null)
+            _nativeFastextCrcToolbarMenuItem.IsChecked = isVisible;
+
+        _sessionState.ShowFastextCrcToolbar = isVisible;
+        if (saveSession)
+            SaveSessionState();
+
+        FitWindowToContent();
+    }
+
     private void OnNativeToolbarOnBottomClicked(object? sender, EventArgs e)
     {
         bool onBottom = !(_sessionState.ToolbarOnBottom ?? false);
@@ -3758,6 +3790,8 @@ public partial class MainWindow : Window
                 .FirstOrDefault(item => item.Header?.ToString() == "Page Bookmarks Sidebar");
             _nativeSuppressFlashMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
                 .FirstOrDefault(item => item.Header?.ToString() == "Suppress Flash");
+            _nativeFastextCrcToolbarMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
+                .FirstOrDefault(item => item.Header?.ToString() == "Fastext and CRC Toolbar");
             _nativeToolbarOnBottomMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
                 .FirstOrDefault(item => item.Header?.ToString() == "Toolbar on Bottom");
         }
@@ -8067,6 +8101,9 @@ public partial class MainWindow : Window
         if (_nativeSuppressFlashMenuItem is not null)
             _nativeSuppressFlashMenuItem.IsChecked = suppressFlash;
 
+        SetFastextCrcToolbarVisibility(
+            _sessionState.ShowFastextCrcToolbar ?? true,
+            saveSession: false);
         SetToolbarOnBottom(_sessionState.ToolbarOnBottom ?? false, saveSession: false);
         SetDisableLiveVbiVideoPreview(
             _sessionState.DisableLiveVbiVideoPreview ?? false,
@@ -8462,6 +8499,7 @@ public partial class MainWindow : Window
         _sessionState.ShowSquashDiacritics = SquashGrid.ShowDiacriticMarkers;
         _sessionState.ShowBroadcastDiacritics = BroadcastGrid.ShowDiacriticMarkers;
         _sessionState.SuppressFlash = SquashGrid.SuppressFlash;
+        _sessionState.ShowFastextCrcToolbar = FastextCrcToolbarMenuItem.IsChecked;
         _sessionState.ToolbarOnBottom = ToolbarOnBottomMenuItem.IsChecked;
 
         if (!string.IsNullOrWhiteSpace(_squashFilePath)
@@ -9235,7 +9273,7 @@ public partial class MainWindow : Window
                 Tag = versionIndex,
                 Content = $"v{versionIndex}",
                 Width = 58,
-                Height = 30,
+                Height = 28,
                 Margin = new Thickness(1, 0),
                 Padding = new Thickness(4, 0),
                 HorizontalContentAlignment = HorizontalAlignment.Center,

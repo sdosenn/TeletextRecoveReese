@@ -445,7 +445,15 @@ public class TeletextGridControl : Control
         var pos = e.GetPosition(this);
         int col = Math.Clamp((int)(pos.X / CellWidth), 0, Columns - 1);
         int row = Math.Clamp((int)(pos.Y / CellHeight), 0, Rows - 1);
-        bool rightButtonPressed = e.GetCurrentPoint(this).Properties.IsRightButtonPressed;
+        PointerPoint currentPoint = e.GetCurrentPoint(this);
+        bool rightButtonPressed = currentPoint.Properties.IsRightButtonPressed;
+        // A trackpad has no convenient secondary-button drag. On macOS,
+        // Control + primary drag therefore starts the same clone operation as
+        // a right-button drag, while the other platforms keep their existing
+        // pointer and modifier behaviour.
+        bool macControlDrag = OperatingSystem.IsMacOS()
+            && currentPoint.Properties.IsLeftButtonPressed
+            && e.KeyModifiers.HasFlag(KeyModifiers.Control);
 
         // ContextMenu is a control property and otherwise remains attached after
         // the first valid diacritic click. Detach that stale menu before every new
@@ -485,7 +493,7 @@ public class TeletextGridControl : Control
         }
 
         if (CloneDragEnabled
-            && rightButtonPressed
+            && (rightButtonPressed || macControlDrag)
             && _hasSelection
             && col >= _selectedColumn
             && col < _selectedColumn + _selectionWidth

@@ -69,6 +69,10 @@
                     <NativeMenuItem Header="Suppress Flash"
                                     ToggleType="CheckBox"
                                     Click="OnNativeSuppressFlashClicked" />
+                    <NativeMenuItem Header="Fastext and CRC Toolbar"
+                                    ToggleType="CheckBox"
+                                    IsChecked="True"
+                                    Click="OnNativeFastextCrcToolbarClicked" />
                     <NativeMenuItem Header="Toolbar on Bottom"
                                     ToggleType="CheckBox"
                                     Click="OnNativeToolbarOnBottomClicked" />
@@ -175,6 +179,11 @@
                           Header="Suppress _Flash"
                           ToggleType="CheckBox"
                           Click="OnSuppressFlashClicked" />
+                <MenuItem x:Name="FastextCrcToolbarMenuItem"
+                          Header="_Fastext and CRC Toolbar"
+                          ToggleType="CheckBox"
+                          IsChecked="True"
+                          Click="OnFastextCrcToolbarClicked" />
                 <MenuItem x:Name="ToolbarOnBottomMenuItem"
                           Header="Toolbar on _Bottom"
                           ToggleType="CheckBox"
@@ -219,12 +228,12 @@
         </Menu>
 
         <!-- Main Content Area -->
-        <Border Padding="12">
+        <Border Padding="8">
             <!-- 3 Columns: Left Grid, Middle Transfer Buttons, Right Grid -->
             <Grid ColumnDefinitions="Auto, Auto, Auto" ColumnSpacing="0" x:Name="MainGrid">
 
                 <!-- ==================== LEFT SIDE (Recovered squash) ==================== -->
-                <Grid x:Name="SquashPaneGrid" Grid.Column="0" RowDefinitions="Auto, Auto, Auto, Auto, Auto" RowSpacing="6" VerticalAlignment="Top">
+                <Grid x:Name="SquashPaneGrid" Grid.Column="0" RowDefinitions="Auto, Auto, Auto, Auto, Auto" RowSpacing="4" VerticalAlignment="Top">
                     <StackPanel x:Name="SquashHeaderStack" Grid.Row="0" Spacing="6">
                         <Grid ColumnDefinitions="*,Auto">
                             <TextBlock x:Name="SquashInfoText" Text="Squashed page" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="16" FontWeight="Bold" Margin="2,0" VerticalAlignment="Center"/>
@@ -242,23 +251,23 @@
                             </StackPanel>
                         </Grid>
                     </StackPanel>
-                    <StackPanel x:Name="SquashToolbarsStack" Grid.Row="1" Spacing="6">
-                        <Border x:Name="SquashToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6">
+                    <StackPanel x:Name="SquashToolbarsStack" Grid.Row="1" Spacing="5">
+                        <Border x:Name="SquashToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3">
                             <StackPanel Orientation="Horizontal" Spacing="6">
                                 <TextBlock Text="Address:" VerticalAlignment="Center" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13" FontWeight="SemiBold"/>
-                                <ComboBox x:Name="SquashMagazineComboBox" Width="70" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashMagazineComboChanged"/>
-                                <ComboBox x:Name="SquashPageNumberComboBox" Width="70" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashPageNumberComboChanged"/>
-                                <ComboBox x:Name="SquashSubpageComboBox" Width="80" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashSubpageComboChanged"/>
-                                <Button x:Name="SquashDeletePageButton" IsEnabled="False" Content="🗑" ToolTip.Tip="Delete current page" Width="32" Height="30" FontSize="16" Padding="0" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnDeletePageClicked"/>
+                                <ComboBox x:Name="SquashMagazineComboBox" Width="70" Height="26" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashMagazineComboChanged"/>
+                                <ComboBox x:Name="SquashPageNumberComboBox" Width="70" Height="26" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashPageNumberComboChanged"/>
+                                <ComboBox x:Name="SquashSubpageComboBox" Width="80" Height="26" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashSubpageComboChanged"/>
+                                <Button x:Name="SquashDeletePageButton" IsEnabled="False" Content="🗑" ToolTip.Tip="Delete current page" Width="32" Height="26" FontSize="15" Padding="0" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnDeletePageClicked"/>
                                 <Separator Width="1" Background="{DynamicResource PanelBorderBrush}" Margin="2,2"/>
-                                <Button x:Name="SquashPreviousButton" IsEnabled="False" Content="&lt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnSquashPreviousClicked"/>
+                                <Button x:Name="SquashPreviousButton" IsEnabled="False" Content="&lt;" Width="32" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnSquashPreviousClicked"/>
                                 <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13" Margin="2,0"/>
-                                <Button x:Name="SquashNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnSquashNextClicked"/>
+                                <Button x:Name="SquashNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnSquashNextClicked"/>
                                 <Separator Width="1" Background="{DynamicResource PanelBorderBrush}" Margin="2,2"/>
-                                <Button x:Name="SquashJumpToBroadcastButton" IsEnabled="False" Content="Jump to in full" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToBroadcastClicked"/>
+                                <Button x:Name="SquashJumpToBroadcastButton" IsEnabled="False" Content="Jump to in full" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToBroadcastClicked"/>
                             </StackPanel>
                         </Border>
-                        <Border x:Name="SquashEditToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44">
+                        <Border x:Name="SquashEditToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34">
                             <Grid>
                                 <StackPanel Orientation="Horizontal" Spacing="6">
                                     <Button x:Name="ColorModeButton" Content="Alpha" Width="65" Height="28" Click="OnColorModeClicked"/>
@@ -280,13 +289,13 @@
                                 </StackPanel>
                             </Grid>
                         </Border>
-                        <Border x:Name="SquashDisplayToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44">
+                        <Border x:Name="SquashDisplayToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34">
                             <Grid ColumnDefinitions="*,Auto">
                                 <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
-                                    <Button x:Name="ControlCodesButton" Content="Codes: Off" Width="88" Click="OnControlCodesClicked"/>
-                                    <Button x:Name="DiacriticsButton" Content="Diacritics: Off" Width="112" Click="OnDiacriticsClicked"/>
-                                    <Button x:Name="SelectionBytesButton" Content="Bytes: Off" Width="96" Click="OnSelectionBytesClicked"/>
-                                    <TextBox x:Name="VideoBookmarkTextBox" Width="200" Margin="6,0,0,0" PlaceholderText="Page bookmark" TextChanged="OnVideoBookmarkTextChanged"/>
+                                    <Button x:Name="ControlCodesButton" Content="Codes: Off" Width="88" Height="28" Click="OnControlCodesClicked"/>
+                                    <Button x:Name="DiacriticsButton" Content="Diacritics: Off" Width="112" Height="28" Click="OnDiacriticsClicked"/>
+                                    <Button x:Name="SelectionBytesButton" Content="Bytes: Off" Width="96" Height="28" Click="OnSelectionBytesClicked"/>
+                                    <TextBox x:Name="VideoBookmarkTextBox" Width="200" Height="28" Margin="6,0,0,0" PlaceholderText="Page bookmark" TextChanged="OnVideoBookmarkTextChanged"/>
                                 </StackPanel>
                                 <TextBlock x:Name="UndoInfoText"
                                            Grid.Column="1"
@@ -471,7 +480,7 @@
                 </Grid>
 
                 <!-- ==================== RIGHT SIDE (Full broadcast stream) ==================== -->
-                <Grid Grid.Column="2" x:Name="BroadcastPaneGrid" RowDefinitions="Auto, Auto, Auto, Auto, Auto" RowSpacing="6" VerticalAlignment="Top">
+                <Grid Grid.Column="2" x:Name="BroadcastPaneGrid" RowDefinitions="Auto, Auto, Auto, Auto, Auto" RowSpacing="4" VerticalAlignment="Top">
                     <StackPanel x:Name="BroadcastHeaderStack" Grid.Row="0" Spacing="6">
                         <Grid ColumnDefinitions="*,Auto">
                             <TextBlock x:Name="BroadcastInfoText" Text="Full broadcast" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="16" FontWeight="Bold" Margin="2,0" VerticalAlignment="Center"/>
@@ -489,23 +498,23 @@
                             </StackPanel>
                         </Grid>
                     </StackPanel>
-                    <StackPanel x:Name="BroadcastToolbarsStack" Grid.Row="1" Spacing="6">
-                        <Border x:Name="BroadcastToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6">
+                    <StackPanel x:Name="BroadcastToolbarsStack" Grid.Row="1" Spacing="5">
+                        <Border x:Name="BroadcastToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3">
                             <StackPanel Orientation="Horizontal" Spacing="6">
                                 <TextBlock Text="Address:" VerticalAlignment="Center" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13" FontWeight="SemiBold"/>
-                                <ComboBox x:Name="MagazineComboBox" Width="70" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnMagazineComboChanged"/>
-                                <ComboBox x:Name="PageNumberComboBox" Width="70" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnPageNumberComboChanged"/>
-                                <ComboBox x:Name="SubpageComboBox" Width="80" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSubpageComboChanged"/>
-                                <ComboBox x:Name="VersionComboBox" Width="80" Height="30" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnVersionComboChanged"/>
+                                <ComboBox x:Name="MagazineComboBox" Width="70" Height="26" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnMagazineComboChanged"/>
+                                <ComboBox x:Name="PageNumberComboBox" Width="70" Height="26" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnPageNumberComboChanged"/>
+                                <ComboBox x:Name="SubpageComboBox" Width="80" Height="26" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSubpageComboChanged"/>
+                                <ComboBox x:Name="VersionComboBox" Width="80" Height="26" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnVersionComboChanged"/>
                                 <Separator Width="1" Background="{DynamicResource PanelBorderBrush}" Margin="2,2"/>
-                                <Button x:Name="BroadcastPreviousButton" IsEnabled="False" Content="&lt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnBroadcastPreviousClicked"/>
+                                <Button x:Name="BroadcastPreviousButton" IsEnabled="False" Content="&lt;" Width="32" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnBroadcastPreviousClicked"/>
                                 <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13" Margin="2,0"/>
-                                <Button x:Name="BroadcastNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnBroadcastNextClicked"/>
+                                <Button x:Name="BroadcastNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnBroadcastNextClicked"/>
                                 <Separator Width="1" Background="{DynamicResource PanelBorderBrush}" Margin="2,2"/>
-                                <Button x:Name="BroadcastJumpToSquashButton" IsEnabled="False" Content="Jump to in squash" Height="30" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToSquashClicked"/>
+                                <Button x:Name="BroadcastJumpToSquashButton" IsEnabled="False" Content="Jump to in squash" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToSquashClicked"/>
                             </StackPanel>
                         </Border>
-                        <Border x:Name="BroadcastEditToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44"
+                        <Border x:Name="BroadcastEditToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34"
                                 SizeChanged="OnBroadcastVersionToolbarSizeChanged"
                                 PointerExited="OnBroadcastVersionToolbarPointerExited">
                             <Grid ColumnDefinitions="*,Auto">
@@ -533,14 +542,15 @@
                                            IsVisible="False" />
                             </Grid>
                         </Border>
-                        <Border x:Name="BroadcastDisplayToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6" MinHeight="44">
+                        <Border x:Name="BroadcastDisplayToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34">
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <Button x:Name="BroadcastControlCodesButton" Content="Codes: Off" Width="88" Click="OnBroadcastControlCodesClicked"/>
-                                <Button x:Name="BroadcastDiacriticsButton" Content="Diacritics: Off" Width="112" Click="OnBroadcastDiacriticsClicked"/>
-                                <Button x:Name="BroadcastSelectionBytesButton" Content="Bytes: Off" Width="96" Click="OnBroadcastSelectionBytesClicked"/>
+                                <Button x:Name="BroadcastControlCodesButton" Content="Codes: Off" Width="88" Height="28" Click="OnBroadcastControlCodesClicked"/>
+                                <Button x:Name="BroadcastDiacriticsButton" Content="Diacritics: Off" Width="112" Height="28" Click="OnBroadcastDiacriticsClicked"/>
+                                <Button x:Name="BroadcastSelectionBytesButton" Content="Bytes: Off" Width="96" Height="28" Click="OnBroadcastSelectionBytesClicked"/>
                                 <Button x:Name="BroadcastFlashRollButton"
                                         Content="Roll: Off"
                                         Width="88"
+                                        Height="28"
                                         IsEnabled="False"
                                         ToolTip.Tip="Rapidly cycle all versions of the current page"
                                         Click="OnBroadcastFlashRollClicked"/>
