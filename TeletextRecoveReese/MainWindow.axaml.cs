@@ -728,6 +728,7 @@ public partial class MainWindow : Window
         SquashGrid.EnhancementHoverChanged += OnEnhancementHoverChanged;
         BroadcastGrid.CellSelected += OnBroadcastGridCellSelected;
         InitializeBlankSquashDocument();
+        PrepareLoadLastSessionLayout();
         // Handle keyboard navigation in the tunnel phase, before the menu can
         // consume the cursor keys for its own focus navigation.
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
@@ -744,7 +745,88 @@ public partial class MainWindow : Window
         ApplyGridFont(_sessionState.GridFontFamily, persist: false);
         if (!_startNewSession
             && (_loadLastSession || (_sessionState.RestorePreviousSession ?? false)))
+        {
             await RestoreSessionFilesAsync();
+            await SettleRestoredWorkspaceLayoutAsync();
+        }
+    }
+
+    private async Task SettleRestoredWorkspaceLayoutAsync()
+    {
+        // On macOS, restoring both files can finish while Avalonia is still
+        // measuring controls whose visibility changed during the load. A fit
+        // requested in that interval may retain the transient (very large)
+        // desired size until another visibility change forces a layout pass.
+        // Reapply the final sidebar state and allow two render passes to settle
+        // the complete dual-pane visual tree before doing the authoritative fit.
+        ApplyX26EnhancementsSidebarVisibility(resizeWindow: false);
+        ApplyVideoBookmarkSidebarVisibility(resizeWindow: false);
+
+        if (Content is Control root)
+        {
+            root.InvalidateMeasure();
+            root.InvalidateArrange();
+        }
+        MainGrid.InvalidateMeasure();
+        MainGrid.InvalidateArrange();
+
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Render);
+
+        if (Content is Control settledRoot)
+        {
+            settledRoot.InvalidateMeasure();
+            settledRoot.InvalidateArrange();
+        }
+
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Render);
+        FitWindowToContent();
+
+        // macOS centers the SizeToContent client rectangle before the native
+        // titlebar has its final size. Keep its correct horizontal placement,
+        // but correct the vertical coordinate using the complete native frame.
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        CenterRestoredWindowFrameVertically();
+    }
+
+    private void CenterRestoredWindowFrameVertically()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+
+        Screen? screen = Screens.ScreenFromWindow(this);
+        Size frameSize = FrameSize ?? Bounds.Size;
+        if (screen is null || frameSize.Height <= 0) return;
+
+        PixelRect workArea = screen.WorkingArea;
+        int frameHeight = PixelSize.FromSize(frameSize, RenderScaling).Height;
+        int centeredY = workArea.Y + (workArea.Height - frameHeight) / 2;
+        Position = new PixelPoint(Position.X, centeredY);
+    }
+
+    private void PrepareLoadLastSessionLayout()
+    {
+        if (_startNewSession
+            || !(_loadLastSession || (_sessionState.RestorePreviousSession ?? false))
+            || string.IsNullOrWhiteSpace(_sessionState.SquashFilePath)
+            || string.IsNullOrWhiteSpace(_sessionState.BroadcastFilePath)
+            || !File.Exists(_sessionState.SquashFilePath)
+            || !File.Exists(_sessionState.BroadcastFilePath))
+            return;
+
+        // Both panes have fixed geometry, so expose the final visual tree before
+        // the native window is first shown. SizeToContent can then calculate the
+        // dual-pane size up front and CenterScreen lets the OS place that final
+        // window, rather than centering the small initial pane and growing it.
+        _squashPaneEstablished = true;
+        SquashPaneGrid.IsVisible = true;
+        TransferPaneGrid.IsVisible = true;
+        BroadcastPaneGrid.IsVisible = true;
+        // The temporary blank document hides this row because it has only one
+        // address. A restored squash normally reveals it after indexing, which
+        // otherwise makes the already-centered window grow downward.
+        SquashToolbar.IsVisible = true;
+        ApplyX26EnhancementsSidebarVisibility(resizeWindow: false);
+        ApplyVideoBookmarkSidebarVisibility(resizeWindow: false);
+        FitWindowToContent();
     }
 
     private void InitializeStartupFontChoices(string? requestedFamilyName)
