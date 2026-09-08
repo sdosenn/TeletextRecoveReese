@@ -36,6 +36,22 @@ public sealed class DiacriticDeleteRequestedEventArgs(int designationCode, int t
     public int TripletNumber { get; } = tripletNumber;
 }
 
+public sealed class CloneBlockDropRequestedEventArgs(
+    int sourceColumn,
+    int sourceRow,
+    int width,
+    int height,
+    int targetColumn,
+    int targetRow) : EventArgs
+{
+    public int SourceColumn { get; } = sourceColumn;
+    public int SourceRow { get; } = sourceRow;
+    public int Width { get; } = width;
+    public int Height { get; } = height;
+    public int TargetColumn { get; } = targetColumn;
+    public int TargetRow { get; } = targetRow;
+}
+
 /// <summary>
 /// Manually renders the 40x24 teletext grid via DrawingContext (no per-cell
 /// TextBox/TextBlock - that would be too slow and wouldn't look authentic).
@@ -49,12 +65,15 @@ public class TeletextGridControl : Control
     public event EventHandler<DiacriticMoveRequestedEventArgs>? DiacriticMoveRequested;
     public event EventHandler<DiacriticDeleteRequestedEventArgs>? DiacriticDeleteRequested;
     public event EventHandler<EnhancementHoverChangedEventArgs>? EnhancementHoverChanged;
+    public event EventHandler<CloneBlockDropRequestedEventArgs>? CloneBlockDropRequested;
 
     public bool IsActive { get; set; } = true;
+    public bool CloneDragEnabled { get; set; }
     private bool _renderingScreenshot;
     private TeletextPage? _screenshotPageOverride;
     private bool _screenshotAnimateFlash;
     private bool _screenshotFlashVisible = true;
+    private RenderTargetBitmap? _clonePreviewBitmap;
 
     public void SaveScreenshotPng(
         Stream stream,
@@ -121,10 +140,12 @@ public class TeletextGridControl : Control
     public void SetFontFamily(FontFamily fontFamily, string? familyName = null)
     {
         _gridTypeface = new Typeface(fontFamily);
-        _useTifaxNineWorkaround = (familyName ?? fontFamily.Name)
-            .Contains("Tifax", StringComparison.OrdinalIgnoreCase);
+        _useTifaxNineWorkaround = IsTifaxFont(familyName ?? fontFamily.Name);
         InvalidateVisual();
     }
+
+    private static bool IsTifaxFont(string? familyName) =>
+        string.Equals(familyName?.Trim(), "TIFAX", StringComparison.OrdinalIgnoreCase);
 
     // Selection is painted after all page content so it always remains visible.
     private static readonly Brush SelFillBrush = new SolidColorBrush(Color.Parse("#553344AA"));
@@ -133,6 +154,9 @@ public class TeletextGridControl : Control
     private static readonly Brush RecoverySelectionFillBrush = new SolidColorBrush(Color.Parse("#5540B860"));
     private static readonly Brush RecoverySelectionBorderBrush = new SolidColorBrush(Color.Parse("#D090F0A0"));
     private static readonly Pen RecoverySelectionBorderPen = new(RecoverySelectionBorderBrush, 2, DashStyle.Dash);
+    private static readonly Brush CloneSelectionFillBrush = new SolidColorBrush(Color.Parse("#5540B860"));
+    private static readonly Brush CloneSelectionBorderBrush = new SolidColorBrush(Color.Parse("#D090F0A0"));
+    private static readonly Pen CloneSelectionBorderPen = new(CloneSelectionBorderBrush, 2, DashStyle.Dash);
     // Same opacity/weight as the normal selector; warning pulses change only the hue.
     private static readonly Brush WarningFillBrush = new SolidColorBrush(Color.Parse("#55AA3344"));
     private static readonly Brush WarningBorderBrush = new SolidColorBrush(Color.Parse("#B8F0A0A8"));
@@ -166,9 +190,18 @@ public class TeletextGridControl : Control
 
     // Drag selection support
     private bool _isDragging = false;
+    private bool _isCloneDragging;
     private bool _hasSelection = true;
     private int _dragRow = 0;
     private int _dragCol = 0;
+    private int _cloneSourceColumn;
+    private int _cloneSourceRow;
+    private int _cloneWidth;
+    private int _cloneHeight;
+    private int _cloneGrabColumnOffset;
+    private int _cloneGrabRowOffset;
+    private int _cloneTargetColumn;
+    private int _cloneTargetRow;
     private bool _readOnlyWarning;
     private bool _recoveryBrowseActive;
     private bool _hideRecoverySelection;
@@ -451,6 +484,31 @@ public class TeletextGridControl : Control
             return;
         }
 
+        if (CloneDragEnabled
+            && rightButtonPressed
+            && _hasSelection
+            && col >= _selectedColumn
+            && col < _selectedColumn + _selectionWidth
+            && row >= _selectedRow
+            && row < _selectedRow + _selectionHeight)
+        {
+            _isCloneDragging = true;
+            _cloneSourceColumn = _selectedColumn;
+            _cloneSourceRow = _selectedRow;
+            _cloneWidth = Math.Min(_selectionWidth, Columns - _cloneSourceColumn);
+            _cloneHeight = Math.Min(_selectionHeight, Rows - _cloneSourceRow);
+            _cloneGrabColumnOffset = col - _cloneSourceColumn;
+            _cloneGrabRowOffset = row - _cloneSourceRow;
+            _cloneTargetColumn = _cloneSourceColumn;
+            _cloneTargetRow = _cloneSourceRow;
+            CloseHoverInfoOverlay();
+            CaptureClonePreview();
+            e.Pointer.Capture(this);
+            e.Handled = true;
+            InvalidateVisual();
+            return;
+        }
+
         if (ShowDiacriticMarkers && Page is not null
             && e.GetCurrentPoint(this).Properties.IsLeftButtonPressed
             && Page.Grid[col, row].EnhancementDesignationCode >= 0)
@@ -495,6 +553,23 @@ public class TeletextGridControl : Control
             e.Handled = true;
             return;
         }
+        if (_isCloneDragging)
+        {
+            var dragPosition = e.GetPosition(this);
+            int pointerColumn = Math.Clamp((int)(dragPosition.X / CellWidth), 0, Columns - 1);
+            int pointerRow = Math.Clamp((int)(dragPosition.Y / CellHeight), 0, Rows - 1);
+            _cloneTargetColumn = Math.Clamp(
+                pointerColumn - _cloneGrabColumnOffset,
+                0,
+                Columns - _cloneWidth);
+            _cloneTargetRow = Math.Clamp(
+                pointerRow - _cloneGrabRowOffset,
+                0,
+                Rows - _cloneHeight);
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
         UpdateHoverInfoOverlay(e.GetPosition(this));
         if (!_isDragging) return;
         var pos = e.GetPosition(this);
@@ -532,6 +607,32 @@ public class TeletextGridControl : Control
                 _draggedDiacriticSourceRow,
                 _draggedDiacriticTargetColumn,
                 _draggedDiacriticTargetRow));
+            InvalidateVisual();
+            return;
+        }
+        if (_isCloneDragging)
+        {
+            _isCloneDragging = false;
+            e.Pointer.Capture(null);
+            _selectedColumn = _cloneTargetColumn;
+            _selectedRow = _cloneTargetRow;
+            _anchorCol = _selectedColumn;
+            _anchorRow = _selectedRow;
+            _dragCol = _selectedColumn + _cloneWidth - 1;
+            _dragRow = _selectedRow + _cloneHeight - 1;
+            _selectionWidth = _cloneWidth;
+            _selectionHeight = _cloneHeight;
+            _clonePreviewBitmap?.Dispose();
+            _clonePreviewBitmap = null;
+            e.Handled = true;
+            CloneBlockDropRequested?.Invoke(this, new CloneBlockDropRequestedEventArgs(
+                _cloneSourceColumn,
+                _cloneSourceRow,
+                _cloneWidth,
+                _cloneHeight,
+                _cloneTargetColumn,
+                _cloneTargetRow));
+            CellSelected?.Invoke(this, EventArgs.Empty);
             InvalidateVisual();
             return;
         }
@@ -663,6 +764,8 @@ public class TeletextGridControl : Control
             }
         }
 
+        DrawClonePreview(context);
+
         if (!_renderingScreenshot)
         {
             DrawControlCodeOverlays(context);
@@ -677,6 +780,48 @@ public class TeletextGridControl : Control
             DrawHoverInfoOverlay(context);
         }
 
+    }
+
+    private void CaptureClonePreview()
+    {
+        _clonePreviewBitmap?.Dispose();
+        _clonePreviewBitmap = null;
+
+        var bitmap = new RenderTargetBitmap(
+            new PixelSize((int)(Columns * CellWidth), (int)(Rows * CellHeight)),
+            new Vector(96, 96));
+        _renderingScreenshot = true;
+        try
+        {
+            bitmap.Render(this);
+            _clonePreviewBitmap = bitmap;
+        }
+        catch
+        {
+            bitmap.Dispose();
+        }
+        finally
+        {
+            _renderingScreenshot = false;
+        }
+    }
+
+    private void DrawClonePreview(DrawingContext context)
+    {
+        if (_renderingScreenshot || !_isCloneDragging || _clonePreviewBitmap is null)
+            return;
+
+        var sourceRect = new Rect(
+            _cloneSourceColumn * CellWidth,
+            _cloneSourceRow * CellHeight,
+            _cloneWidth * CellWidth,
+            _cloneHeight * CellHeight);
+        var targetRect = new Rect(
+            _cloneTargetColumn * CellWidth,
+            _cloneTargetRow * CellHeight,
+            _cloneWidth * CellWidth,
+            _cloneHeight * CellHeight);
+        context.DrawImage(_clonePreviewBitmap, sourceRect, targetRect);
     }
 
     private bool ShouldHideFlashingCell(Cell cell) =>
@@ -1004,8 +1149,8 @@ public class TeletextGridControl : Control
         if (!IsActive || !_hasSelection || _selectionWidth <= 0 || _selectionHeight <= 0) return;
         if (_recoveryBrowseActive && _hideRecoverySelection) return;
 
-        int minRow = Math.Min(_anchorRow, _dragRow);
-        int minCol = Math.Min(_anchorCol, _dragCol);
+        int minRow = _isCloneDragging ? _cloneTargetRow : Math.Min(_anchorRow, _dragRow);
+        int minCol = _isCloneDragging ? _cloneTargetColumn : Math.Min(_anchorCol, _dragCol);
         double drawX = minCol * CellWidth;
         double drawY = minRow * CellHeight;
         double drawW = _selectionWidth * CellWidth;
@@ -1014,10 +1159,14 @@ public class TeletextGridControl : Control
 
         IBrush fill = _readOnlyWarning
             ? WarningFillBrush
-            : _recoveryBrowseActive ? RecoverySelectionFillBrush : SelFillBrush;
+            : _isCloneDragging
+                ? CloneSelectionFillBrush
+                : _recoveryBrowseActive ? RecoverySelectionFillBrush : SelFillBrush;
         Pen border = _readOnlyWarning
             ? WarningBorderPen
-            : _recoveryBrowseActive ? RecoverySelectionBorderPen : SelBorderPen;
+            : _isCloneDragging
+                ? CloneSelectionBorderPen
+                : _recoveryBrowseActive ? RecoverySelectionBorderPen : SelBorderPen;
         context.FillRectangle(fill, rect);
         context.DrawRectangle(
             border,
@@ -1106,11 +1255,14 @@ public class TeletextGridControl : Control
         string displayText,
         TeletextColor foreground)
     {
-        bool rotateTifaxSixIntoNine = _useTifaxNineWorkaround && displayText == "9";
-        if (rotateTifaxSixIntoNine)
-            displayText = "6";
-
         double fontSize = CellHeight * 0.85;
+
+        if (_useTifaxNineWorkaround && displayText == "9")
+        {
+            DrawTifaxNine(context, origin, foreground, fontSize);
+            return;
+        }
+
         var text = new FormattedText(
             displayText,
             System.Globalization.CultureInfo.InvariantCulture,
@@ -1123,21 +1275,36 @@ public class TeletextGridControl : Control
         double offsetY = (CellHeight - text.Height) / 2.0 + 3;
         var textOrigin = new Point(origin.X + offsetX, origin.Y + offsetY);
 
-        if (rotateTifaxSixIntoNine)
-        {
-            // The subsequent 180-degree transform reverses translation direction,
-            // so +0.5 here moves the final rendered glyph 0.5 px left and up.
-            textOrigin = new Point(textOrigin.X + 0.5, textOrigin.Y + 0.5);
-            var cellCenter = new Point(
-                origin.X + CellWidth / 2.0,
-                origin.Y + CellHeight / 2.0);
-            using (context.PushTransform(Matrix.CreateRotation(Math.PI, cellCenter)))
-                context.DrawText(text, textOrigin);
-        }
-        else
-        {
+        context.DrawText(text, textOrigin);
+    }
+
+    private void DrawTifaxNine(
+        DrawingContext context,
+        Point origin,
+        TeletextColor foreground,
+        double fontSize)
+    {
+        var text = new FormattedText(
+            "6",
+            System.Globalization.CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight,
+            _gridTypeface,
+            fontSize,
+            ColorBrush(foreground));
+
+        double offsetX = (CellWidth - text.Width) / 2.0;
+        double offsetY = (CellHeight - text.Height) / 2.0 + 3;
+
+        // The subsequent 180-degree transform reverses translation direction,
+        // so +0.5 here moves the final rendered glyph 0.5 px left and up.
+        var textOrigin = new Point(
+            origin.X + offsetX + 0.5,
+            origin.Y + offsetY + 0.5);
+        var cellCenter = new Point(
+            origin.X + CellWidth / 2.0,
+            origin.Y + CellHeight / 2.0);
+        using (context.PushTransform(Matrix.CreateRotation(Math.PI, cellCenter)))
             context.DrawText(text, textOrigin);
-        }
     }
 
     private static void DrawTeletextDiacritical(

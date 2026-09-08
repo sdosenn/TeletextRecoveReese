@@ -283,6 +283,7 @@ public partial class MainWindow : Window
     private sealed class PageSnapshot
     {
         public byte[]?[] Rows { get; } = new byte[26][];
+        public Cell[] HeaderPrefix { get; } = new Cell[8];
         public List<(byte[] RawPacket, int PacketIndex)> EnhancementPackets { get; } = new();
         public byte[]? FastextPacket { get; set; }
         public int FastextPacketIndex { get; set; } = -1;
@@ -635,6 +636,7 @@ public partial class MainWindow : Window
     private readonly TextBox[] _squashFastextSubpageFields = new TextBox[6];
     private readonly TextBox[] _broadcastFastextPageFields = new TextBox[6];
     private readonly TextBox[] _broadcastFastextSubpageFields = new TextBox[6];
+    private bool _reeseEasterEggTriggered;
 
     private static readonly DataFormat<byte[]> TeletextClipboardFormat =
         DataFormat.CreateBytesApplicationFormat("com.teletextrecovereese.raw-byte-block.v2");
@@ -700,6 +702,8 @@ public partial class MainWindow : Window
         ApplyX26EnhancementsSidebarVisibility(resizeWindow: false);
         ApplyVideoBookmarkSidebarVisibility(resizeWindow: false);
         SquashGrid.CellSelected += OnSquashGridCellSelected;
+        SquashGrid.CloneDragEnabled = true;
+        SquashGrid.CloneBlockDropRequested += OnCloneBlockDropRequested;
         SquashGrid.DiacriticMoveRequested += OnDiacriticMoveRequested;
         SquashGrid.DiacriticDeleteRequested += OnDiacriticDeleteRequested;
         SquashGrid.EnhancementHoverChanged += OnEnhancementHoverChanged;
@@ -1920,6 +1924,8 @@ public partial class MainWindow : Window
                 }
 
                 CommitPageEdit(page);
+                if (await TryActivateReeseEasterEggAsync(page))
+                    activeGrid.InvalidateVisual();
                 if (isLevel15Diacritic)
                 {
                     UpdateEnhancementList(page);
@@ -1944,6 +1950,143 @@ public partial class MainWindow : Window
         if (y >= 25) return;
 
         activeGrid.MoveSelectionTo(x, y);
+    }
+
+    private async Task<bool> TryActivateReeseEasterEggAsync(TeletextPage page)
+    {
+        if (_reeseEasterEggTriggered
+            || !SquashPaneGrid.IsVisible
+            || !_squashFileOpen
+            || _broadcastFileOpen
+            || BroadcastPaneGrid.IsVisible
+            || !ReferenceEquals(SquashGrid.Page, page)
+            || !string.IsNullOrWhiteSpace(_squashFilePath)
+            || _squashPackets.Count != 0
+            || _squashStore.TotalInstanceCount != 1
+            || page.Magazine != 1
+            || page.PageNumber != 0x00
+            || page.SubPage != 0x0000
+            || page.EnhancementPackets.Count != 0
+            || page.FastextPacket is not null
+            || !PageContainsOnlyExactReeseInFirstRow(page))
+            return false;
+
+        Dictionary<int, byte[]> assetRows;
+        try
+        {
+            assetRows = ReadReeseAssetRows();
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (assetRows.Count < 25
+            || Enumerable.Range(0, 25).Any(row => !assetRows.ContainsKey(row)))
+            return false;
+
+        _reeseEasterEggTriggered = true;
+        EnsurePageHistory(page);
+        for (int row = 0; row < 25; row++)
+        {
+            byte[] assetPacket = assetRows[row];
+
+            byte[] targetPacket = page.RawRows[row] is { Length: 42 } existing
+                ? (byte[])existing.Clone()
+                : CreateBlankPacket(page, row);
+            int payloadOffset = row == 0 ? 10 : 2;
+            Array.Copy(assetPacket, payloadOffset, targetPacket, payloadOffset, 42 - payloadOffset);
+            PageAssembler.ApplyRow(page, row, targetPacket);
+        }
+
+        PageAssembler.ApplyLevel15Enhancements(page);
+
+        // Deliberate easter-egg-only display lie: X/0 cannot store arbitrary text
+        // in columns 0-7. Overlay the intended signature after decoding without
+        // changing the asset's raw packet or the normal decoder.
+        const string signature = "Reese, Kyle";
+        for (int column = 0; column < signature.Length; column++)
+        {
+            Cell cell = page.Grid[column, 0];
+            cell.Character = signature[column];
+            page.Grid[column, 0] = cell;
+        }
+
+        CommitPageEdit(page);
+        UpdateFastextToolbars();
+
+        try
+        {
+            await using Stream t800Stream = AssetLoader.Open(
+                new Uri("avares://TeletextRecoveReese/Assets/t800t42.t42"));
+            await LoadBroadcastStreamAsync(t800Stream, filePath: null);
+            if (BroadcastGrid.Page is { } t800Page)
+            {
+                const string t800Header = "T-8";
+                const int sixthHeaderField = 5;
+                for (int index = 0; index < t800Header.Length; index++)
+                {
+                    int column = sixthHeaderField + index;
+                    Cell cell = t800Page.Grid[column, 0];
+                    cell.Character = t800Header[index];
+                    t800Page.Grid[column, 0] = cell;
+                }
+                BroadcastGrid.InvalidateVisual();
+            }
+            BroadcastEditToolbar.IsVisible = false;
+            FitWindowToContent();
+        }
+        catch
+        {
+            // The left-side easter egg remains valid even if an installation is
+            // missing the optional companion broadcast resource.
+        }
+
+        return true;
+    }
+
+    private static bool PageContainsOnlyExactReeseInFirstRow(TeletextPage page)
+    {
+        var content = new StringBuilder(5);
+        for (int column = 0; column < 40; column++)
+        {
+            char value = page.Grid[column, 0].Character;
+            if (value == ' ' || value == '\0')
+                continue;
+            if (content.Length == 5)
+                return false;
+            content.Append(value);
+        }
+
+        // No hidden content may exist below the first displayed row.
+        for (int row = 1; row < 25; row++)
+        {
+            if (page.RawRows[row] is not { Length: 42 } packet)
+                return false;
+            for (int offset = 2; offset < 42; offset++)
+            {
+                byte value = (byte)(packet[offset] & 0x7F);
+                if (value != 0x20)
+                    return false;
+            }
+        }
+
+        return content.ToString().Equals("Reese", StringComparison.Ordinal);
+    }
+
+    private static Dictionary<int, byte[]> ReadReeseAssetRows()
+    {
+        var rows = new Dictionary<int, byte[]>();
+        using Stream stream = AssetLoader.Open(
+            new Uri("avares://TeletextRecoveReese/Assets/kyle_reese.t42"));
+        while (stream.Position + 42 <= stream.Length)
+        {
+            var packet = new byte[42];
+            stream.ReadExactly(packet);
+            if (TryDecodePacketAddress(packet, out _, out int row) && row <= 24)
+                rows[row] = packet;
+        }
+        return rows;
     }
 
     private bool TrySetLevel15DiacriticReplacingCorruptPackets(
@@ -2425,6 +2568,23 @@ public partial class MainWindow : Window
         SquashGrid.ClearSelection();
         UpdateVideoBookmarkUi();
         UpdateG0SubsetMenuChecks();
+    }
+
+    private void OnCloneBlockDropRequested(object? sender, CloneBlockDropRequestedEventArgs e)
+    {
+        if (sender != SquashGrid || SquashGrid.Page is not { } page) return;
+
+        byte[] block = CreateByteBlock(
+            page,
+            e.SourceColumn,
+            e.SourceRow,
+            e.Width,
+            e.Height);
+        PasteByteBlockIntoSquash(
+            block,
+            e.TargetColumn,
+            e.TargetRow,
+            updateSquashSelection: true);
     }
 
     private async void OnDiacriticMoveRequested(object? sender, DiacriticMoveRequestedEventArgs e)
@@ -6573,6 +6733,7 @@ public partial class MainWindow : Window
 
     private async Task LoadBroadcastStreamAsync(Stream stream, string? filePath = null)
     {
+        BroadcastEditToolbar.IsVisible = true;
         BeginLoading(broadcast: true, filePath);
         try
         {
@@ -6672,6 +6833,7 @@ public partial class MainWindow : Window
         IReadOnlyList<byte[]> packets,
         string? filePath)
     {
+        BroadcastEditToolbar.IsVisible = true;
         BeginLoading(broadcast: true, filePath);
         try
         {
@@ -7201,6 +7363,8 @@ public partial class MainWindow : Window
         var snapshot = new PageSnapshot();
         for (int row = 0; row < 26; row++)
             snapshot.Rows[row] = page.RawRows[row] is { } raw ? (byte[])raw.Clone() : null;
+        for (int column = 0; column < 8; column++)
+            snapshot.HeaderPrefix[column] = page.Grid[column, 0];
         snapshot.FastextPacket = page.FastextPacket is { } fastext
             ? (byte[])fastext.Clone()
             : null;
@@ -7224,6 +7388,11 @@ public partial class MainWindow : Window
             {
                 return false;
             }
+        }
+        for (int column = 0; column < 8; column++)
+        {
+            if (!left.HeaderPrefix[column].Equals(right.HeaderPrefix[column]))
+                return false;
         }
         if (left.FastextPacketIndex != right.FastextPacketIndex) return false;
         if (left.FastextPacket is null || right.FastextPacket is null)
@@ -7317,6 +7486,8 @@ public partial class MainWindow : Window
             page.FastextPacketIndex = -1;
             page.FastextLinks.Clear();
         }
+        for (int column = 0; column < 8; column++)
+            page.Grid[column, 0] = snapshot.HeaderPrefix[column];
         UpdateFastextToolbars();
     }
 
