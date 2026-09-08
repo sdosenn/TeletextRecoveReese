@@ -20,6 +20,7 @@ using Avalonia.Media.Fonts;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using TeletextRecoveReese.Core;
 
@@ -220,9 +221,12 @@ public partial class MainWindow : Window
     private sealed record TeletextStreamIdentity(
         string? ServiceName,
         string? Date,
-        string? FullDate)
+        string? FullDate,
+        string? BroadcastStart,
+        string? BroadcastEnd,
+        string? CaptureCrc)
     {
-        public static TeletextStreamIdentity Empty { get; } = new(null, null, null);
+        public static TeletextStreamIdentity Empty { get; } = new(null, null, null, null, null, null);
     }
 
     // Guards against SelectionChanged handlers firing (and re-triggering each other)
@@ -389,6 +393,9 @@ public partial class MainWindow : Window
         public bool? RestorePreviousSession { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
         public bool? RecordRawVbiToDisk { get; set; }
+        public string? DateDisplayOrder { get; set; }
+        public string? CaptureNamingFormat { get; set; }
+        public string? Theme { get; set; }
     }
 
     private sealed class CaptureCardPreset
@@ -601,6 +608,9 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeCreateSquashedStreamMenuItem;
     private NativeMenuItem? _nativeOpenLiveVbiCaptureMenuItem;
     private NativeMenuItem? _nativeSaveCapturedStreamMenuItem;
+    private NativeMenuItem? _nativeSaveMenuItem;
+    private NativeMenuItem? _nativeSaveAsMenuItem;
+    private NativeMenuItem? _nativeBatchExportScreenshotsMenuItem;
     private NativeMenuItem? _nativeCloseSquashedPageMenuItem;
     private NativeMenuItem? _nativeCloseFullBroadcastMenuItem;
     private NativeMenuItem? _nativeDisableLiveVbiVideoPreviewMenuItem;
@@ -637,9 +647,17 @@ public partial class MainWindow : Window
     private readonly TextBox[] _broadcastFastextPageFields = new TextBox[6];
     private readonly TextBox[] _broadcastFastextSubpageFields = new TextBox[6];
     private bool _reeseEasterEggTriggered;
+    private DateOnly? _lastLiveCaptureDate;
 
     private static readonly DataFormat<byte[]> TeletextClipboardFormat =
         DataFormat.CreateBytesApplicationFormat("com.teletextrecovereese.raw-byte-block.v2");
+    private static readonly uint[] Crc32Table = Enumerable.Range(0, 256).Select(index =>
+    {
+        uint value = (uint)index;
+        for (int bit = 0; bit < 8; bit++)
+            value = (value >> 1) ^ ((value & 1) == 0 ? 0u : 0xEDB88320u);
+        return value;
+    }).ToArray();
 
     public MainWindow() : this(false, false)
     {
@@ -670,6 +688,7 @@ public partial class MainWindow : Window
         if (_nativeExportVideoMenuItem is not null)
             _nativeExportVideoMenuItem.IsEnabled = _ffmpegPath is not null;
         LoadSessionState();
+        ApplyThemePreference(_sessionState.Theme ?? "Dark");
         _showVideoBookmarks = _sessionState.ShowVideoBookmarks ?? true;
         RebuildOpenRecentMenus();
         ApplyToggleSessionState();
@@ -1005,6 +1024,148 @@ public partial class MainWindow : Window
 
     private async void OnCaptureCardPresetsClicked(object? sender, RoutedEventArgs e) =>
         await ShowCaptureCardPresetsAsync();
+
+    private async void OnPreferencesClicked(object? sender, RoutedEventArgs e) =>
+        await ShowPreferencesAsync();
+
+    private async Task ShowPreferencesAsync()
+    {
+        string[] dateOrders = ["Day.Month.Year", "Month.Day.Year", "Year-Month-Day"];
+        int currentOrder = Array.IndexOf(dateOrders, _sessionState.DateDisplayOrder ?? "Day.Month.Year");
+        var dateOrder = new ComboBox
+        {
+            Width = 220,
+            ItemsSource = dateOrders,
+            SelectedIndex = Math.Max(currentOrder, 0),
+        };
+        string[] namingFormats =
+        [
+            "Compact (channel-date)",
+            "Full (channel-date-start-end-CRC32)",
+        ];
+        var namingFormat = new ComboBox
+        {
+            Width = 330,
+            ItemsSource = namingFormats,
+            SelectedIndex = IsFullCaptureNamingFormat() ? 1 : 0,
+        };
+        var theme = new ComboBox
+        {
+            Width = 220,
+            ItemsSource = new[] { "Dark", "Light", "Automatic (system)" },
+            SelectedIndex = string.Equals(_sessionState.Theme, "Light", StringComparison.Ordinal) ? 1
+                : string.Equals(_sessionState.Theme, "Automatic", StringComparison.Ordinal) ? 2
+                : 0,
+        };
+        var preview = new TextBlock
+        {
+            FontSize = 16,
+            FontWeight = FontWeight.SemiBold,
+            Foreground = Brushes.LightGray,
+        };
+        void UpdatePreview()
+        {
+            string order = dateOrder.SelectedItem as string ?? dateOrders[0];
+            string date = FormatDate(new DateOnly(2026, 9, 8), order);
+            preview.Text = namingFormat.SelectedIndex == 1
+                ? $"Preview: CEEFAX-{date}-1803-2014-AB12CD34.t42"
+                : $"Preview: CEEFAX-{date}.t42";
+        }
+        dateOrder.SelectionChanged += (_, _) => UpdatePreview();
+        namingFormat.SelectionChanged += (_, _) => UpdatePreview();
+        UpdatePreview();
+
+        var cancelButton = new Button { Content = "Cancel", Width = 90 };
+        var saveButton = new Button { Content = "Save", Width = 90, IsDefault = true };
+        var dialog = new Window
+        {
+            Title = "Preferences",
+            Width = 560,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(22),
+                Spacing = 10,
+                Children =
+                {
+                    new TextBlock { Text = "Application theme", FontWeight = FontWeight.SemiBold },
+                    theme,
+                    new TextBlock { Text = "Date display", FontWeight = FontWeight.SemiBold },
+                    dateOrder,
+                    new TextBlock { Text = "Capture file naming", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 6, 0, 0) },
+                    namingFormat,
+                    preview,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Margin = new Thickness(0, 10, 0, 0),
+                        Children = { cancelButton, saveButton },
+                    },
+                },
+            },
+        };
+        cancelButton.Click += (_, _) => dialog.Close();
+        saveButton.Click += (_, _) =>
+        {
+            _sessionState.DateDisplayOrder = dateOrder.SelectedItem as string ?? dateOrders[0];
+            _sessionState.CaptureNamingFormat = namingFormat.SelectedIndex == 1
+                ? "Full"
+                : "Compact";
+            _sessionState.Theme = theme.SelectedIndex switch
+            {
+                1 => "Light",
+                2 => "Automatic",
+                _ => "Dark",
+            };
+            ApplyThemePreference(_sessionState.Theme);
+            SaveSessionState();
+
+            if (_broadcastPackets.Count > 0)
+                _broadcastStreamIdentity = AnalyzeTeletextStreamIdentity(_broadcastPackets);
+            if (_squashPackets.Count > 0)
+                _squashStreamIdentity = AnalyzeTeletextStreamIdentity(_squashPackets);
+            if (_lastLiveCaptureDate is { } liveDate)
+                SetLiveCaptureDate(liveDate);
+            UpdateWindowAndPaneTitles();
+            dialog.Close();
+        };
+        await dialog.ShowDialog(this);
+    }
+
+    private string FormatConfiguredDate(DateOnly date) => FormatDate(
+        date,
+        _sessionState.DateDisplayOrder ?? "Day.Month.Year");
+
+    private static string FormatDate(DateOnly date, string order)
+    {
+        string pattern = order switch
+        {
+            "Month.Day.Year" => "MM.dd.yyyy",
+            "Year-Month-Day" => "yyyy-MM-dd",
+            _ => "dd.MM.yyyy",
+        };
+        return date.ToString(pattern, CultureInfo.InvariantCulture);
+    }
+
+    private bool IsFullCaptureNamingFormat() =>
+        string.Equals(_sessionState.CaptureNamingFormat, "Full", StringComparison.Ordinal)
+        // Retain the user's existing selection from the previous wording.
+        || string.Equals(_sessionState.CaptureNamingFormat, "ArchivalCompact", StringComparison.Ordinal);
+
+    private static void ApplyThemePreference(string theme)
+    {
+        if (Application.Current is not { } application) return;
+        application.RequestedThemeVariant = theme switch
+        {
+            "Light" => ThemeVariant.Light,
+            "Automatic" => ThemeVariant.Default,
+            _ => ThemeVariant.Dark,
+        };
+    }
 
     private async Task ShowCaptureCardPresetsAsync()
     {
@@ -3171,6 +3332,9 @@ public partial class MainWindow : Window
     private void OnNativeChooseFontClicked(object? sender, EventArgs e) =>
         OnChooseFontClicked(sender, new RoutedEventArgs());
 
+    private void OnNativePreferencesClicked(object? sender, EventArgs e) =>
+        OnPreferencesClicked(sender, new RoutedEventArgs());
+
     private void OnDisableLiveVbiVideoPreviewClicked(object? sender, RoutedEventArgs e) =>
         SetDisableLiveVbiVideoPreview(DisableLiveVbiVideoPreviewMenuItem.IsChecked, saveSession: true);
 
@@ -3481,6 +3645,12 @@ public partial class MainWindow : Window
             _nativeSaveCapturedStreamMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
                 .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Save Captured Stream…", StringComparison.Ordinal));
+            _nativeSaveMenuItem = fileMenu.Items.OfType<NativeMenuItem>()
+                .FirstOrDefault(item => item.Header?.ToString() == "Save");
+            _nativeSaveAsMenuItem = fileMenu.Items.OfType<NativeMenuItem>()
+                .FirstOrDefault(item => item.Header?.ToString() == "Save As…");
+            _nativeBatchExportScreenshotsMenuItem = fileMenu.Items.OfType<NativeMenuItem>()
+                .FirstOrDefault(item => item.Header?.ToString() == "Batch Export Screenshots…");
             _nativeCloseSquashedPageMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
                 .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Close Squashed Page", StringComparison.Ordinal));
@@ -5412,6 +5582,8 @@ public partial class MainWindow : Window
                 && (videoInterfacePath is not null || input is WindowsDirectShowVbiCaptureStream))
                 StartVideoPreviewPipe();
 
+            ResetLiveCaptureDateUi();
+
             PageAssembler? liveAssembler = null;
             int livePacketIndex = 0;
             TeletextPage? lockedLivePage = null;
@@ -5493,14 +5665,60 @@ public partial class MainWindow : Window
                 BroadcastGrid.IsActive = false;
                 BroadcastGrid.ClearSelection();
                 SquashGrid.IsActive = false;
+                LiveCaptureDateText.IsVisible = true;
+                UpdateBroadcastVersionButtons();
                 UpdateG0SubsetMenuChecks();
                 FitWindowToContent();
                 liveAssembler = new PageAssembler(_store, decodeEnhancements: false);
             }
+            DateOnly? lastLiveDatePacket = null;
+            string? lastLiveHeaderDate = null;
+            var liveHeaderCharacters = new char[32];
+            void UpdateLiveCaptureDateFromMatchingPackets()
+            {
+                if (lastLiveDatePacket is not { } packetDate
+                    || !TryParseHeaderDayMonth(lastLiveHeaderDate, out int day, out int month)
+                    || packetDate.Day != day
+                    || packetDate.Month != month)
+                    return;
+
+                // The header supplies the broadcast's DD.MM, while 8/30 Format 1
+                // supplies the year. Require an exact day/month match so an
+                // unrelated but plausible decoded date never changes the display.
+                SetLiveCaptureDate(new DateOnly(packetDate.Year, month, day));
+            }
             var packetReporter = new ToggleablePacketProgress(
-                showLiveCheckBox.IsChecked == true,
+                true,
                 packets =>
                 {
+                    foreach (byte[] packet in packets)
+                    {
+                        if (BroadcastServiceData.TryDecodeFormat1Date(packet, out DateOnly date))
+                        {
+                            lastLiveDatePacket = date;
+                            UpdateLiveCaptureDateFromMatchingPackets();
+                        }
+
+                        if (TryDecodePacketAddress(packet, out _, out int row)
+                            && row == 0)
+                        {
+                            Span<char> header = liveHeaderCharacters;
+                            for (int index = 0; index < header.Length; index++)
+                            {
+                                char value = (char)(packet[10 + index] & 0x7F);
+                                header[index] = value <= 0x1F
+                                    ? ' '
+                                    : value <= '~' ? value : '\0';
+                            }
+                            if (TryReadHeaderDate(header, out string headerDate))
+                            {
+                                lastLiveHeaderDate = headerDate;
+                                UpdateLiveCaptureDateFromMatchingPackets();
+                            }
+                        }
+                    }
+
+                    if (showLiveCheckBox.IsChecked != true) return;
                     if (liveAssembler is null) InitializeLivePreview();
                     TeletextPage? latestPage = null;
                     TeletextPage? latestHeaderPage = null;
@@ -5567,17 +5785,16 @@ public partial class MainWindow : Window
                     UpdateFastextToolbars();
                     BroadcastGrid.InvalidateVisual();
                 });
-            if (packetReporter.Enabled) InitializeLivePreview();
+            if (showLiveCheckBox.IsChecked == true) InitializeLivePreview();
             showLiveCheckBox.IsCheckedChanged += (_, _) =>
             {
                 bool enabled = showLiveCheckBox.IsChecked == true;
-                if (enabled && !packetReporter.Enabled)
+                if (enabled && liveAssembler is null)
                 {
                     liveAssembler = null;
                     livePacketIndex = 0;
                     InitializeLivePreview();
                 }
-                packetReporter.Enabled = enabled;
                 livePageLockTextBox.IsEnabled = enabled;
                 _sessionState.ShowLiveDeconvolvedPage = enabled;
                 SaveSessionState();
@@ -5651,6 +5868,9 @@ public partial class MainWindow : Window
             _store.Clear();
             _broadcastPackets.Clear();
             ClearBroadcastPane();
+            LiveCaptureDateText.IsVisible = false;
+            _lastLiveCaptureDate = null;
+            UpdateBroadcastVersionButtons();
             BroadcastInfoText.Text = "Full broadcast";
             BroadcastFilePathText.Text = FormatFileFooter(null, 0);
             if (_squashFileOpen)
@@ -7074,12 +7294,14 @@ public partial class MainWindow : Window
             ? $"Pages: {pagesRead}"
             : $"{filePath} — Pages: {pagesRead}";
 
-    private static TeletextStreamIdentity AnalyzeTeletextStreamIdentity(
+    private TeletextStreamIdentity AnalyzeTeletextStreamIdentity(
         IReadOnlyList<byte[]> packets)
     {
         var serviceCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var dateCounts = new Dictionary<string, int>(StringComparer.Ordinal);
         var fullDateCounts = new Dictionary<DateOnly, int>();
+        string? broadcastStart = null;
+        string? broadcastEnd = null;
         Span<char> header = stackalloc char[32];
 
         foreach (byte[] packet in packets)
@@ -7102,6 +7324,11 @@ public partial class MainWindow : Window
 
             if (!TryReadHeaderDate(header, out string date)) continue;
             dateCounts[date] = dateCounts.GetValueOrDefault(date) + 1;
+            if (TryReadHeaderTime(header, out string time))
+            {
+                broadcastStart ??= time;
+                broadcastEnd = time;
+            }
 
             string serviceName = string.Join(' ', new string(header.Slice(4, 12))
                 .Split(' ', StringSplitOptions.RemoveEmptyEntries));
@@ -7124,7 +7351,10 @@ public partial class MainWindow : Window
         return new TeletextStreamIdentity(
             MostCommon(serviceCounts),
             headerDate,
-            displayedFullDate);
+            displayedFullDate,
+            broadcastStart,
+            broadcastEnd,
+            ComputeCaptureCrc32(packets));
     }
 
     private static DateOnly? SelectFullDate(
@@ -7160,10 +7390,10 @@ public partial class MainWindow : Window
             .FirstOrDefault();
     }
 
-    private static string BuildDisplayedFullDate(DateOnly decodedDate, string? headerDate)
+    private string BuildDisplayedFullDate(DateOnly decodedDate, string? headerDate)
     {
         if (!TryParseHeaderDayMonth(headerDate, out int day, out int month))
-            return decodedDate.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
+            return FormatConfiguredDate(decodedDate);
 
         DateOnly closest = decodedDate;
         int closestDistance = int.MaxValue;
@@ -7183,7 +7413,7 @@ public partial class MainWindow : Window
                 closestDistance = distance;
             }
         }
-        return closest.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
+        return FormatConfiguredDate(closest);
     }
 
     private static bool TryParseHeaderDayMonth(string? date, out int day, out int month)
@@ -7213,6 +7443,40 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private static bool TryReadHeaderTime(ReadOnlySpan<char> header, out string time)
+    {
+        time = string.Empty;
+        if (header.Length < 32
+            || header[24] is < '0' or > '9'
+            || header[25] is < '0' or > '9'
+            || header[26] != ':'
+            || header[27] is < '0' or > '9'
+            || header[28] is < '0' or > '9'
+            || header[29] != ':'
+            || header[30] is < '0' or > '9'
+            || header[31] is < '0' or > '9')
+            return false;
+
+        int hour = (header[24] - '0') * 10 + header[25] - '0';
+        int minute = (header[27] - '0') * 10 + header[28] - '0';
+        int second = (header[30] - '0') * 10 + header[31] - '0';
+        if (hour > 23 || minute > 59 || second > 59) return false;
+
+        time = $"{hour:D2}{minute:D2}{second:D2}";
+        return true;
+    }
+
+    private static string ComputeCaptureCrc32(IReadOnlyList<byte[]> packets)
+    {
+        uint crc = 0xFFFFFFFF;
+        foreach (byte[] packet in packets)
+        {
+            foreach (byte value in packet)
+                crc = Crc32Table[(crc ^ value) & 0xFF] ^ (crc >> 8);
+        }
+        return (~crc).ToString("X8", CultureInfo.InvariantCulture);
+    }
+
     private static bool IsPlausibleServiceName(string serviceName)
     {
         if (serviceName.Length < 2 || serviceName.Count(character =>
@@ -7226,14 +7490,14 @@ public partial class MainWindow : Window
                 or ' ' or '-' or '&' or '+' or '.' or '/');
     }
 
-    private static string SuggestedTeletextFileName(
+    private string SuggestedTeletextFileName(
         TeletextStreamIdentity identity,
         string fallback,
         string? prefix = null,
         string extension = "t42")
     {
         if (string.IsNullOrWhiteSpace(identity.ServiceName)
-            || string.IsNullOrWhiteSpace(identity.Date))
+            || string.IsNullOrWhiteSpace(identity.FullDate ?? identity.Date))
             return fallback;
 
         const string invalidFileNameCharacters = "<>:\"/\\|?*";
@@ -7246,7 +7510,20 @@ public partial class MainWindow : Window
         string safePrefix = string.IsNullOrWhiteSpace(prefix)
             ? string.Empty
             : $"{prefix.Trim()}-";
-        return $"{safePrefix}{safeServiceName}-{identity.Date}.{extension.TrimStart('.')}";
+        string date = identity.FullDate ?? identity.Date!;
+        if (IsFullCaptureNamingFormat())
+        {
+            string start = identity.BroadcastStart is { Length: >= 4 } startTime
+                ? startTime[..4]
+                : "unknown";
+            string end = identity.BroadcastEnd is { Length: >= 4 } endTime
+                ? endTime[..4]
+                : "unknown";
+            string crc = identity.CaptureCrc ?? "unknown";
+            return $"{safePrefix}{safeServiceName}-{date}-{start}-{end}" +
+                   $"-{crc}.{extension.TrimStart('.')}";
+        }
+        return $"{safePrefix}{safeServiceName}-{date}.{extension.TrimStart('.')}";
     }
 
     private void UpdateSquashFileFooter() =>
@@ -8374,6 +8651,18 @@ public partial class MainWindow : Window
         EnhancementClipboardButton.Content = "📋";
     }
 
+    private void ResetLiveCaptureDateUi()
+    {
+        _lastLiveCaptureDate = null;
+        LiveCaptureDateText.Text = "Last found date packet: --.--.----";
+    }
+
+    private void SetLiveCaptureDate(DateOnly date)
+    {
+        _lastLiveCaptureDate = date;
+        LiveCaptureDateText.Text = $"Last found date packet: {FormatConfiguredDate(date)}";
+    }
+
     private void AddEnhancementListEntry(
         string text,
         int designationCode = -1,
@@ -8669,6 +8958,7 @@ public partial class MainWindow : Window
 
         SquashPaneGrid.IsVisible = squashVisible;
         TransferPaneGrid.IsVisible = transferVisible;
+        UpdateSquashOnlyFileActionsVisibility(squashVisible);
         UpdateWindowAndPaneTitles();
         ApplyX26EnhancementsSidebarVisibility(resizeWindow: false);
         ApplyVideoBookmarkSidebarVisibility(resizeWindow: false);
@@ -8681,6 +8971,19 @@ public partial class MainWindow : Window
             SquashGrid.ClearSelection();
             BroadcastGrid.IsActive = true;
         }
+    }
+
+    private void UpdateSquashOnlyFileActionsVisibility(bool squashVisible)
+    {
+        SaveMenuItem.IsEnabled = squashVisible;
+        SaveAsMenuItem.IsEnabled = squashVisible;
+        BatchExportScreenshotsMenuItem.IsEnabled = squashVisible;
+        if (_nativeSaveMenuItem is not null)
+            _nativeSaveMenuItem.IsEnabled = squashVisible;
+        if (_nativeSaveAsMenuItem is not null)
+            _nativeSaveAsMenuItem.IsEnabled = squashVisible;
+        if (_nativeBatchExportScreenshotsMenuItem is not null)
+            _nativeBatchExportScreenshotsMenuItem.IsEnabled = squashVisible;
     }
 
     // ---- Full broadcast stream: Magazine -> Page -> Subpage -> Version cascade --

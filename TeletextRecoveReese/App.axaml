@@ -11,4 +11,32 @@
     <Application.Styles>
         <FluentTheme />
     </Application.Styles>
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="AppBackgroundBrush" Color="#1E1E1E" />
+                    <SolidColorBrush x:Key="ToolbarBackgroundBrush" Color="#2D2D30" />
+                    <SolidColorBrush x:Key="PanelBackgroundBrush" Color="#252526" />
+                    <SolidColorBrush x:Key="InsetBackgroundBrush" Color="#1E1E1E" />
+                    <SolidColorBrush x:Key="PanelBorderBrush" Color="#3F3F46" />
+                    <SolidColorBrush x:Key="PrimaryTextBrush" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="SecondaryTextBrush" Color="#E0E0E0" />
+                    <SolidColorBrush x:Key="MutedTextBrush" Color="#AFAFAF" />
+                    <SolidColorBrush x:Key="CrcBackgroundBrush" Color="#505054" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="AppBackgroundBrush" Color="#F4F4F6" />
+                    <SolidColorBrush x:Key="ToolbarBackgroundBrush" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="PanelBackgroundBrush" Color="#F8F8FA" />
+                    <SolidColorBrush x:Key="InsetBackgroundBrush" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="PanelBorderBrush" Color="#B8B8C0" />
+                    <SolidColorBrush x:Key="PrimaryTextBrush" Color="#202024" />
+                    <SolidColorBrush x:Key="SecondaryTextBrush" Color="#404046" />
+                    <SolidColorBrush x:Key="MutedTextBrush" Color="#62626A" />
+                    <SolidColorBrush x:Key="CrcBackgroundBrush" Color="#D8D8DE" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
 </Application>
