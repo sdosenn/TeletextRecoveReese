@@ -4457,7 +4457,9 @@ public partial class MainWindow : Window
                 selectedDevice = device;
                 selectedVideoInterface = await Task.Run(() => FindRelatedLinuxVideoInterface(device.BusInfo));
                 selectedAlsaDevice = selectedVideoInterface is not null
-                    ? await Task.Run(() => LinuxVbiCaptureStream.FindRelatedLinuxAlsaDevice(device.BusInfo))
+                    ? await Task.Run(() =>
+                        LinuxVbiCaptureStream.FindRelatedPulseAudioSource(device.BusInfo)
+                        ?? LinuxVbiCaptureStream.FindRelatedLinuxAlsaDevice(device.BusInfo))
                     : null;
                 bool canRecordVideo = selectedVideoInterface is not null
                     && selectedAlsaDevice is not null
@@ -5726,6 +5728,8 @@ public partial class MainWindow : Window
                     RedirectStandardError = true,
                     CreateNoWindow = true,
                 };
+                string audioFormat = alsaDevice.StartsWith("hw:", StringComparison.Ordinal)
+                    ? "alsa" : "pulse";
                 foreach (string arg in new[]
                 {
                     "-hide_banner", "-loglevel", "warning", "-nostdin",
@@ -5733,7 +5737,7 @@ public partial class MainWindow : Window
                     "-video_size", "720x576",
                     "-input_format", "yuyv422",
                     "-i", videoInterfacePath,
-                    "-f", "alsa",
+                    "-f", audioFormat,
                     "-i", alsaDevice,
                     "-c:v", "ffv1",
                     "-c:a", "pcm_s16le",

@@ -433,6 +433,55 @@ public sealed class LinuxVbiCaptureStream : LiveVbiCaptureStream
         return null;
     }
 
+    /// <summary>
+    /// Finds the PipeWire/PulseAudio capture source for the card identified by
+    /// <paramref name="busInfo"/> by querying <c>pactl list short sources</c>.
+    /// Returns a PulseAudio source name such as
+    /// "alsa_input.pci-0000_07_00.1.capture.1.0", or null if not found or pactl
+    /// is unavailable.
+    /// </summary>
+    public static string? FindRelatedPulseAudioSource(string busInfo)
+    {
+        if (!OperatingSystem.IsLinux() || !busInfo.StartsWith("PCI:", StringComparison.OrdinalIgnoreCase))
+            return null;
+        try
+        {
+            // busInfo = "PCI:0000:07:00.0" → strip function → "0000:07:00" → "0000_07_00"
+            string pciAddr = busInfo[4..];
+            int dotIndex = pciAddr.LastIndexOf('.');
+            if (dotIndex < 0) return null;
+            string pciBase = pciAddr[..dotIndex].Replace(":", "_");
+
+            using var proc = Process.Start(new ProcessStartInfo("pactl", "list short sources")
+            {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+            if (proc is null) return null;
+            string output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit(3000);
+
+            // Each line: "ID\tname\tdriver\tformat\tstate"
+            // Prefer the analog sub-device (capture.1.x) over digital (capture.0.x).
+            string? fallback = null;
+            foreach (string line in output.Split('\n'))
+            {
+                string[] parts = line.Split('\t');
+                if (parts.Length < 2) continue;
+                string name = parts[1].Trim();
+                if (!name.StartsWith($"alsa_input.pci-{pciBase}.", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (name.Contains(".capture.1.", StringComparison.OrdinalIgnoreCase))
+                    return name;
+                fallback ??= name;
+            }
+            return fallback;
+        }
+        catch { }
+        return null;
+    }
+
     [DllImport("libc", SetLastError = true)]
     private static extern int ioctl(int fd, ulong request, IntPtr argument);
 }
