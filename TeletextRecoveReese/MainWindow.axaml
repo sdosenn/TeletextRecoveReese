@@ -32,7 +32,7 @@
                     <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Export Screenshot…" Click="OnNativeExportScreenshotClicked" />
                     <NativeMenuItem Header="Batch Export Screenshots…" Click="OnNativeBatchExportScreenshotsClicked" />
-                    <NativeMenuItem Header="Export Video…" IsEnabled="False" Click="OnNativeExportVideoClicked" />
+                    <NativeMenuItem Header="Export Video…" Click="OnNativeExportVideoClicked" />
                     <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Close Window" Gesture="Meta+W" Click="OnNativeExitClicked" />
                 </NativeMenu>
@@ -112,6 +112,9 @@
                     <NativeMenuItem Header="Restore previous session on startup"
                                     ToggleType="CheckBox"
                                     Click="OnNativeRestorePreviousSessionClicked" />
+                    <NativeMenuItem Header="Link pane navigation"
+                                    ToggleType="CheckBox"
+                                    Click="OnNativeLinkPaneNavigationClicked" />
                 </NativeMenu>
             </NativeMenuItem>
         </NativeMenu>
@@ -138,7 +141,7 @@
                 <Separator />
                 <MenuItem Header="Export _Screenshot..." Click="OnExportScreenshotClicked" />
                 <MenuItem x:Name="BatchExportScreenshotsMenuItem" Header="_Batch Export Screenshots..." Click="OnBatchExportScreenshotsClicked" />
-                <MenuItem x:Name="ExportVideoMenuItem" Header="Export _Video..." IsEnabled="False" Click="OnExportVideoClicked" />
+                <MenuItem x:Name="ExportVideoMenuItem" Header="Export _Video..." Click="OnExportVideoClicked" />
                 <Separator />
                 <MenuItem Header="E_xit" Click="OnExitClicked" />
             </MenuItem>
@@ -221,6 +224,10 @@
                           Header="Restore previous session on startup"
                           ToggleType="CheckBox"
                           Click="OnRestorePreviousSessionClicked" />
+                <MenuItem x:Name="LinkPaneNavigationMenuItem"
+                          Header="Link pane navigation"
+                          ToggleType="CheckBox"
+                          Click="OnLinkPaneNavigationClicked" />
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="_About" Click="AboutButton_Click" />
@@ -235,13 +242,30 @@
                 <!-- ==================== LEFT SIDE (Recovered squash) ==================== -->
                 <Grid x:Name="SquashPaneGrid" Grid.Column="0" RowDefinitions="Auto, Auto, Auto, Auto, Auto" RowSpacing="4" VerticalAlignment="Top">
                     <StackPanel x:Name="SquashHeaderStack" Grid.Row="0" Spacing="6">
-                        <Grid ColumnDefinitions="*,Auto">
-                            <TextBlock x:Name="SquashInfoText" Text="Squashed page" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="16" FontWeight="Bold" Margin="2,0" VerticalAlignment="Center"/>
+                        <Grid x:Name="SquashHeaderGrid"
+                              ColumnDefinitions="*,Auto,Auto"
+                              Width="650"
+                              HorizontalAlignment="Right">
+                            <TextBlock x:Name="SquashInfoText"
+                                       Text="Squashed page"
+                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                       FontSize="16"
+                                       FontWeight="Bold"
+                                       Margin="2,0,0,0"
+                                       VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="SquashInfoDateText"
+                                       Grid.Column="1"
+                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                       FontSize="16"
+                                       FontWeight="Bold"
+                                       VerticalAlignment="Center"/>
                             <StackPanel x:Name="SquashHeaderNavigation"
-                                        Grid.Column="1"
+                                        Grid.Column="2"
                                         Orientation="Horizontal"
                                         HorizontalAlignment="Right"
                                         VerticalAlignment="Center"
+                                        Margin="8,0,0,0"
                                         Spacing="4"
                                         IsVisible="False">
                                 <TextBlock x:Name="SquashHeaderAddressText" Text="P: 100, S:0000" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="16" Margin="0,0,8,0"/>
@@ -438,7 +462,10 @@
                             </Grid>
                         </Border>
                     </Grid>
-                    <Grid Grid.Row="4"
+                    <Grid x:Name="SquashFooterGrid"
+                          Grid.Row="4"
+                          Width="650"
+                          HorizontalAlignment="Right"
                           ColumnDefinitions="Auto,*"
                           ColumnSpacing="12">
                         <TextBlock x:Name="SquashFilePathText"
@@ -446,10 +473,10 @@
                                    Foreground="{DynamicResource MutedTextBrush}"
                                    FontSize="11"
                                    TextTrimming="CharacterEllipsis"
-                                   MaxWidth="520"
+                                   MaxWidth="319"
                                    HorizontalAlignment="Left"
                                    VerticalAlignment="Center" />
-                        <Grid Grid.Column="1" MinWidth="180" VerticalAlignment="Center">
+                        <Grid Grid.Column="1" VerticalAlignment="Center">
                             <ProgressBar x:Name="SquashRestorationProgressBar"
                                          Minimum="0"
                                          Maximum="1"
@@ -482,13 +509,29 @@
                 <!-- ==================== RIGHT SIDE (Full broadcast stream) ==================== -->
                 <Grid Grid.Column="2" x:Name="BroadcastPaneGrid" RowDefinitions="Auto, Auto, Auto, Auto, Auto" RowSpacing="4" VerticalAlignment="Top">
                     <StackPanel x:Name="BroadcastHeaderStack" Grid.Row="0" Spacing="6">
-                        <Grid ColumnDefinitions="*,Auto">
-                            <TextBlock x:Name="BroadcastInfoText" Text="Full broadcast" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="16" FontWeight="Bold" Margin="2,0" VerticalAlignment="Center"/>
+                        <Grid ColumnDefinitions="*,Auto,Auto"
+                              Width="650"
+                              HorizontalAlignment="Center">
+                            <TextBlock x:Name="BroadcastInfoText"
+                                       Text="Full broadcast"
+                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                       FontSize="16"
+                                       FontWeight="Bold"
+                                       Margin="2,0,0,0"
+                                       VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="BroadcastInfoDateText"
+                                       Grid.Column="1"
+                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                       FontSize="16"
+                                       FontWeight="Bold"
+                                       VerticalAlignment="Center"/>
                             <StackPanel x:Name="BroadcastHeaderNavigation"
-                                        Grid.Column="1"
+                                        Grid.Column="2"
                                         Orientation="Horizontal"
                                         HorizontalAlignment="Right"
                                         VerticalAlignment="Center"
+                                        Margin="8,0,0,0"
                                         Spacing="4"
                                         IsVisible="False">
                                 <TextBlock x:Name="BroadcastHeaderAddressText" Text="P: 100, S:0000" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="16" Margin="0,0,8,0"/>

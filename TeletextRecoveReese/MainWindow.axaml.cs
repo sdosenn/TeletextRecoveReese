@@ -381,6 +381,7 @@ public partial class MainWindow : Window
         public bool? VideoAnimateFlash { get; set; }
         public int? VideoResolutionIndex { get; set; }
         public int? VideoAspectIndex { get; set; }
+        public string? FfmpegPath { get; set; }
         public bool? ShowVideoBookmarks { get; set; }
         public List<RecentFileEntry> RecentFiles { get; set; } = new();
         public List<CaptureCardPreset> CustomCaptureCardPresets { get; set; } = new();
@@ -392,6 +393,7 @@ public partial class MainWindow : Window
         public bool? ShowVideoCapturePreview { get; set; }
         public bool? DisableLiveVbiVideoPreview { get; set; }
         public bool? RestorePreviousSession { get; set; }
+        public bool? LinkPaneNavigation { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
         public bool? RecordRawVbiToDisk { get; set; }
         public bool? RecordVideoAudio { get; set; }
@@ -619,7 +621,9 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeCloseFullBroadcastMenuItem;
     private NativeMenuItem? _nativeDisableLiveVbiVideoPreviewMenuItem;
     private NativeMenuItem? _nativeRestorePreviousSessionMenuItem;
-    private readonly string? _ffmpegPath;
+    private NativeMenuItem? _nativeLinkPaneNavigationMenuItem;
+    private string? _ffmpegPath;
+    private bool _ffmpegFoundAutomatically;
     private bool _showX26EnhancementsSidebar = true;
     private bool _showVideoBookmarks = true;
     private bool _updatingVideoBookmarkText;
@@ -651,6 +655,7 @@ public partial class MainWindow : Window
     private readonly TextBox[] _broadcastFastextPageFields = new TextBox[6];
     private readonly TextBox[] _broadcastFastextSubpageFields = new TextBox[6];
     private bool _reeseEasterEggTriggered;
+    private bool _linkingPaneNavigation;
     private DateOnly? _lastLiveCaptureDate;
 
     private static readonly DataFormat<byte[]> TeletextClipboardFormat =
@@ -687,11 +692,11 @@ public partial class MainWindow : Window
         OpenLiveVbiCaptureMenuItem.IsEnabled = liveVbiCaptureAvailable;
         if (_nativeOpenLiveVbiCaptureMenuItem is not null)
             _nativeOpenLiveVbiCaptureMenuItem.IsEnabled = liveVbiCaptureAvailable;
-        _ffmpegPath = FindFfmpegExecutable();
-        ExportVideoMenuItem.IsEnabled = _ffmpegPath is not null;
-        if (_nativeExportVideoMenuItem is not null)
-            _nativeExportVideoMenuItem.IsEnabled = _ffmpegPath is not null;
         LoadSessionState();
+        RefreshFfmpegPath();
+        ExportVideoMenuItem.IsEnabled = true;
+        if (_nativeExportVideoMenuItem is not null)
+            _nativeExportVideoMenuItem.IsEnabled = true;
         ApplyThemePreference(_sessionState.Theme ?? "Dark");
         _showVideoBookmarks = _sessionState.ShowVideoBookmarks ?? true;
         RebuildOpenRecentMenus();
@@ -1161,6 +1166,32 @@ public partial class MainWindow : Window
         namingFormat.SelectionChanged += (_, _) => UpdatePreview();
         UpdatePreview();
 
+        var ffmpegPathTextBox = new TextBox
+        {
+            Width = 410,
+            Text = _ffmpegFoundAutomatically
+                ? _ffmpegPath
+                : _sessionState.FfmpegPath ?? string.Empty,
+            IsReadOnly = _ffmpegFoundAutomatically,
+            PlaceholderText = OperatingSystem.IsWindows() ? "Path to ffmpeg.exe" : "Path to ffmpeg",
+        };
+        var selectFfmpegButton = new Button
+        {
+            Content = "Select…",
+            Width = 90,
+            IsEnabled = !_ffmpegFoundAutomatically,
+        };
+        var ffmpegStatus = new TextBlock
+        {
+            Text = _ffmpegFoundAutomatically
+                ? "FFmpeg was found in PATH."
+                : _ffmpegPath is not null
+                    ? "FFmpeg was found at the configured location."
+                    : "FFmpeg was not detected. Select its executable if it is installed.",
+            Foreground = Brushes.LightGray,
+            TextWrapping = TextWrapping.Wrap,
+        };
+
         var cancelButton = new Button { Content = "Cancel", Width = 90 };
         var saveButton = new Button { Content = "Save", Width = 90, IsDefault = true };
         var dialog = new Window
@@ -1183,6 +1214,14 @@ public partial class MainWindow : Window
                     new TextBlock { Text = "Capture file naming", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 6, 0, 0) },
                     namingFormat,
                     preview,
+                    new TextBlock { Text = "FFmpeg path", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 6, 0, 0) },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 8,
+                        Children = { ffmpegPathTextBox, selectFfmpegButton },
+                    },
+                    ffmpegStatus,
                     new StackPanel
                     {
                         Orientation = Orientation.Horizontal,
@@ -1193,6 +1232,20 @@ public partial class MainWindow : Window
                     },
                 },
             },
+        };
+        selectFfmpegButton.Click += async (_, _) =>
+        {
+            var files = await dialog.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "Select FFmpeg executable",
+                AllowMultiple = false,
+                FileTypeFilter = new[] { FilePickerFileTypes.All },
+            });
+            if (files.Count == 0) return;
+            ffmpegPathTextBox.Text = files[0].Path.IsFile
+                ? files[0].Path.LocalPath
+                : files[0].Path.ToString();
+            ffmpegStatus.Text = "The selected FFmpeg location will be used after saving preferences.";
         };
         cancelButton.Click += (_, _) => dialog.Close();
         saveButton.Click += (_, _) =>
@@ -1207,6 +1260,11 @@ public partial class MainWindow : Window
                 2 => "Automatic",
                 _ => "Dark",
             };
+            if (!_ffmpegFoundAutomatically)
+                _sessionState.FfmpegPath = string.IsNullOrWhiteSpace(ffmpegPathTextBox.Text)
+                    ? null
+                    : ffmpegPathTextBox.Text.Trim();
+            RefreshFfmpegPath();
             ApplyThemePreference(_sessionState.Theme);
             SaveSessionState();
 
@@ -3501,6 +3559,30 @@ public partial class MainWindow : Window
             SaveSessionState();
     }
 
+    private void OnLinkPaneNavigationClicked(object? sender, RoutedEventArgs e) =>
+        SetLinkPaneNavigation(LinkPaneNavigationMenuItem.IsChecked, saveSession: true);
+
+    private void OnNativeLinkPaneNavigationClicked(object? sender, EventArgs e)
+    {
+        bool linked = !(_sessionState.LinkPaneNavigation ?? false);
+        SetLinkPaneNavigation(linked, saveSession: true);
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_nativeLinkPaneNavigationMenuItem is not null)
+                _nativeLinkPaneNavigationMenuItem.IsChecked = linked;
+        }, DispatcherPriority.Background);
+    }
+
+    private void SetLinkPaneNavigation(bool linked, bool saveSession)
+    {
+        LinkPaneNavigationMenuItem.IsChecked = linked;
+        if (_nativeLinkPaneNavigationMenuItem is not null)
+            _nativeLinkPaneNavigationMenuItem.IsChecked = linked;
+        _sessionState.LinkPaneNavigation = linked;
+        if (saveSession)
+            SaveSessionState();
+    }
+
     private void OnNativeCaptureCardPresetsClicked(object? sender, EventArgs e) =>
         OnCaptureCardPresetsClicked(sender, new RoutedEventArgs());
 
@@ -3589,6 +3671,12 @@ public partial class MainWindow : Window
             : new GridLength(0);
         SidebarSectionsGrid.RowSpacing = showX26 && showBookmarks ? 8 : 0;
         EnhancementSidebar.IsVisible = showX26 || showBookmarks;
+        double paneWidth = EnhancementSidebar.IsVisible
+            ? 936 // 280 sidebar + 6 gap + 650 teletext panel
+            : 650;
+        SquashHeaderGrid.Width = paneWidth;
+        SquashFooterGrid.Width = paneWidth;
+        SquashFilePathText.MaxWidth = (paneWidth - SquashFooterGrid.ColumnSpacing) / 2;
         SquashContentGrid.InvalidateMeasure();
         MainGrid.InvalidateMeasure();
     }
@@ -3810,6 +3898,11 @@ public partial class MainWindow : Window
             .Menu?.Items.OfType<NativeMenuItem>()
             .FirstOrDefault(item => item.Header?.ToString()
                 == "Restore previous session on startup");
+        _nativeLinkPaneNavigationMenuItem = menu.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => item.Header?.ToString() == "Options")?
+            .Menu?.Items.OfType<NativeMenuItem>()
+            .FirstOrDefault(item => item.Header?.ToString() == "Link pane navigation");
     }
 
     /// <summary>Copies one row (0=header, 1-24=body) from the currently displayed
@@ -7941,13 +8034,13 @@ public partial class MainWindow : Window
             ? "Untitled"
             : Path.GetFileName(_squashFilePath);
         string squashPaneFileName = string.IsNullOrWhiteSpace(_squashFilePath)
-            ? "Untitled.t42"
+            ? "Untitled"
             : Path.GetFileName(_squashFilePath);
         string broadcastFileName = string.IsNullOrWhiteSpace(_broadcastFilePath)
             ? "Untitled"
             : Path.GetFileName(_broadcastFilePath);
+        string broadcastPaneFileName = broadcastFileName;
         squashFileName = AppendFullDate(squashFileName, _squashStreamIdentity);
-        squashPaneFileName = AppendFullDate(squashPaneFileName, _squashStreamIdentity);
         broadcastFileName = AppendFullDate(broadcastFileName, _broadcastStreamIdentity);
 
         if (dualPane)
@@ -7955,20 +8048,24 @@ public partial class MainWindow : Window
             Title = AppVersion.DisplayName;
             SquashInfoText.IsVisible = true;
             BroadcastInfoText.IsVisible = true;
-            SquashInfoText.Text = $"Squashed page — {squashPaneFileName}{dirtyMarker}";
-            BroadcastInfoText.Text = $"Full broadcast — {broadcastFileName}";
+            SquashInfoText.Text = $"Squashed page — {squashPaneFileName}";
+            SquashInfoDateText.Text = FormatPaneTitleSuffix(_squashStreamIdentity, dirtyMarker);
+            BroadcastInfoText.Text = $"Full broadcast — {broadcastPaneFileName}";
+            BroadcastInfoDateText.Text = FormatPaneTitleSuffix(_broadcastStreamIdentity);
         }
         else if (broadcastOnly)
         {
             Title = $"{AppVersion.DisplayName} - {broadcastFileName}";
             BroadcastInfoText.IsVisible = false;
             BroadcastInfoText.Text = "Full broadcast";
+            BroadcastInfoDateText.Text = string.Empty;
         }
         else
         {
             Title = $"{AppVersion.DisplayName} - {squashFileName}{dirtyMarker}";
             SquashInfoText.IsVisible = false;
             SquashInfoText.Text = "Squashed page";
+            SquashInfoDateText.Text = string.Empty;
         }
 
         UpdateHeaderNavigationVisibility();
@@ -7978,6 +8075,13 @@ public partial class MainWindow : Window
         string.IsNullOrWhiteSpace(identity.FullDate)
             ? fileName
             : $"{fileName} ({identity.FullDate})";
+
+    private static string FormatPaneTitleSuffix(
+        TeletextStreamIdentity identity,
+        string trailingText = "") =>
+        string.IsNullOrWhiteSpace(identity.FullDate)
+            ? trailingText
+            : $" ({identity.FullDate}){trailingText}";
 
     private void UpdateHeaderNavigationVisibility()
     {
@@ -8386,6 +8490,9 @@ public partial class MainWindow : Window
             saveSession: false);
         SetRestorePreviousSession(
             _sessionState.RestorePreviousSession ?? false,
+            saveSession: false);
+        SetLinkPaneNavigation(
+            _sessionState.LinkPaneNavigation ?? false,
             saveSession: false);
     }
 
@@ -8905,6 +9012,7 @@ public partial class MainWindow : Window
         UpdateVideoBookmarkUi();
         if (persistRecentPosition)
             PersistRecentFilePositions();
+        LinkNavigationFromBroadcast(address);
     }
 
     private void SelectSquashAddress((int magazine, int page, int subpage) address)
@@ -8932,6 +9040,47 @@ public partial class MainWindow : Window
         UpdateUndoToolbar();
         UpdateVideoBookmarkUi();
         PersistRecentFilePositions();
+        LinkNavigationFromSquash(address);
+    }
+
+    private void LinkNavigationFromBroadcast((int magazine, int page, int subpage) address)
+    {
+        if (_linkingPaneNavigation
+            || !(_sessionState.LinkPaneNavigation ?? false)
+            || !SquashPaneGrid.IsVisible
+            || !BroadcastPaneGrid.IsVisible
+            || _squashStore.GetInstances(address.magazine, address.page, address.subpage).Count == 0)
+            return;
+
+        _linkingPaneNavigation = true;
+        try
+        {
+            SelectSquashAddress(address);
+        }
+        finally
+        {
+            _linkingPaneNavigation = false;
+        }
+    }
+
+    private void LinkNavigationFromSquash((int magazine, int page, int subpage) address)
+    {
+        if (_linkingPaneNavigation
+            || !(_sessionState.LinkPaneNavigation ?? false)
+            || !SquashPaneGrid.IsVisible
+            || !BroadcastPaneGrid.IsVisible
+            || _store.GetInstances(address.magazine, address.page, address.subpage).Count == 0)
+            return;
+
+        _linkingPaneNavigation = true;
+        try
+        {
+            SelectBroadcastAddress(address, versionIndex: 0);
+        }
+        finally
+        {
+            _linkingPaneNavigation = false;
+        }
     }
 
     private void UpdateEnhancementList(TeletextPage? page)
@@ -9491,6 +9640,7 @@ public partial class MainWindow : Window
         UpdateNavigationButtons();
         UpdateVideoBookmarkUi();
         PersistRecentFilePositions();
+        LinkNavigationFromBroadcast((magazine, page, subpage));
     }
 
     private void OnBroadcastVersionToolbarSizeChanged(object? sender, SizeChangedEventArgs e) =>
@@ -9849,6 +9999,7 @@ public partial class MainWindow : Window
         UpdateUndoToolbar();
         UpdateVideoBookmarkUi();
         PersistRecentFilePositions();
+        LinkNavigationFromSquash((magazine, page, subpage));
     }
 
     private bool TryGetSelectedSquashMagazine(out int magazine)
@@ -10882,6 +11033,19 @@ public partial class MainWindow : Window
         return null;
     }
 
+    private void RefreshFfmpegPath()
+    {
+        string? automaticPath = FindFfmpegExecutable();
+        _ffmpegFoundAutomatically = automaticPath is not null;
+        _ffmpegPath = automaticPath;
+        if (_ffmpegPath is null
+            && !string.IsNullOrWhiteSpace(_sessionState.FfmpegPath)
+            && File.Exists(_sessionState.FfmpegPath))
+        {
+            _ffmpegPath = _sessionState.FfmpegPath;
+        }
+    }
+
     private async Task<List<VideoEncoderChoice>> GetFfmpegVideoEncodersAsync()
     {
         if (_ffmpegPath is null) return new List<VideoEncoderChoice>();
@@ -10930,7 +11094,9 @@ public partial class MainWindow : Window
     {
         if (_ffmpegPath is null)
         {
-            await ShowMessageAsync("Export video", "FFmpeg was not found in PATH.");
+            await ShowMessageAsync(
+                "FFmpeg required",
+                "FFmpeg is required for video export. If FFmpeg is installed but was not detected, set its location in Preferences.");
             return;
         }
 
