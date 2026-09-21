@@ -4068,13 +4068,11 @@ public partial class MainWindow : Window
         var recordPathBox = new TextBox
         {
             Text = defaultRecordPath,
-            IsVisible = false,
             PlaceholderText = "Output file (.mkv)",
         };
         var recordBrowseButton = new Button
         {
             Content = "Browse…",
-            IsVisible = false,
         };
         var recordPathRow = new Grid
         {
@@ -4206,6 +4204,9 @@ public partial class MainWindow : Window
             if (previewProcess is { HasExited: false })
             {
                 try { previewProcess.Kill(entireProcessTree: true); } catch { }
+                // Wait for the process to actually exit so /dev/video0 is released
+                // before any subsequent FFmpeg invocation tries to open it.
+                try { previewProcess.WaitForExit(2000); } catch { }
             }
             previewProcess?.Dispose();
             previewProcess = null;
@@ -5211,6 +5212,13 @@ public partial class MainWindow : Window
                 Width = 110,
                 HorizontalAlignment = HorizontalAlignment.Right,
             };
+            var stopVbiButton = new Button
+            {
+                Content = "Stop VBI",
+                Width = 90,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                IsVisible = false,
+            };
             var dialog = new Window
             {
                 Title = "Live VBI capture",
@@ -5286,11 +5294,20 @@ public partial class MainWindow : Window
                         {
                             [Grid.RowProperty] = 1,
                             Padding = new Thickness(18, 8, 18, 12),
-                            Child = stopButton,
+                            Child = new Grid
+                            {
+                                ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
+                                Children =
+                                {
+                                    stopVbiButton,
+                                    stopButton,
+                                },
+                            },
                         },
                     },
                 },
             };
+            Grid.SetColumn(stopButton, 2);
             bool allowClose = false;
             bool rawPreviewActive = true;
             bool videoPreviewActive = true;
@@ -5713,6 +5730,9 @@ public partial class MainWindow : Window
             // bttv does not allow two readers on the same /dev/videoX node, so recording
             // disables the in-app video preview pipe for the duration of the capture.
             Process? recordingProcess = null;
+            bool recordingStopped = false;
+            bool vbiStopped = false;
+            var ffmpegStderr = new System.Text.StringBuilder();
             if (OperatingSystem.IsLinux()
                 && videoInterfacePath is not null
                 && videoRecordPath is not null
@@ -5738,9 +5758,11 @@ public partial class MainWindow : Window
                     "-input_format", "yuyv422",
                     "-i", videoInterfacePath,
                     "-f", audioFormat,
+                    "-ac", "1",
                     "-i", alsaDevice,
                     "-c:v", "ffv1",
                     "-c:a", "pcm_s16le",
+                    "-ar", "32000",
                     "-y", videoRecordPath,
                 })
                     ffmpegInfo.ArgumentList.Add(arg);
@@ -5749,16 +5771,22 @@ public partial class MainWindow : Window
                     recordingProcess = Process.Start(ffmpegInfo);
                     recordingStatusText.IsVisible = true;
                     recordingStatusText.Text = $"Recording → {Path.GetFileName(videoRecordPath)}";
+                    stopVbiButton.IsVisible = recordingProcess is not null;
                     recordingStatusText.Foreground = Brushes.LightGreen;
                     if (recordingProcess is not null)
                     {
+                        recordingProcess.ErrorDataReceived += (_, e) =>
+                        {
+                            if (e.Data is not null) ffmpegStderr.AppendLine(e.Data);
+                        };
+                        recordingProcess.BeginErrorReadLine();
                         recordingProcess.EnableRaisingEvents = true;
                         recordingProcess.Exited += (_, _) =>
                         {
                             int exitCode = recordingProcess.ExitCode;
                             Dispatcher.UIThread.Post(() =>
                             {
-                                if (exitCode == 0)
+                                if (exitCode == 0 || recordingStopped)
                                 {
                                     recordingStatusText.Text =
                                         $"Recording saved → {videoRecordPath}";
@@ -5766,9 +5794,19 @@ public partial class MainWindow : Window
                                 }
                                 else
                                 {
-                                    recordingStatusText.Text =
-                                        $"Recording failed (FFmpeg exit {exitCode}) → {videoRecordPath}";
+                                    string lastErr = ffmpegStderr.Length > 0
+                                        ? ffmpegStderr.ToString().TrimEnd().Split('\n')[^1]
+                                        : string.Empty;
+                                    recordingStatusText.Text = string.IsNullOrEmpty(lastErr)
+                                        ? $"Recording failed (FFmpeg exit {exitCode}) → {videoRecordPath}"
+                                        : $"Recording failed (FFmpeg exit {exitCode}): {lastErr}";
                                     recordingStatusText.Foreground = Brushes.OrangeRed;
+                                }
+                                // If VBI already stopped and dialog is still open, enable close.
+                                if (vbiStopped && !allowClose)
+                                {
+                                    stopButton.Content = "Close";
+                                    stopButton.IsEnabled = true;
                                 }
                             });
                         };
@@ -5781,17 +5819,41 @@ public partial class MainWindow : Window
                     recordingStatusText.Foreground = Brushes.OrangeRed;
                 }
             }
-            void StopCapture()
+            void StopVbi()
             {
+                if (vbiStopped) return;
+                vbiStopped = true;
                 cancellation.Cancel();
                 videoPreviewCancellation.Cancel();
                 StopVideoPreviewPipe();
-                // A V4L2 read can be blocked waiting for the next complete frame;
-                // closing the device guarantees that Stop does not wait forever.
                 try { input.Dispose(); } catch { }
-                // Send SIGINT (Ctrl+C) to FFmpeg so it finalises the container cleanly.
-                try { recordingProcess?.Kill(entireProcessTree: false); } catch { }
+                stopVbiButton.IsEnabled = false;
+            }
+            void StopRecording()
+            {
+                recordingStopped = true;
+                if (OperatingSystem.IsLinux() && recordingProcess is not null && !recordingProcess.HasExited)
+                {
+                    try
+                    {
+                        using var sig = Process.Start(new ProcessStartInfo("kill")
+                        {
+                            ArgumentList = { "-INT", recordingProcess.Id.ToString() },
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                        });
+                        sig?.WaitForExit(500);
+                    }
+                    catch { }
+                }
+                else
+                    try { recordingProcess?.Kill(entireProcessTree: false); } catch { }
                 stopButton.IsEnabled = false;
+            }
+            void StopCapture()
+            {
+                StopVbi();
+                StopRecording();
                 phaseText.Text = "Stopping live capture…";
             }
             dialog.Closing += (_, args) =>
@@ -5800,7 +5862,37 @@ public partial class MainWindow : Window
                 args.Cancel = true;
                 StopCapture();
             };
-            stopButton.Click += (_, _) => StopCapture();
+            stopButton.Click += (_, _) =>
+            {
+                if (vbiStopped)
+                {
+                    // VBI already stopped; button is now "Stop recording" or "Close"
+                    if (recordingProcess is null || recordingProcess.HasExited)
+                    {
+                        allowClose = true;
+                        dialog.Close();
+                    }
+                    else
+                        StopRecording();
+                }
+                else
+                    StopCapture();
+            };
+            stopVbiButton.Click += (_, _) =>
+            {
+                StopVbi();
+                bool stillRecording = recordingProcess is not null && !recordingProcess.HasExited;
+                phaseText.Text = stillRecording
+                    ? "VBI capture stopped · recording in progress…"
+                    : "VBI capture stopped.";
+                stopVbiButton.IsVisible = false;
+                stopButton.Content = stillRecording ? "Stop recording" : "Close";
+                if (!stillRecording)
+                {
+                    allowClose = true;
+                    dialog.Close();
+                }
+            };
             showRawPreviewCheckBox.IsCheckedChanged += (_, _) =>
             {
                 bool enabled = showRawPreviewCheckBox.IsChecked == true;
@@ -5860,7 +5952,7 @@ public partial class MainWindow : Window
                 videoPreviewBitmap.Dispose();
                 try
                 {
-                    recordingProcess?.WaitForExit(3000);
+                    recordingProcess?.WaitForExit(15000);
                     recordingProcess?.Dispose();
                 }
                 catch { }
@@ -6143,8 +6235,19 @@ public partial class MainWindow : Window
                 catch (Exception ex) { failure = ex; }
                 await Dispatcher.UIThread.InvokeAsync(() =>
                 {
-                    allowClose = true;
-                    dialog.Close();
+                    if (recordingProcess is not null && !recordingProcess.HasExited)
+                    {
+                        // VBI loop ended but recording is still running; keep dialog open.
+                        stopVbiButton.IsVisible = false;
+                        stopButton.Content = "Stop recording";
+                        phaseText.Text = "VBI capture stopped · recording in progress…";
+                        progressBar.IsVisible = false;
+                    }
+                    else
+                    {
+                        allowClose = true;
+                        dialog.Close();
+                    }
                 });
             });
             await dialog.ShowDialog(this);

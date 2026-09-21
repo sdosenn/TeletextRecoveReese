@@ -412,21 +412,32 @@ public sealed class LinuxVbiCaptureStream : LiveVbiCaptureStream
     /// </summary>
     public static string? FindRelatedLinuxAlsaDevice(string busInfo)
     {
-        if (!OperatingSystem.IsLinux() || string.IsNullOrWhiteSpace(busInfo)) return null;
+        if (!OperatingSystem.IsLinux() || !busInfo.StartsWith("PCI:", StringComparison.OrdinalIgnoreCase))
+            return null;
         try
         {
-            // /proc/asound/cards has pairs of lines per card:
-            //   " N [Name   ]: Driver - Description"
-            //   "              details including PCI:0000:07:00.0"
-            string[] lines = File.ReadAllLines("/proc/asound/cards");
-            for (int i = 0; i + 1 < lines.Length; i++)
+            // Strip "PCI:" prefix and function number to get the device base, e.g.
+            // "PCI:0000:07:00.0" → base "0000:07:00". Then walk functions 0-7 to
+            // find which one has a sound card registered in sysfs.
+            string pciAddr = busInfo[4..];
+            int dotIndex = pciAddr.LastIndexOf('.');
+            if (dotIndex < 0) return null;
+            string pciBase = pciAddr[..dotIndex];
+
+            for (int func = 0; func < 8; func++)
             {
-                if (!lines[i + 1].Contains(busInfo, StringComparison.OrdinalIgnoreCase))
-                    continue;
-                string first = lines[i].TrimStart();
-                int space = first.IndexOf(' ');
-                if (space > 0 && int.TryParse(first[..space], out int card))
-                    return $"hw:{card},1"; // device 1 = analog on snd_bt87x
+                string soundDir = $"/sys/bus/pci/devices/{pciBase}.{func}/sound";
+                if (!Directory.Exists(soundDir)) continue;
+                foreach (string cardDir in Directory.EnumerateDirectories(soundDir, "card*"))
+                {
+                    if (!int.TryParse(Path.GetFileName(cardDir)[4..], out int cardNum))
+                        continue;
+                    // Prefer capture device 1 (snd_bt87x analog); fall back to 0.
+                    string dev = Directory.Exists($"/sys/class/sound/pcmC{cardNum}D1c")
+                        ? $"hw:{cardNum},1"
+                        : $"hw:{cardNum},0";
+                    return dev;
+                }
             }
         }
         catch { }
