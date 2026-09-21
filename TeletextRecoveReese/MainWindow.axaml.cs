@@ -3647,6 +3647,7 @@ public partial class MainWindow : Window
             : 650;
         SquashHeaderGrid.Width = paneWidth;
         SquashFooterGrid.Width = paneWidth;
+        SquashFilePathText.MaxWidth = (paneWidth - SquashFooterGrid.ColumnSpacing) / 2;
         SquashContentGrid.InvalidateMeasure();
         MainGrid.InvalidateMeasure();
     }

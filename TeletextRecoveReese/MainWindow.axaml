@@ -459,13 +459,14 @@
                           Grid.Row="4"
                           Width="650"
                           HorizontalAlignment="Right"
-                          ColumnDefinitions="*,*"
+                          ColumnDefinitions="Auto,*"
                           ColumnSpacing="12">
                         <TextBlock x:Name="SquashFilePathText"
                                    Grid.Column="0"
                                    Foreground="{DynamicResource MutedTextBrush}"
                                    FontSize="11"
                                    TextTrimming="CharacterEllipsis"
+                                   MaxWidth="319"
                                    HorizontalAlignment="Left"
                                    VerticalAlignment="Center" />
                         <Grid Grid.Column="1" VerticalAlignment="Center">
