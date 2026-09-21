@@ -406,6 +406,33 @@ public sealed class LinuxVbiCaptureStream : LiveVbiCaptureStream
         base.Dispose(disposing);
     }
 
+    /// <summary>
+    /// Finds the ALSA capture device for the card identified by <paramref name="busInfo"/>.
+    /// Returns a device string such as "hw:1,1" (the analog sub-device), or null if not found.
+    /// </summary>
+    public static string? FindRelatedLinuxAlsaDevice(string busInfo)
+    {
+        if (!OperatingSystem.IsLinux() || string.IsNullOrWhiteSpace(busInfo)) return null;
+        try
+        {
+            // /proc/asound/cards has pairs of lines per card:
+            //   " N [Name   ]: Driver - Description"
+            //   "              details including PCI:0000:07:00.0"
+            string[] lines = File.ReadAllLines("/proc/asound/cards");
+            for (int i = 0; i + 1 < lines.Length; i++)
+            {
+                if (!lines[i + 1].Contains(busInfo, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                string first = lines[i].TrimStart();
+                int space = first.IndexOf(' ');
+                if (space > 0 && int.TryParse(first[..space], out int card))
+                    return $"hw:{card},1"; // device 1 = analog on snd_bt87x
+            }
+        }
+        catch { }
+        return null;
+    }
+
     [DllImport("libc", SetLastError = true)]
     private static extern int ioctl(int fd, ulong request, IntPtr argument);
 }
