@@ -112,6 +112,9 @@
                     <NativeMenuItem Header="Restore previous session on startup"
                                     ToggleType="CheckBox"
                                     Click="OnNativeRestorePreviousSessionClicked" />
+                    <NativeMenuItem Header="Link pane navigation"
+                                    ToggleType="CheckBox"
+                                    Click="OnNativeLinkPaneNavigationClicked" />
                 </NativeMenu>
             </NativeMenuItem>
         </NativeMenu>
@@ -221,6 +224,10 @@
                           Header="Restore previous session on startup"
                           ToggleType="CheckBox"
                           Click="OnRestorePreviousSessionClicked" />
+                <MenuItem x:Name="LinkPaneNavigationMenuItem"
+                          Header="Link pane navigation"
+                          ToggleType="CheckBox"
+                          Click="OnLinkPaneNavigationClicked" />
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="_About" Click="AboutButton_Click" />

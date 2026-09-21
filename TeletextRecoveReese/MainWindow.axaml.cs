@@ -393,6 +393,7 @@ public partial class MainWindow : Window
         public bool? ShowVideoCapturePreview { get; set; }
         public bool? DisableLiveVbiVideoPreview { get; set; }
         public bool? RestorePreviousSession { get; set; }
+        public bool? LinkPaneNavigation { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
         public bool? RecordRawVbiToDisk { get; set; }
         public string? DateDisplayOrder { get; set; }
@@ -618,6 +619,7 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeCloseFullBroadcastMenuItem;
     private NativeMenuItem? _nativeDisableLiveVbiVideoPreviewMenuItem;
     private NativeMenuItem? _nativeRestorePreviousSessionMenuItem;
+    private NativeMenuItem? _nativeLinkPaneNavigationMenuItem;
     private string? _ffmpegPath;
     private bool _ffmpegFoundAutomatically;
     private bool _showX26EnhancementsSidebar = true;
@@ -651,6 +653,7 @@ public partial class MainWindow : Window
     private readonly TextBox[] _broadcastFastextPageFields = new TextBox[6];
     private readonly TextBox[] _broadcastFastextSubpageFields = new TextBox[6];
     private bool _reeseEasterEggTriggered;
+    private bool _linkingPaneNavigation;
     private DateOnly? _lastLiveCaptureDate;
 
     private static readonly DataFormat<byte[]> TeletextClipboardFormat =
@@ -3554,6 +3557,30 @@ public partial class MainWindow : Window
             SaveSessionState();
     }
 
+    private void OnLinkPaneNavigationClicked(object? sender, RoutedEventArgs e) =>
+        SetLinkPaneNavigation(LinkPaneNavigationMenuItem.IsChecked, saveSession: true);
+
+    private void OnNativeLinkPaneNavigationClicked(object? sender, EventArgs e)
+    {
+        bool linked = !(_sessionState.LinkPaneNavigation ?? false);
+        SetLinkPaneNavigation(linked, saveSession: true);
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_nativeLinkPaneNavigationMenuItem is not null)
+                _nativeLinkPaneNavigationMenuItem.IsChecked = linked;
+        }, DispatcherPriority.Background);
+    }
+
+    private void SetLinkPaneNavigation(bool linked, bool saveSession)
+    {
+        LinkPaneNavigationMenuItem.IsChecked = linked;
+        if (_nativeLinkPaneNavigationMenuItem is not null)
+            _nativeLinkPaneNavigationMenuItem.IsChecked = linked;
+        _sessionState.LinkPaneNavigation = linked;
+        if (saveSession)
+            SaveSessionState();
+    }
+
     private void OnNativeCaptureCardPresetsClicked(object? sender, EventArgs e) =>
         OnCaptureCardPresetsClicked(sender, new RoutedEventArgs());
 
@@ -3869,6 +3896,11 @@ public partial class MainWindow : Window
             .Menu?.Items.OfType<NativeMenuItem>()
             .FirstOrDefault(item => item.Header?.ToString()
                 == "Restore previous session on startup");
+        _nativeLinkPaneNavigationMenuItem = menu.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => item.Header?.ToString() == "Options")?
+            .Menu?.Items.OfType<NativeMenuItem>()
+            .FirstOrDefault(item => item.Header?.ToString() == "Link pane navigation");
     }
 
     /// <summary>Copies one row (0=header, 1-24=body) from the currently displayed
@@ -8183,6 +8215,9 @@ public partial class MainWindow : Window
         SetRestorePreviousSession(
             _sessionState.RestorePreviousSession ?? false,
             saveSession: false);
+        SetLinkPaneNavigation(
+            _sessionState.LinkPaneNavigation ?? false,
+            saveSession: false);
     }
 
     private void OnColorClicked(object? sender, RoutedEventArgs e)
@@ -8701,6 +8736,7 @@ public partial class MainWindow : Window
         UpdateVideoBookmarkUi();
         if (persistRecentPosition)
             PersistRecentFilePositions();
+        LinkNavigationFromBroadcast(address);
     }
 
     private void SelectSquashAddress((int magazine, int page, int subpage) address)
@@ -8728,6 +8764,47 @@ public partial class MainWindow : Window
         UpdateUndoToolbar();
         UpdateVideoBookmarkUi();
         PersistRecentFilePositions();
+        LinkNavigationFromSquash(address);
+    }
+
+    private void LinkNavigationFromBroadcast((int magazine, int page, int subpage) address)
+    {
+        if (_linkingPaneNavigation
+            || !(_sessionState.LinkPaneNavigation ?? false)
+            || !SquashPaneGrid.IsVisible
+            || !BroadcastPaneGrid.IsVisible
+            || _squashStore.GetInstances(address.magazine, address.page, address.subpage).Count == 0)
+            return;
+
+        _linkingPaneNavigation = true;
+        try
+        {
+            SelectSquashAddress(address);
+        }
+        finally
+        {
+            _linkingPaneNavigation = false;
+        }
+    }
+
+    private void LinkNavigationFromSquash((int magazine, int page, int subpage) address)
+    {
+        if (_linkingPaneNavigation
+            || !(_sessionState.LinkPaneNavigation ?? false)
+            || !SquashPaneGrid.IsVisible
+            || !BroadcastPaneGrid.IsVisible
+            || _store.GetInstances(address.magazine, address.page, address.subpage).Count == 0)
+            return;
+
+        _linkingPaneNavigation = true;
+        try
+        {
+            SelectBroadcastAddress(address, versionIndex: 0);
+        }
+        finally
+        {
+            _linkingPaneNavigation = false;
+        }
     }
 
     private void UpdateEnhancementList(TeletextPage? page)
@@ -9287,6 +9364,7 @@ public partial class MainWindow : Window
         UpdateNavigationButtons();
         UpdateVideoBookmarkUi();
         PersistRecentFilePositions();
+        LinkNavigationFromBroadcast((magazine, page, subpage));
     }
 
     private void OnBroadcastVersionToolbarSizeChanged(object? sender, SizeChangedEventArgs e) =>
@@ -9645,6 +9723,7 @@ public partial class MainWindow : Window
         UpdateUndoToolbar();
         UpdateVideoBookmarkUi();
         PersistRecentFilePositions();
+        LinkNavigationFromSquash((magazine, page, subpage));
     }
 
     private bool TryGetSelectedSquashMagazine(out int magazine)
