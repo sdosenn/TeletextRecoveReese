@@ -9095,22 +9095,46 @@ public partial class MainWindow : Window
         if (!TryGetBroadcastAddress(out var address)) return;
         if (_squashStore.GetInstances(address.magazine, address.page, address.subpage).Count == 0)
         {
-            await ShowPageNotFoundAsync(address, "squashed capture");
+            int versionIndex = VersionComboBox.SelectedIndex;
+            bool copyPage = await ShowPageNotFoundAsync(
+                address,
+                "squashed capture",
+                offerCopyPage: true);
+            if (copyPage)
+                CopyBroadcastPageToSquash(address, versionIndex);
             return;
         }
         SelectSquashAddress(address);
     }
 
-    private async Task ShowPageNotFoundAsync(
+    private async Task<bool> ShowPageNotFoundAsync(
         (int magazine, int page, int subpage) address,
-        string target)
+        string target,
+        bool offerCopyPage = false)
     {
+        bool copyPage = false;
         var closeButton = new Button
         {
             Content = "OK",
             Width = 80,
-            HorizontalAlignment = HorizontalAlignment.Right,
         };
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+        };
+        Button? copyButton = null;
+        if (offerCopyPage)
+        {
+            copyButton = new Button
+            {
+                Content = "Copy page",
+                Width = 100,
+            };
+            buttons.Children.Add(copyButton);
+        }
+        buttons.Children.Add(closeButton);
         var dialog = new Window
         {
             Title = "Page not found",
@@ -9130,12 +9154,71 @@ public partial class MainWindow : Window
                         TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
                         HorizontalAlignment = HorizontalAlignment.Center,
                     },
-                    closeButton,
+                    buttons,
                 }
             }
         };
+        if (copyButton is not null)
+        {
+            copyButton.Click += (_, _) =>
+            {
+                copyPage = true;
+                dialog.Close();
+            };
+        }
         closeButton.Click += (_, _) => dialog.Close();
         await dialog.ShowDialog(this);
+        return copyPage;
+    }
+
+    private void CopyBroadcastPageToSquash(
+        (int magazine, int page, int subpage) address,
+        int versionIndex)
+    {
+        var instances = _store.GetInstances(address.magazine, address.page, address.subpage);
+        if (versionIndex < 0 || versionIndex >= instances.Count) return;
+
+        TeletextPage sourcePage = GetBroadcastPage(instances[versionIndex]);
+        EnsureBroadcastFastextLoaded(sourcePage);
+        EnsureBroadcastEnhancementsLoaded(sourcePage);
+
+        var copiedPage = new TeletextPage
+        {
+            Magazine = address.magazine,
+            PageNumber = address.page,
+            SubPage = address.subpage,
+        };
+        for (int row = 0; row < copiedPage.RawRows.Length; row++)
+        {
+            if (sourcePage.RawRows[row] is { } raw)
+                PageAssembler.ApplyRow(copiedPage, row, (byte[])raw.Clone());
+        }
+
+        PageAssembler.ReplaceEnhancementPackets(
+            copiedPage,
+            sourcePage.EnhancementPackets.Select(packet =>
+                ((byte[])packet.RawPacket.Clone(), -1)));
+        if (sourcePage.FastextPacket is { } fastext)
+            PageAssembler.ApplyFastextPacket(copiedPage, (byte[])fastext.Clone());
+
+        _squashStore.AddInstance(new PageInstance
+        {
+            Magazine = address.magazine,
+            PageNumber = address.page,
+            Subpage = address.subpage,
+            Page = copiedPage,
+        });
+        EnsurePageHistory(copiedPage);
+
+        _lastAddedCombinedPage = (address.magazine << 8) | address.page;
+        _lastAddedSubpage = address.subpage;
+        _squashPaneEstablished = true;
+        _structuralDirty = true;
+        ShowSquashEditor();
+        PopulateSquashPageCombo();
+        SelectSquashAddress(address);
+        UpdateSquashFileFooter();
+        UpdateDirtyFromHistories();
     }
 
     private bool TryGetBroadcastAddress(out (int magazine, int page, int subpage) address)
