@@ -655,6 +655,8 @@ public partial class MainWindow : Window
     private bool _reeseEasterEggTriggered;
     private bool _linkingPaneNavigation;
     private DateOnly? _lastLiveCaptureDate;
+    private int _lastAddedCombinedPage = 0x100;
+    private int _lastAddedSubpage;
 
     private static readonly DataFormat<byte[]> TeletextClipboardFormat =
         DataFormat.CreateBytesApplicationFormat("com.teletextrecovereese.raw-byte-block.v2");
@@ -7766,6 +7768,7 @@ public partial class MainWindow : Window
         string broadcastPaneFileName = broadcastFileName;
         squashFileName = AppendFullDate(squashFileName, _squashStreamIdentity);
         broadcastFileName = AppendFullDate(broadcastFileName, _broadcastStreamIdentity);
+        SquashDirtyMarkerText.Text = dualPane ? dirtyMarker : string.Empty;
 
         if (dualPane)
         {
@@ -7773,7 +7776,7 @@ public partial class MainWindow : Window
             SquashInfoText.IsVisible = true;
             BroadcastInfoText.IsVisible = true;
             SquashInfoText.Text = $"Squashed page — {squashPaneFileName}";
-            SquashInfoDateText.Text = FormatPaneTitleSuffix(_squashStreamIdentity, dirtyMarker);
+            SquashInfoDateText.Text = FormatPaneTitleSuffix(_squashStreamIdentity);
             BroadcastInfoText.Text = $"Full broadcast — {broadcastPaneFileName}";
             BroadcastInfoDateText.Text = FormatPaneTitleSuffix(_broadcastStreamIdentity);
         }
@@ -10022,6 +10025,8 @@ public partial class MainWindow : Window
         }
 
         AddBlankSquashPage(address.magazine, address.page, address.subpage);
+        _lastAddedCombinedPage = (address.magazine << 8) | address.page;
+        _lastAddedSubpage = address.subpage;
         _squashPaneEstablished = true;
         _structuralDirty = true;
         ShowSquashEditor();
@@ -10122,7 +10127,6 @@ public partial class MainWindow : Window
             Minimum = 0x100,
             Maximum = 0x8FF,
             Increment = 1,
-            Value = 0x100,
             Width = 130,
             TextConverter = new HexNumericConverter(3),
         };
@@ -10131,10 +10135,11 @@ public partial class MainWindow : Window
             Minimum = 0,
             Maximum = 0x1FFF,
             Increment = 1,
-            Value = 0,
             Width = 130,
             TextConverter = new HexNumericConverter(4, packedSubpage: true),
         };
+        pageInput.Value = _lastAddedCombinedPage;
+        subpageInput.Value = UnpackSubpage(_lastAddedSubpage);
         var okButton = new Button { Content = "Add", Width = 90 };
         var cancelButton = new Button { Content = "Cancel", Width = 90 };
         (int magazine, int page, int subpage)? result = null;
@@ -10176,6 +10181,22 @@ public partial class MainWindow : Window
                 }
             }
         };
+        dialog.Opened += (_, _) =>
+        {
+            int displayedCombinedPage = decimal.ToInt32(pageInput.Value ?? _lastAddedCombinedPage);
+            pageInput.PropertyChanged += (_, change) =>
+            {
+                if (change.Property != NumericUpDown.ValueProperty || pageInput.Value is not { } value)
+                    return;
+
+                int combinedPage = decimal.ToInt32(value);
+                if (combinedPage == displayedCombinedPage)
+                    return;
+
+                displayedCombinedPage = combinedPage;
+                subpageInput.Value = 0;
+            };
+        };
         Grid.SetColumn(pageInput, 1);
         Grid.SetColumn(subpageInput, 1);
         Grid.SetRow(subpageInput, 1);
@@ -10190,6 +10211,9 @@ public partial class MainWindow : Window
         await dialog.ShowDialog(this);
         return result;
     }
+
+    private static decimal UnpackSubpage(int packedSubpage) =>
+        (packedSubpage & 0x7F) | ((packedSubpage >> 1) & 0x1F80);
 
     private async Task ShowPageAlreadyExistsAsync((int magazine, int page, int subpage) address)
     {
