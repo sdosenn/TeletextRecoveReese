@@ -121,7 +121,11 @@
         </NativeMenu>
     </NativeMenu.Menu>
 
-    <DockPanel>
+    <LayoutTransformControl x:Name="UiScaleLayout">
+        <LayoutTransformControl.LayoutTransform>
+            <ScaleTransform ScaleX="1" ScaleY="1" />
+        </LayoutTransformControl.LayoutTransform>
+        <DockPanel>
         <!-- Standard Menu -->
         <Menu x:Name="WindowMenu" DockPanel.Dock="Top">
             <MenuItem Header="_File">
@@ -657,5 +661,6 @@
 
             </Grid>
         </Border>
-    </DockPanel>
+        </DockPanel>
+    </LayoutTransformControl>
 </Window>

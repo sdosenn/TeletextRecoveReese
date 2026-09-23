@@ -399,6 +399,7 @@ public partial class MainWindow : Window
         public string? DateDisplayOrder { get; set; }
         public string? CaptureNamingFormat { get; set; }
         public string? Theme { get; set; }
+        public int? UiScalePercent { get; set; }
     }
 
     private sealed class CaptureCardPreset
@@ -698,6 +699,7 @@ public partial class MainWindow : Window
         if (_nativeExportVideoMenuItem is not null)
             _nativeExportVideoMenuItem.IsEnabled = true;
         ApplyThemePreference(_sessionState.Theme ?? "Dark");
+        ApplyUiScalePreference(_sessionState.UiScalePercent ?? 100, resizeWindow: false);
         _showVideoBookmarks = _sessionState.ShowVideoBookmarks ?? true;
         RebuildOpenRecentMenus();
         ApplyToggleSessionState();
@@ -1125,7 +1127,7 @@ public partial class MainWindow : Window
         int currentOrder = Array.IndexOf(dateOrders, _sessionState.DateDisplayOrder ?? "Day.Month.Year");
         var dateOrder = new ComboBox
         {
-            Width = 220,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             ItemsSource = dateOrders,
             SelectedIndex = Math.Max(currentOrder, 0),
         };
@@ -1136,18 +1138,51 @@ public partial class MainWindow : Window
         ];
         var namingFormat = new ComboBox
         {
-            Width = 330,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             ItemsSource = namingFormats,
             SelectedIndex = IsFullCaptureNamingFormat() ? 1 : 0,
         };
         var theme = new ComboBox
         {
-            Width = 220,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             ItemsSource = new[] { "Dark", "Light", "Automatic (system)" },
             SelectedIndex = string.Equals(_sessionState.Theme, "Light", StringComparison.Ordinal) ? 1
                 : string.Equals(_sessionState.Theme, "Automatic", StringComparison.Ordinal) ? 2
                 : 0,
         };
+        int[] uiScalePercentages = [100, 125, 150, 175, 200];
+        int savedUiScale = NormalizeUiScalePercent(_sessionState.UiScalePercent ?? 100);
+        var uiScale = new ComboBox
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ItemsSource = uiScalePercentages.Select(value => $"{value}%").ToArray(),
+            SelectedIndex = Array.IndexOf(uiScalePercentages, savedUiScale),
+        };
+        var themeLabel = new TextBlock
+        {
+            Text = "Application theme",
+            FontWeight = FontWeight.SemiBold,
+        };
+        var uiScaleLabel = new TextBlock
+        {
+            Text = "UI scaling",
+            FontWeight = FontWeight.SemiBold,
+        };
+        var appearanceGrid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,*"),
+            RowDefinitions = new RowDefinitions("Auto,Auto"),
+            ColumnSpacing = 20,
+            RowSpacing = 6,
+        };
+        Grid.SetRow(theme, 1);
+        Grid.SetColumn(uiScaleLabel, 1);
+        Grid.SetRow(uiScale, 1);
+        Grid.SetColumn(uiScale, 1);
+        appearanceGrid.Children.Add(themeLabel);
+        appearanceGrid.Children.Add(theme);
+        appearanceGrid.Children.Add(uiScaleLabel);
+        appearanceGrid.Children.Add(uiScale);
         var preview = new TextBlock
         {
             FontSize = 16,
@@ -1207,8 +1242,7 @@ public partial class MainWindow : Window
                 Spacing = 10,
                 Children =
                 {
-                    new TextBlock { Text = "Application theme", FontWeight = FontWeight.SemiBold },
-                    theme,
+                    appearanceGrid,
                     new TextBlock { Text = "Date display", FontWeight = FontWeight.SemiBold },
                     dateOrder,
                     new TextBlock { Text = "Capture file naming", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 6, 0, 0) },
@@ -1260,12 +1294,14 @@ public partial class MainWindow : Window
                 2 => "Automatic",
                 _ => "Dark",
             };
+            _sessionState.UiScalePercent = uiScalePercentages[Math.Max(uiScale.SelectedIndex, 0)];
             if (!_ffmpegFoundAutomatically)
                 _sessionState.FfmpegPath = string.IsNullOrWhiteSpace(ffmpegPathTextBox.Text)
                     ? null
                     : ffmpegPathTextBox.Text.Trim();
             RefreshFfmpegPath();
             ApplyThemePreference(_sessionState.Theme);
+            ApplyUiScalePreference(_sessionState.UiScalePercent.Value, resizeWindow: true);
             SaveSessionState();
 
             if (_broadcastPackets.Count > 0)
@@ -1309,6 +1345,24 @@ public partial class MainWindow : Window
             "Automatic" => ThemeVariant.Default,
             _ => ThemeVariant.Dark,
         };
+    }
+
+    private static int NormalizeUiScalePercent(int value)
+    {
+        int clamped = Math.Clamp(value, 100, 200);
+        return 100 + (int)Math.Round((clamped - 100) / 25.0) * 25;
+    }
+
+    private void ApplyUiScalePreference(int percent, bool resizeWindow)
+    {
+        int normalized = NormalizeUiScalePercent(percent);
+        double scale = normalized / 100.0;
+        App.UiScalePercent = normalized;
+        UiScaleLayout.LayoutTransform = new ScaleTransform(scale, scale);
+        _sessionState.UiScalePercent = normalized;
+        UiScaleLayout.InvalidateMeasure();
+        if (resizeWindow)
+            FitWindowToContent();
     }
 
     private async Task ShowCaptureCardPresetsAsync()
@@ -3240,6 +3294,7 @@ public partial class MainWindow : Window
     private void AboutButton_Click(object? sender, RoutedEventArgs e)
     {
         var aboutWindow = new AboutWindow();
+        App.ApplyUiScale(aboutWindow);
         aboutWindow.ShowDialog(this);
     }
 
