@@ -11,6 +11,9 @@ namespace TeletextRecoveReese;
 public class App : Application
 {
     public static int UiScalePercent { get; set; } = 100;
+    public static string? GridFontFamilyName { get; set; }
+    public static FontFamily? GridFontFamily { get; set; }
+    public static bool TerminatorAboutUnlocked { get; set; }
 
     public static void ApplyUiScale(Window window)
     {

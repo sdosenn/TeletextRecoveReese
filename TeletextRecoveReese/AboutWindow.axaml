@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:TeletextRecoveReese"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d" d:DesignWidth="300" d:DesignHeight="300"
@@ -11,17 +12,23 @@
         Title="About">
     
     <StackPanel Margin="20" Spacing="10" HorizontalAlignment="Center" VerticalAlignment="Center">
-        <!-- Application Title -->
-        <TextBlock Text="TeletextRecoveReese" FontWeight="Bold" FontSize="20" HorizontalAlignment="Center"/>
-        
-        <!-- Version Info -->
-        <TextBlock x:Name="VersionText" HorizontalAlignment="Center"/>
-        
-        <!-- Kyle Reese Real Size Image via Resource -->
-        <Image Source="avares://TeletextRecoveReese/Assets/kyle_reese.jpg" 
-               Stretch="None" 
-               HorizontalAlignment="Center" 
-               Margin="0,5,0,5"/>
+        <!-- Kyle Reese with a looping Terminator-style outlined title overlay. -->
+        <Grid Width="401"
+              Height="500"
+              Margin="0,5"
+              HorizontalAlignment="Center"
+              ClipToBounds="True">
+            <Image Source="avares://TeletextRecoveReese/Assets/kyle_reese.jpg"
+                   Stretch="None"
+                   HorizontalAlignment="Center" />
+            <Border x:Name="BlackImageOverlay"
+                    Background="Black"
+                    IsVisible="False" />
+            <local:TerminatorTitleControl x:Name="AnimatedTitle"
+                                          Width="401"
+                                          Height="500"
+                                          IsHitTestVisible="False" />
+        </Grid>
         
         <!-- Author / Copyright / Support -->
         <TextBlock Text="Created by: Siniša Došen  © 2026" HorizontalAlignment="Center"/>

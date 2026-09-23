@@ -1790,6 +1790,8 @@ public partial class MainWindow : Window
         SquashGrid.SetFontFamily(choice.Family, choice.Name);
         BroadcastGrid.SetFontFamily(choice.Family, choice.Name);
         _activeGridFontFamily = choice.Name;
+        App.GridFontFamilyName = choice.Name;
+        App.GridFontFamily = choice.Family;
 
         if (persist || !string.Equals(
                 requestedFamilyName,
@@ -3197,6 +3199,18 @@ public partial class MainWindow : Window
             BroadcastPageCrcText,
             BroadcastCalculatedCrcText,
             BroadcastCalculatedCrcBorder);
+        TryUnlockTerminatorAboutFromCrc();
+    }
+
+    private void TryUnlockTerminatorAboutFromCrc()
+    {
+        if (!_reeseEasterEggTriggered
+            || SquashGrid.Page is not { } squashPage
+            || BroadcastGrid.Page is not { } terminatorPage)
+            return;
+
+        if (TeletextPageCrc.Calculate(squashPage) == TeletextPageCrc.Calculate(terminatorPage))
+            App.TerminatorAboutUnlocked = true;
     }
 
     private static void UpdatePageCrcDisplay(
@@ -3293,6 +3307,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void AboutButton_Click(object? sender, RoutedEventArgs e)
     {
+        TryUnlockTerminatorAboutFromCrc();
         var aboutWindow = new AboutWindow();
         App.ApplyUiScale(aboutWindow);
         aboutWindow.ShowDialog(this);
