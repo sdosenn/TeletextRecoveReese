@@ -3388,6 +3388,9 @@ public partial class MainWindow : Window
     private void OnNativeExportScreenshotClicked(object? sender, EventArgs e) =>
         OnExportScreenshotClicked(sender, new RoutedEventArgs());
 
+    private void OnNativeExportCurrentPageT42Clicked(object? sender, EventArgs e) =>
+        OnExportCurrentPageT42Clicked(sender, new RoutedEventArgs());
+
     private void OnNativeBatchExportScreenshotsClicked(object? sender, EventArgs e) =>
         OnBatchExportScreenshotsClicked(sender, new RoutedEventArgs());
 
@@ -11403,6 +11406,67 @@ public partial class MainWindow : Window
         {
             await ShowMessageAsync("Screenshot export failed", ex.Message);
         }
+    }
+
+    private async void OnExportCurrentPageT42Clicked(object? sender, RoutedEventArgs e)
+    {
+        TeletextGridControl? grid = IsActiveGrid();
+        if (grid?.Page is not { } page)
+        {
+            await ShowMessageAsync("Export T42 page", "There is no current page to export.");
+            return;
+        }
+
+        if (grid == BroadcastGrid)
+            EnsureBroadcastEnhancementsLoaded(page);
+
+        string pageAddress = $"{page.Magazine:X1}{page.PageNumber:X2}-{page.SubPage:X4}";
+        string? sourcePath = grid == BroadcastGrid ? _broadcastFilePath : _squashFilePath;
+        string sourceName = string.IsNullOrWhiteSpace(sourcePath)
+            ? "teletext"
+            : Path.GetFileNameWithoutExtension(sourcePath);
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Export current teletext page as T42",
+            SuggestedFileName = $"{sourceName}-{pageAddress}.t42",
+            DefaultExtension = "t42",
+            FileTypeChoices = new[]
+            {
+                new FilePickerFileType("Raw 42-byte teletext page")
+                {
+                    Patterns = new[] { "*.t42" },
+                },
+            },
+        });
+        if (file is null) return;
+
+        try
+        {
+            await using var stream = await file.OpenWriteAsync();
+            if (stream.CanSeek) stream.SetLength(0);
+            foreach (byte[] packet in BuildSinglePageOutputPackets(page))
+                await stream.WriteAsync(packet);
+            await stream.FlushAsync();
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("T42 page export failed", ex.Message);
+        }
+    }
+
+    private static IReadOnlyList<byte[]> BuildSinglePageOutputPackets(TeletextPage page)
+    {
+        var packets = new List<byte[]>(28 + page.EnhancementPackets.Count);
+        for (int row = 0; row < 25; row++)
+            packets.Add((byte[])(page.RawRows[row] ?? CreateBlankPacket(page, row)).Clone());
+
+        if (page.RawRows[25] is { } row25)
+            packets.Add((byte[])row25.Clone());
+        foreach (EnhancementPacket enhancement in page.EnhancementPackets.OrderBy(packet => packet.DesignationCode))
+            packets.Add((byte[])enhancement.RawPacket.Clone());
+        if (page.FastextPacket is { } fastext)
+            packets.Add((byte[])fastext.Clone());
+        return packets;
     }
 
     private async void OnBatchExportScreenshotsClicked(object? sender, RoutedEventArgs e)

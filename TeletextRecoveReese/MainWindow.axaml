@@ -30,6 +30,7 @@
                     <NativeMenuItem Header="Close Squashed Page" Click="OnNativeCloseSquashedPageClicked" />
                     <NativeMenuItem Header="Close Full Broadcast" Click="OnNativeCloseFullBroadcastClicked" />
                     <NativeMenuItemSeparator />
+                    <NativeMenuItem Header="Export Single Page…" Click="OnNativeExportCurrentPageT42Clicked" />
                     <NativeMenuItem Header="Export Screenshot…" Click="OnNativeExportScreenshotClicked" />
                     <NativeMenuItem Header="Batch Export Screenshots…" Click="OnNativeBatchExportScreenshotsClicked" />
                     <NativeMenuItem Header="Export Video…" Click="OnNativeExportVideoClicked" />
@@ -139,6 +140,7 @@
                 <MenuItem x:Name="CloseSquashedPageMenuItem" Header="Close Squashed Page" Click="OnCloseSquashedPageClicked" />
                 <MenuItem x:Name="CloseFullBroadcastMenuItem" Header="Close Full Broadcast" Click="OnCloseFullBroadcastClicked" />
                 <Separator />
+                <MenuItem Header="Export _Single Page..." Click="OnExportCurrentPageT42Clicked" />
                 <MenuItem Header="Export _Screenshot..." Click="OnExportScreenshotClicked" />
                 <MenuItem x:Name="BatchExportScreenshotsMenuItem" Header="_Batch Export Screenshots..." Click="OnBatchExportScreenshotsClicked" />
                 <MenuItem x:Name="ExportVideoMenuItem" Header="Export _Video..." Click="OnExportVideoClicked" />
