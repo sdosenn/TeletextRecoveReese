@@ -392,7 +392,6 @@ public partial class MainWindow : Window
         public bool? ShowRawVbiPreview { get; set; }
         public bool? ShowVideoCapturePreview { get; set; }
         public bool? DisableLiveVbiVideoPreview { get; set; }
-        public bool? RestorePreviousSession { get; set; }
         public bool? LinkPaneNavigation { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
         public bool? RecordRawVbiToDisk { get; set; }
@@ -619,7 +618,6 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeCloseSquashedPageMenuItem;
     private NativeMenuItem? _nativeCloseFullBroadcastMenuItem;
     private NativeMenuItem? _nativeDisableLiveVbiVideoPreviewMenuItem;
-    private NativeMenuItem? _nativeRestorePreviousSessionMenuItem;
     private NativeMenuItem? _nativeLinkPaneNavigationMenuItem;
     private string? _ffmpegPath;
     private bool _ffmpegFoundAutomatically;
@@ -754,12 +752,73 @@ public partial class MainWindow : Window
         Opened -= OnWindowOpened;
         InitializeStartupFontChoices(_sessionState.GridFontFamily);
         ApplyGridFont(_sessionState.GridFontFamily, persist: false);
-        if (!_startNewSession
-            && (_loadLastSession || (_sessionState.RestorePreviousSession ?? false)))
+        bool restorePreviousSession = !_startNewSession && _loadLastSession;
+        if (!_startNewSession && !_loadLastSession && HasRestorableSession())
+            restorePreviousSession = await ConfirmRestorePreviousSessionAsync();
+
+        if (restorePreviousSession)
         {
             await RestoreSessionFilesAsync();
             await SettleRestoredWorkspaceLayoutAsync();
         }
+    }
+
+    private bool HasRestorableSession() =>
+        (!string.IsNullOrWhiteSpace(_sessionState.SquashFilePath)
+         && File.Exists(_sessionState.SquashFilePath))
+        || (!string.IsNullOrWhiteSpace(_sessionState.BroadcastFilePath)
+            && File.Exists(_sessionState.BroadcastFilePath));
+
+    private async Task<bool> ConfirmRestorePreviousSessionAsync()
+    {
+        bool restore = false;
+        var startNewButton = new Button
+        {
+            Content = "Start new session",
+            MinWidth = 130,
+            IsCancel = true,
+        };
+        var restoreButton = new Button
+        {
+            Content = "Open previous session",
+            MinWidth = 150,
+        };
+        var dialog = new Window
+        {
+            Title = "Previous session found",
+            Width = 450,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(22),
+                Spacing = 18,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Do you want to open the previous session?",
+                        TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { startNewButton, restoreButton },
+                    }
+                }
+            }
+        };
+        restoreButton.Click += (_, _) =>
+        {
+            restore = true;
+            dialog.Close();
+        };
+        startNewButton.Click += (_, _) => dialog.Close();
+        await dialog.ShowDialog(this);
+        return restore;
     }
 
     private async Task SettleRestoredWorkspaceLayoutAsync()
@@ -816,7 +875,7 @@ public partial class MainWindow : Window
     private void PrepareLoadLastSessionLayout()
     {
         if (_startNewSession
-            || !(_loadLastSession || (_sessionState.RestorePreviousSession ?? false))
+            || !_loadLastSession
             || string.IsNullOrWhiteSpace(_sessionState.SquashFilePath)
             || string.IsNullOrWhiteSpace(_sessionState.BroadcastFilePath)
             || !File.Exists(_sessionState.SquashFilePath)
@@ -3608,30 +3667,6 @@ public partial class MainWindow : Window
             SaveSessionState();
     }
 
-    private void OnRestorePreviousSessionClicked(object? sender, RoutedEventArgs e) =>
-        SetRestorePreviousSession(RestorePreviousSessionMenuItem.IsChecked, saveSession: true);
-
-    private void OnNativeRestorePreviousSessionClicked(object? sender, EventArgs e)
-    {
-        bool restore = !(_sessionState.RestorePreviousSession ?? false);
-        SetRestorePreviousSession(restore, saveSession: true);
-        Dispatcher.UIThread.Post(() =>
-        {
-            if (_nativeRestorePreviousSessionMenuItem is not null)
-                _nativeRestorePreviousSessionMenuItem.IsChecked = restore;
-        }, DispatcherPriority.Background);
-    }
-
-    private void SetRestorePreviousSession(bool restore, bool saveSession)
-    {
-        RestorePreviousSessionMenuItem.IsChecked = restore;
-        if (_nativeRestorePreviousSessionMenuItem is not null)
-            _nativeRestorePreviousSessionMenuItem.IsChecked = restore;
-        _sessionState.RestorePreviousSession = restore;
-        if (saveSession)
-            SaveSessionState();
-    }
-
     private void OnLinkPaneNavigationClicked(object? sender, RoutedEventArgs e) =>
         SetLinkPaneNavigation(LinkPaneNavigationMenuItem.IsChecked, saveSession: true);
 
@@ -3965,12 +4000,6 @@ public partial class MainWindow : Window
             .Menu?.Items.OfType<NativeMenuItem>()
             .FirstOrDefault(item => item.Header?.ToString()
                 == "Disable video preview in live VBI capture");
-        _nativeRestorePreviousSessionMenuItem = menu.Items
-            .OfType<NativeMenuItem>()
-            .FirstOrDefault(item => item.Header?.ToString() == "Options")?
-            .Menu?.Items.OfType<NativeMenuItem>()
-            .FirstOrDefault(item => item.Header?.ToString()
-                == "Restore previous session on startup");
         _nativeLinkPaneNavigationMenuItem = menu.Items
             .OfType<NativeMenuItem>()
             .FirstOrDefault(item => item.Header?.ToString() == "Options")?
@@ -8287,9 +8316,6 @@ public partial class MainWindow : Window
         SetToolbarOnBottom(_sessionState.ToolbarOnBottom ?? false, saveSession: false);
         SetDisableLiveVbiVideoPreview(
             _sessionState.DisableLiveVbiVideoPreview ?? false,
-            saveSession: false);
-        SetRestorePreviousSession(
-            _sessionState.RestorePreviousSession ?? false,
             saveSession: false);
         SetLinkPaneNavigation(
             _sessionState.LinkPaneNavigation ?? false,

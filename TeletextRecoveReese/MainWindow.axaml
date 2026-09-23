@@ -110,9 +110,6 @@
                     <NativeMenuItem Header="Disable video preview in live VBI capture"
                                     ToggleType="CheckBox"
                                     Click="OnNativeDisableLiveVbiVideoPreviewClicked" />
-                    <NativeMenuItem Header="Restore previous session on startup"
-                                    ToggleType="CheckBox"
-                                    Click="OnNativeRestorePreviousSessionClicked" />
                     <NativeMenuItem Header="Link pane navigation"
                                     ToggleType="CheckBox"
                                     Click="OnNativeLinkPaneNavigationClicked" />
@@ -226,10 +223,6 @@
                           Header="Disable video preview in live VBI capture"
                           ToggleType="CheckBox"
                           Click="OnDisableLiveVbiVideoPreviewClicked" />
-                <MenuItem x:Name="RestorePreviousSessionMenuItem"
-                          Header="Restore previous session on startup"
-                          ToggleType="CheckBox"
-                          Click="OnRestorePreviousSessionClicked" />
                 <MenuItem x:Name="LinkPaneNavigationMenuItem"
                           Header="Link pane navigation"
                           ToggleType="CheckBox"
