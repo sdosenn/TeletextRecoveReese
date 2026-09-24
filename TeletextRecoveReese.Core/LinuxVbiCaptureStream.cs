@@ -406,6 +406,93 @@ public sealed class LinuxVbiCaptureStream : LiveVbiCaptureStream
         base.Dispose(disposing);
     }
 
+    /// <summary>
+    /// Finds the ALSA capture device for the card identified by <paramref name="busInfo"/>.
+    /// Returns a device string such as "hw:1,1" (the analog sub-device), or null if not found.
+    /// </summary>
+    public static string? FindRelatedLinuxAlsaDevice(string busInfo)
+    {
+        if (!OperatingSystem.IsLinux() || !busInfo.StartsWith("PCI:", StringComparison.OrdinalIgnoreCase))
+            return null;
+        try
+        {
+            // Strip "PCI:" prefix and function number to get the device base, e.g.
+            // "PCI:0000:07:00.0" → base "0000:07:00". Then walk functions 0-7 to
+            // find which one has a sound card registered in sysfs.
+            string pciAddr = busInfo[4..];
+            int dotIndex = pciAddr.LastIndexOf('.');
+            if (dotIndex < 0) return null;
+            string pciBase = pciAddr[..dotIndex];
+
+            for (int func = 0; func < 8; func++)
+            {
+                string soundDir = $"/sys/bus/pci/devices/{pciBase}.{func}/sound";
+                if (!Directory.Exists(soundDir)) continue;
+                foreach (string cardDir in Directory.EnumerateDirectories(soundDir, "card*"))
+                {
+                    if (!int.TryParse(Path.GetFileName(cardDir)[4..], out int cardNum))
+                        continue;
+                    // Prefer capture device 1 (snd_bt87x analog); fall back to 0.
+                    string dev = Directory.Exists($"/sys/class/sound/pcmC{cardNum}D1c")
+                        ? $"hw:{cardNum},1"
+                        : $"hw:{cardNum},0";
+                    return dev;
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
+    /// Finds the PipeWire/PulseAudio capture source for the card identified by
+    /// <paramref name="busInfo"/> by querying <c>pactl list short sources</c>.
+    /// Returns a PulseAudio source name such as
+    /// "alsa_input.pci-0000_07_00.1.capture.1.0", or null if not found or pactl
+    /// is unavailable.
+    /// </summary>
+    public static string? FindRelatedPulseAudioSource(string busInfo)
+    {
+        if (!OperatingSystem.IsLinux() || !busInfo.StartsWith("PCI:", StringComparison.OrdinalIgnoreCase))
+            return null;
+        try
+        {
+            // busInfo = "PCI:0000:07:00.0" → strip function → "0000:07:00" → "0000_07_00"
+            string pciAddr = busInfo[4..];
+            int dotIndex = pciAddr.LastIndexOf('.');
+            if (dotIndex < 0) return null;
+            string pciBase = pciAddr[..dotIndex].Replace(":", "_");
+
+            using var proc = Process.Start(new ProcessStartInfo("pactl", "list short sources")
+            {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+            if (proc is null) return null;
+            string output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit(3000);
+
+            // Each line: "ID\tname\tdriver\tformat\tstate"
+            // Prefer the analog sub-device (capture.1.x) over digital (capture.0.x).
+            string? fallback = null;
+            foreach (string line in output.Split('\n'))
+            {
+                string[] parts = line.Split('\t');
+                if (parts.Length < 2) continue;
+                string name = parts[1].Trim();
+                if (!name.StartsWith($"alsa_input.pci-{pciBase}.", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (name.Contains(".capture.1.", StringComparison.OrdinalIgnoreCase))
+                    return name;
+                fallback ??= name;
+            }
+            return fallback;
+        }
+        catch { }
+        return null;
+    }
+
     [DllImport("libc", SetLastError = true)]
     private static extern int ioctl(int fd, ulong request, IntPtr argument);
 }

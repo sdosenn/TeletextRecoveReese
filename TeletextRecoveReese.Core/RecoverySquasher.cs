@@ -143,6 +143,17 @@ public static class RecoverySquasher
             if (winner is not null)
                 result[offset] = Hamming.Encode84(winner.Key);
         }
+
+        // Bytes 40-41 are the raw page CRC — majority vote by raw byte value.
+        for (int offset = 40; offset <= 41; offset++)
+        {
+            var winner = candidates
+                .GroupBy(packet => packet[offset])
+                .OrderByDescending(group => group.Count())
+                .First();
+            result[offset] = winner.Key;
+        }
+
         return result;
     }
 
