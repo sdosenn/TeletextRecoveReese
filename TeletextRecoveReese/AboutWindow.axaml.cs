@@ -57,6 +57,7 @@ public sealed class TerminatorTitleControl : Control
     private const string TitleText = "TELETEXTRECOVEREESE";
     private const string FinalTitleText = "TeletextRecoveReese";
     private const double FontSize = 440;
+    private const double TerminalFontSize = 18;
     private const double ApproachSeconds = 18.0;
     private const double AssembledHoldSeconds = 0.25;
     private const double ZoomSeconds = 3.2;
@@ -67,8 +68,12 @@ public sealed class TerminatorTitleControl : Control
     private const double VersionLiftSeconds = 0.12;
     private const double VersionValueSeconds = 0.24;
     private const double VersionHoldSeconds = 1.0;
+    private const double VersionValueHoldSeconds = 1.4;
     private const double VersionCursorBlinkSeconds = 0.6;
     private const double VersionGreenTransitionSeconds = 0.65;
+    private const double ContributorsLabelSeconds = 0.36;
+    private const double ContributorsValueSeconds = 0.28;
+    private const double ContributorsGreenTransitionSeconds = 0.65;
     private const double EasterEggDelaySeconds = 10.0;
     private const double EasterEggTypeSeconds = 0.4;
     private const double SecondsPerTick = 0.016;
@@ -86,9 +91,17 @@ public sealed class TerminatorTitleControl : Control
         double flyEnd = ApproachSeconds + AssembledHoldSeconds + ZoomSeconds + FlyToTopSeconds;
         double titleEnd = flyEnd + FinalCasingSeconds + FinalShadowFadeSeconds;
         double versionEnd = VersionLabelSeconds + VersionLiftSeconds
-                            + VersionValueSeconds + VersionHoldSeconds
+                            + VersionValueSeconds + VersionValueHoldSeconds
                             + VersionCursorBlinkSeconds + VersionGreenTransitionSeconds;
-        double firstSequenceEnd = Math.Max(titleEnd, versionEnd);
+        double contributorsStart = VersionLabelSeconds + VersionLiftSeconds
+                                   + VersionValueSeconds + VersionValueHoldSeconds
+                                   + VersionCursorBlinkSeconds;
+        double contributorsEnd = contributorsStart + VersionLiftSeconds
+                                 + ContributorsLabelSeconds + VersionLiftSeconds
+                                 + ContributorsValueSeconds + VersionValueHoldSeconds
+                                 + VersionCursorBlinkSeconds
+                                 + ContributorsGreenTransitionSeconds;
+        double firstSequenceEnd = Math.Max(titleEnd, Math.Max(versionEnd, contributorsEnd));
         double sequenceSeconds = TerminatorMode
             ? Math.Max(
                 titleEnd,
@@ -188,10 +201,19 @@ public sealed class TerminatorTitleControl : Control
         {
             double titleEnd = flyEnd + FinalCasingSeconds + FinalShadowFadeSeconds;
             double versionEnd = VersionLabelSeconds + VersionLiftSeconds
-                                + VersionValueSeconds + VersionHoldSeconds
+                                + VersionValueSeconds + VersionValueHoldSeconds
                                 + VersionCursorBlinkSeconds + VersionGreenTransitionSeconds;
-            double easterEggStart = Math.Max(titleEnd, versionEnd) + EasterEggDelaySeconds;
-            DrawVersionSequence(context, typeface, 0, easterEggStart);
+            double contributorsStart = VersionLabelSeconds + VersionLiftSeconds
+                                       + VersionValueSeconds + VersionValueHoldSeconds
+                                       + VersionCursorBlinkSeconds;
+            double contributorsEnd = contributorsStart + VersionLiftSeconds
+                                     + ContributorsLabelSeconds + VersionLiftSeconds
+                                     + ContributorsValueSeconds + VersionValueHoldSeconds
+                                     + VersionCursorBlinkSeconds
+                                     + ContributorsGreenTransitionSeconds;
+            double easterEggStart = Math.Max(titleEnd, Math.Max(versionEnd, contributorsEnd))
+                                    + EasterEggDelaySeconds;
+            DrawVersionSequence(context, typeface, 0, contributorsStart, easterEggStart);
         }
     }
 
@@ -231,8 +253,8 @@ public sealed class TerminatorTitleControl : Control
             TerminalFontFamily ?? typeface.FontFamily,
             FontStyle.Normal,
             FontWeight.Bold);
-        FormattedText modelText = CreateText(model[..modelCharacters], terminalTypeface, 22);
-        FormattedText chassisText = CreateText(chassis[..chassisCharacters], terminalTypeface, 22);
+        FormattedText modelText = CreateText(model[..modelCharacters], terminalTypeface, TerminalFontSize);
+        FormattedText chassisText = CreateText(chassis[..chassisCharacters], terminalTypeface, TerminalFontSize);
         double cursorX = 18;
         double textX = cursorX + 17;
         double bottomY = Math.Max(0, Bounds.Height - Math.Max(modelText.Height, chassisText.Height) - 16);
@@ -251,6 +273,7 @@ public sealed class TerminatorTitleControl : Control
         DrawingContext context,
         Typeface typeface,
         double startTime,
+        double contributorsStart,
         double easterEggStart)
     {
         double elapsed = _elapsedSeconds - startTime;
@@ -273,7 +296,7 @@ public sealed class TerminatorTitleControl : Control
         string visibleLabel = label[..labelCharacters];
         string visibleValue = value[..valueCharacters];
 
-        double blinkElapsed = valueElapsed - VersionValueSeconds - VersionHoldSeconds;
+        double blinkElapsed = valueElapsed - VersionValueSeconds - VersionValueHoldSeconds;
         bool blinkFinished = blinkElapsed >= VersionCursorBlinkSeconds;
         bool cursorVisible = !blinkFinished
                              && (blinkElapsed < 0
@@ -292,8 +315,56 @@ public sealed class TerminatorTitleControl : Control
             TerminalFontFamily ?? typeface.FontFamily,
             FontStyle.Normal,
             FontWeight.Bold);
-        FormattedText labelText = CreateText(visibleLabel, terminalTypeface, 22);
-        FormattedText valueText = CreateText(visibleValue, terminalTypeface, 22);
+        FormattedText labelText = CreateText(visibleLabel, terminalTypeface, TerminalFontSize);
+        FormattedText valueText = CreateText(visibleValue, terminalTypeface, TerminalFontSize);
+
+        const string contributorsLabel = "CONTRIBUTORS:";
+        const string contributorName = "NIGEL REED";
+        double contributorsElapsed = elapsed - contributorsStart;
+        bool contributorsActive = contributorsElapsed >= 0;
+        double contributorsLayoutProgress = Math.Clamp(
+            contributorsElapsed / VersionLiftSeconds,
+            0,
+            1);
+        double contributorsLabelElapsed = contributorsElapsed - VersionLiftSeconds;
+        int contributorsLabelCharacters = Math.Min(
+            contributorsLabel.Length,
+            (int)Math.Ceiling(
+                Math.Clamp(contributorsLabelElapsed / ContributorsLabelSeconds, 0, 1)
+                * contributorsLabel.Length));
+        double contributorNameElapsed = contributorsLabelElapsed
+                                        - ContributorsLabelSeconds
+                                        - VersionLiftSeconds;
+        int contributorNameCharacters = Math.Min(
+            contributorName.Length,
+            (int)Math.Ceiling(
+                Math.Clamp(contributorNameElapsed / ContributorsValueSeconds, 0, 1)
+                * contributorName.Length));
+        FormattedText contributorsLabelText = CreateText(
+            contributorsLabel[..contributorsLabelCharacters],
+            terminalTypeface,
+            TerminalFontSize);
+        FormattedText contributorNameText = CreateText(
+            contributorName[..contributorNameCharacters],
+            terminalTypeface,
+            TerminalFontSize);
+        double contributorsBlinkElapsed = contributorNameElapsed
+                                           - ContributorsValueSeconds
+                                           - VersionValueHoldSeconds;
+        bool contributorsBlinkFinished =
+            contributorsBlinkElapsed >= VersionCursorBlinkSeconds;
+        bool contributorsCursorVisible = contributorsActive
+                                          && !contributorsBlinkFinished
+                                          && (contributorsBlinkElapsed < 0
+                                              || (int)(contributorsBlinkElapsed
+                                                       / (VersionCursorBlinkSeconds / 12)) % 2 == 0);
+        double contributorsGreenProgress = EaseInOut(Math.Clamp(
+            (contributorsBlinkElapsed - VersionCursorBlinkSeconds)
+            / ContributorsGreenTransitionSeconds,
+            0,
+            1));
+        IBrush contributorsBrush = CreateTerminalBrush(contributorsGreenProgress);
+
         const string easterEggText = "TYPE REESE";
         double easterEggElapsed = _elapsedSeconds - easterEggStart;
         bool easterEggActive = easterEggElapsed >= 0;
@@ -310,7 +381,7 @@ public sealed class TerminatorTitleControl : Control
         FormattedText easterEggLine = CreateText(
             easterEggText[..easterEggCharacters],
             terminalTypeface,
-            22);
+            TerminalFontSize);
         double easterEggBlinkElapsed = easterEggTypeElapsed - EasterEggTypeSeconds - VersionHoldSeconds;
         bool easterEggBlinkFinished = easterEggBlinkElapsed >= VersionCursorBlinkSeconds;
         bool easterEggCursorVisible = easterEggActive
@@ -328,7 +399,9 @@ public sealed class TerminatorTitleControl : Control
         double bottomY = Math.Max(0, Bounds.Height - Math.Max(labelText.Height, valueText.Height) - 16);
         double lineStep = Math.Max(labelText.Height, 20) + 3;
         double upperY = bottomY - lineStep;
-        double extraLift = EaseInOut(easterEggLiftProgress) * lineStep * 2;
+        double contributorsLift = EaseInOut(contributorsLayoutProgress) * lineStep * 3;
+        double easterEggLift = EaseInOut(easterEggLiftProgress) * lineStep * 2;
+        double extraLift = contributorsLift + easterEggLift;
         double labelY = Lerp(bottomY, upperY, EaseInOut(liftProgress)) - extraLift;
         double valueY = bottomY - extraLift;
         Geometry? labelGeometry = labelText.BuildGeometry(new Point(textX, labelY));
@@ -347,6 +420,21 @@ public sealed class TerminatorTitleControl : Control
             }
         }
 
+        double contributorsLabelY = upperY - easterEggLift;
+        double contributorNameY = bottomY - easterEggLift;
+        if (contributorsLabelElapsed >= 0)
+            DrawTerminalText(
+                context,
+                contributorsLabelText,
+                new Point(textX, contributorsLabelY),
+                contributorsBrush);
+        if (contributorNameElapsed >= 0)
+            DrawTerminalText(
+                context,
+                contributorNameText,
+                new Point(textX, contributorNameY),
+                contributorsBrush);
+
         if (easterEggTypeElapsed >= 0)
         {
             Geometry? easterEggGeometry = easterEggLine.BuildGeometry(new Point(textX, bottomY));
@@ -357,16 +445,29 @@ public sealed class TerminatorTitleControl : Control
             }
         }
 
-        bool showCursor = easterEggActive ? easterEggCursorVisible : cursorVisible;
+        bool showCursor = easterEggActive
+            ? easterEggCursorVisible
+            : contributorsActive
+                ? contributorsCursorVisible
+                : cursorVisible;
         if (showCursor)
         {
-            var cursorRect = new Rect(cursorX, bottomY + 2, 10, Math.Max(14, labelText.Height - 3));
+            double cursorY = contributorsActive
+                             && !easterEggActive
+                             && contributorNameElapsed < 0
+                ? upperY
+                : bottomY;
+            var cursorRect = new Rect(cursorX, cursorY + 2, 10, Math.Max(14, labelText.Height - 3));
             context.DrawRectangle(
                 new SolidColorBrush(Color.FromArgb(180, 0, 0, 0)),
                 null,
                 cursorRect.Translate(new Vector(2, 2)));
             context.DrawRectangle(
-                easterEggActive ? easterEggBrush : textBrush,
+                easterEggActive
+                    ? easterEggBrush
+                    : contributorsActive
+                        ? contributorsBrush
+                        : textBrush,
                 null,
                 cursorRect);
         }
