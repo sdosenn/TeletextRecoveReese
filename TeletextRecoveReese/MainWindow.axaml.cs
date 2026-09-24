@@ -7882,6 +7882,8 @@ public partial class MainWindow : Window
         bool broadcastVisible = BroadcastPaneGrid.IsVisible;
         bool dualPane = broadcastVisible && _squashPaneEstablished;
         bool broadcastOnly = broadcastVisible && !_squashPaneEstablished;
+        SquashHeaderStack.IsVisible = dualPane;
+        BroadcastHeaderStack.IsVisible = dualPane;
         string dirtyMarker = _squashDirty ? " *" : string.Empty;
         string squashFileName = string.IsNullOrWhiteSpace(_squashFilePath)
             ? "Untitled"

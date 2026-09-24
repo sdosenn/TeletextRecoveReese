@@ -240,7 +240,7 @@
 
                 <!-- ==================== LEFT SIDE (Recovered squash) ==================== -->
                 <Grid x:Name="SquashPaneGrid" Grid.Column="0" RowDefinitions="Auto, Auto, Auto, Auto, Auto" RowSpacing="4" VerticalAlignment="Top">
-                    <StackPanel x:Name="SquashHeaderStack" Grid.Row="0" Spacing="6">
+                    <StackPanel x:Name="SquashHeaderStack" Grid.Row="0" Spacing="6" IsVisible="False">
                         <Grid x:Name="SquashHeaderGrid"
                               ColumnDefinitions="*,Auto,Auto"
                               Width="650"
@@ -311,13 +311,21 @@
                                 <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13" Margin="2,0"/>
                                 <Button x:Name="SquashNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnSquashNextClicked"/>
                                 <Separator Width="1" Background="{DynamicResource PanelBorderBrush}" Margin="2,2"/>
-                                <Button x:Name="SquashJumpToBroadcastButton" IsEnabled="False" Content="Jump to in full" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToBroadcastClicked"/>
+                                <Button x:Name="SquashJumpToBroadcastButton" IsEnabled="False" Content="Jump to in full" Height="26" Padding="8,0" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToBroadcastClicked"/>
                             </StackPanel>
                         </Border>
                         <Border x:Name="SquashEditToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34">
                             <Grid>
                                 <StackPanel Orientation="Horizontal" Spacing="6">
-                                    <Button x:Name="ColorModeButton" Content="Alpha" Width="65" Height="28" Click="OnColorModeClicked"/>
+                                    <Button x:Name="ColorModeButton"
+                                            Content="Alpha"
+                                            Width="72"
+                                            Height="28"
+                                            Padding="6,0"
+                                            FontSize="13"
+                                            HorizontalContentAlignment="Center"
+                                            VerticalContentAlignment="Center"
+                                            Click="OnColorModeClicked"/>
                                     <Button Tag="0" Background="#111111" Width="30" Height="28" Click="OnColorClicked"/>
                                     <Button Tag="1" Background="#D02020" Width="30" Height="28" Click="OnColorClicked"/>
                                     <Button Tag="2" Background="#20A020" Width="30" Height="28" Click="OnColorClicked"/>
@@ -351,9 +359,9 @@
                         <Border x:Name="SquashDisplayToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34">
                             <Grid ColumnDefinitions="*,Auto">
                                 <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
-                                    <Button x:Name="ControlCodesButton" Content="Codes: Off" Width="88" Height="28" Click="OnControlCodesClicked"/>
-                                    <Button x:Name="DiacriticsButton" Content="Diacritics: Off" Width="112" Height="28" Click="OnDiacriticsClicked"/>
-                                    <Button x:Name="SelectionBytesButton" Content="Bytes: Off" Width="96" Height="28" Click="OnSelectionBytesClicked"/>
+                                    <Button x:Name="ControlCodesButton" Content="Codes: Off" Width="88" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnControlCodesClicked"/>
+                                    <Button x:Name="DiacriticsButton" Content="Diacritics: Off" Width="112" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnDiacriticsClicked"/>
+                                    <Button x:Name="SelectionBytesButton" Content="Bytes: Off" Width="96" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnSelectionBytesClicked"/>
                                     <TextBox x:Name="VideoBookmarkTextBox" Width="200" Height="28" Margin="6,0,0,0" PlaceholderText="Page bookmark" TextChanged="OnVideoBookmarkTextChanged"/>
                                 </StackPanel>
                                 <TextBlock x:Name="UndoInfoText"
@@ -543,7 +551,7 @@
 
                 <!-- ==================== RIGHT SIDE (Full broadcast stream) ==================== -->
                 <Grid Grid.Column="2" x:Name="BroadcastPaneGrid" RowDefinitions="Auto, Auto, Auto, Auto, Auto" RowSpacing="4" VerticalAlignment="Top">
-                    <StackPanel x:Name="BroadcastHeaderStack" Grid.Row="0" Spacing="6">
+                    <StackPanel x:Name="BroadcastHeaderStack" Grid.Row="0" Spacing="6" IsVisible="False">
                         <Grid ColumnDefinitions="*,Auto,Auto"
                               Width="650"
                               HorizontalAlignment="Center">
@@ -589,7 +597,7 @@
                                 <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13" Margin="2,0"/>
                                 <Button x:Name="BroadcastNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnBroadcastNextClicked"/>
                                 <Separator Width="1" Background="{DynamicResource PanelBorderBrush}" Margin="2,2"/>
-                                <Button x:Name="BroadcastJumpToSquashButton" IsEnabled="False" Content="Jump to in squash" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToSquashClicked"/>
+                                <Button x:Name="BroadcastJumpToSquashButton" IsEnabled="False" Content="Jump to in squash" Height="26" Padding="8,0" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToSquashClicked"/>
                             </StackPanel>
                         </Border>
                         <Border x:Name="BroadcastEditToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34"
@@ -622,13 +630,17 @@
                         </Border>
                         <Border x:Name="BroadcastDisplayToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34">
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <Button x:Name="BroadcastControlCodesButton" Content="Codes: Off" Width="88" Height="28" Click="OnBroadcastControlCodesClicked"/>
-                                <Button x:Name="BroadcastDiacriticsButton" Content="Diacritics: Off" Width="112" Height="28" Click="OnBroadcastDiacriticsClicked"/>
-                                <Button x:Name="BroadcastSelectionBytesButton" Content="Bytes: Off" Width="96" Height="28" Click="OnBroadcastSelectionBytesClicked"/>
+                                <Button x:Name="BroadcastControlCodesButton" Content="Codes: Off" Width="88" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnBroadcastControlCodesClicked"/>
+                                <Button x:Name="BroadcastDiacriticsButton" Content="Diacritics: Off" Width="112" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnBroadcastDiacriticsClicked"/>
+                                <Button x:Name="BroadcastSelectionBytesButton" Content="Bytes: Off" Width="96" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnBroadcastSelectionBytesClicked"/>
                                 <Button x:Name="BroadcastFlashRollButton"
                                         Content="Roll: Off"
                                         Width="88"
                                         Height="28"
+                                        Padding="6,0"
+                                        FontSize="13"
+                                        HorizontalContentAlignment="Center"
+                                        VerticalContentAlignment="Center"
                                         IsEnabled="False"
                                         ToolTip.Tip="Rapidly cycle all versions of the current page"
                                         Click="OnBroadcastFlashRollClicked"/>
