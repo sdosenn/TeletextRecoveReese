@@ -346,6 +346,7 @@ public partial class MainWindow : Window
     }
 
     private readonly Dictionary<TeletextPage, PageHistory> _pageHistories = new();
+    private readonly Dictionary<string, Bitmap> _toolbarIconBitmaps = new(StringComparer.Ordinal);
     private readonly List<EnhancementListEntry> _enhancementListEntries = new();
     private readonly Dictionary<(int DesignationCode, int TripletNumber), EnhancementListEntry>
         _enhancementEntriesByTriplet = new();
@@ -744,7 +745,13 @@ public partial class MainWindow : Window
         AddHandler(KeyUpEvent, OnKeyUp, RoutingStrategies.Tunnel);
         Opened += OnWindowOpened;
         Closing += OnWindowClosing;
-        Closed += (_, _) => _flashTimer.Stop();
+        Closed += (_, _) =>
+        {
+            _flashTimer.Stop();
+            foreach (Bitmap bitmap in _toolbarIconBitmaps.Values)
+                bitmap.Dispose();
+            _toolbarIconBitmaps.Clear();
+        };
     }
 
     private async void OnWindowOpened(object? sender, EventArgs e)
@@ -754,7 +761,11 @@ public partial class MainWindow : Window
         ApplyGridFont(_sessionState.GridFontFamily, persist: false);
         bool restorePreviousSession = !_startNewSession && _loadLastSession;
         if (!_startNewSession && !_loadLastSession && HasRestorableSession())
+        {
             restorePreviousSession = await ConfirmRestorePreviousSessionAsync();
+            if (!restorePreviousSession)
+                DiscardRestorableSessionState();
+        }
 
         if (restorePreviousSession)
         {
@@ -768,6 +779,20 @@ public partial class MainWindow : Window
          && File.Exists(_sessionState.SquashFilePath))
         || (!string.IsNullOrWhiteSpace(_sessionState.BroadcastFilePath)
             && File.Exists(_sessionState.BroadcastFilePath));
+
+    private void DiscardRestorableSessionState()
+    {
+        _sessionState.SquashFilePath = null;
+        _sessionState.SquashMagazine = null;
+        _sessionState.SquashPage = null;
+        _sessionState.SquashSubpage = null;
+        _sessionState.BroadcastFilePath = null;
+        _sessionState.BroadcastMagazine = null;
+        _sessionState.BroadcastPage = null;
+        _sessionState.BroadcastSubpage = null;
+        _sessionState.BroadcastVersion = null;
+        SaveSessionState();
+    }
 
     private async Task<bool> ConfirmRestorePreviousSessionAsync()
     {
@@ -8439,19 +8464,22 @@ public partial class MainWindow : Window
         if (GetSelectedSquashCell() is not { } cell) return;
 
         bool blackBackground = cell.Background == TeletextColor.Black;
-        BackgroundAttributeButton.Content = blackBackground ? "🟨" : "⬛";
+        BackgroundAttributeIcon.Source = GetToolbarIcon(
+            blackBackground ? "new-background" : "black-background");
         ToolTip.SetTip(BackgroundAttributeButton, blackBackground ? "New background" : "Black background");
 
-        FlashAttributeButton.Content = cell.Flash ? "◉" : "⚡";
+        FlashAttributeIcon.Source = GetToolbarIcon(cell.Flash ? "steady" : "flash");
         ToolTip.SetTip(FlashAttributeButton, cell.Flash ? "Steady" : "Flash");
-        HeightAttributeButton.Content = "H×2";
+        HeightAttributeIcon.Source = GetToolbarIcon(
+            cell.DoubleHeight ? "normal-height" : "double-height");
         HeightAttributeButton.Background = cell.DoubleHeight
             ? new SolidColorBrush(Color.Parse("#296A43"))
             : null;
         ToolTip.SetTip(
             HeightAttributeButton,
             cell.DoubleHeight ? "Disable double height" : "Enable double height");
-        WidthAttributeButton.Content = "W×2";
+        WidthAttributeIcon.Source = GetToolbarIcon(
+            cell.DoubleWidth ? "normal-width" : "double-width");
         WidthAttributeButton.Background = cell.DoubleWidth
             ? new SolidColorBrush(Color.Parse("#296A43"))
             : null;
@@ -8459,12 +8487,26 @@ public partial class MainWindow : Window
             WidthAttributeButton,
             cell.DoubleWidth ? "Disable double width" : "Enable double width");
 
-        MosaicShapeAttributeButton.Content = cell.MosaicSeparated ? "CON" : "SEP";
+        MosaicShapeAttributeIcon.Source = GetToolbarIcon(
+            cell.MosaicSeparated ? "mosaic-contiguous" : "mosaic-separated");
         ToolTip.SetTip(
             MosaicShapeAttributeButton,
             cell.MosaicSeparated ? "Contiguous mosaics" : "Separated mosaics");
-        HoldMosaicAttributeButton.Content = cell.HoldMosaics ? "▶" : "✋";
+        HoldMosaicAttributeIcon.Source = GetToolbarIcon(
+            cell.HoldMosaics ? "release-mosaics" : "hold-mosaics");
         ToolTip.SetTip(HoldMosaicAttributeButton, cell.HoldMosaics ? "Release mosaics" : "Hold mosaics");
+    }
+
+    private Bitmap GetToolbarIcon(string name)
+    {
+        if (_toolbarIconBitmaps.TryGetValue(name, out Bitmap? bitmap))
+            return bitmap;
+
+        using Stream stream = AssetLoader.Open(
+            new Uri($"avares://TeletextRecoveReese/Assets/Icons/{name}.png"));
+        bitmap = new Bitmap(stream);
+        _toolbarIconBitmaps.Add(name, bitmap);
+        return bitmap;
     }
 
     private void LoadSessionState()

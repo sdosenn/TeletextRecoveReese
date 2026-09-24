@@ -291,7 +291,21 @@
                                 <ComboBox x:Name="SquashMagazineComboBox" Width="70" Height="26" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashMagazineComboChanged"/>
                                 <ComboBox x:Name="SquashPageNumberComboBox" Width="70" Height="26" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashPageNumberComboChanged"/>
                                 <ComboBox x:Name="SquashSubpageComboBox" Width="80" Height="26" FontSize="13" VerticalContentAlignment="Center" SelectionChanged="OnSquashSubpageComboChanged"/>
-                                <Button x:Name="SquashDeletePageButton" IsEnabled="False" Content="🗑" ToolTip.Tip="Delete current page" Width="32" Height="26" FontSize="15" Padding="0" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnDeletePageClicked"/>
+                                <Button x:Name="SquashDeletePageButton"
+                                        IsEnabled="False"
+                                        ToolTip.Tip="Delete current page"
+                                        Width="32"
+                                        Height="26"
+                                        Padding="0"
+                                        VerticalContentAlignment="Center"
+                                        HorizontalContentAlignment="Center"
+                                        Click="OnDeletePageClicked">
+                                    <Image Source="/Assets/Icons/delete-page.png"
+                                           Width="20"
+                                           Height="20"
+                                           RenderOptions.BitmapInterpolationMode="HighQuality"
+                                           Stretch="Uniform" />
+                                </Button>
                                 <Separator Width="1" Background="{DynamicResource PanelBorderBrush}" Margin="2,2"/>
                                 <Button x:Name="SquashPreviousButton" IsEnabled="False" Content="&lt;" Width="32" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnSquashPreviousClicked"/>
                                 <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13" Margin="2,0"/>
@@ -313,12 +327,24 @@
                                     <Button Tag="6" Background="#20B0B0" Width="30" Height="28" Click="OnColorClicked"/>
                                     <Button Tag="7" Background="#E0E0E0" Width="30" Height="28" Click="OnColorClicked"/>
                                     <Separator Width="1" Background="{DynamicResource PanelBorderBrush}" Margin="3,2"/>
-                                    <Button x:Name="BackgroundAttributeButton" Content="🟨" Width="38" Height="28" FontSize="16" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="New background" Click="OnBackgroundAttributeClicked"/>
-                                    <Button x:Name="FlashAttributeButton" Content="⚡" Width="38" Height="28" FontSize="16" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Flash" Click="OnFlashAttributeClicked"/>
-                                    <Button x:Name="HeightAttributeButton" Content="H×2" Width="38" Height="28" FontSize="12" FontWeight="SemiBold" FontFamily="Menlo,DejaVu Sans Mono,monospace" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Enable double height" Click="OnHeightAttributeClicked"/>
-                                    <Button x:Name="WidthAttributeButton" Content="W×2" Width="38" Height="28" FontSize="12" FontWeight="SemiBold" FontFamily="Menlo,DejaVu Sans Mono,monospace" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Enable double width" Click="OnWidthAttributeClicked"/>
-                                    <Button x:Name="MosaicShapeAttributeButton" Content="SEP" Width="38" Height="28" FontSize="10" FontWeight="SemiBold" FontFamily="Menlo,DejaVu Sans Mono,monospace" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Separated mosaics" Click="OnMosaicShapeAttributeClicked"/>
-                                    <Button x:Name="HoldMosaicAttributeButton" Content="✋" Width="38" Height="28" FontSize="16" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Hold mosaics" Click="OnHoldMosaicAttributeClicked"/>
+                                    <Button x:Name="BackgroundAttributeButton" Width="38" Height="28" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="New background" Click="OnBackgroundAttributeClicked">
+                                        <Image x:Name="BackgroundAttributeIcon" Source="/Assets/Icons/new-background.png" Width="20" Height="20" RenderOptions.BitmapInterpolationMode="HighQuality" Stretch="Uniform" />
+                                    </Button>
+                                    <Button x:Name="FlashAttributeButton" Width="38" Height="28" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Flash" Click="OnFlashAttributeClicked">
+                                        <Image x:Name="FlashAttributeIcon" Source="/Assets/Icons/flash.png" Width="20" Height="20" RenderOptions.BitmapInterpolationMode="HighQuality" Stretch="Uniform" />
+                                    </Button>
+                                    <Button x:Name="HeightAttributeButton" Width="38" Height="28" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Enable double height" Click="OnHeightAttributeClicked">
+                                        <Image x:Name="HeightAttributeIcon" Source="/Assets/Icons/double-height.png" Width="20" Height="20" RenderOptions.BitmapInterpolationMode="HighQuality" Stretch="Uniform" />
+                                    </Button>
+                                    <Button x:Name="WidthAttributeButton" Width="38" Height="28" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Enable double width" Click="OnWidthAttributeClicked">
+                                        <Image x:Name="WidthAttributeIcon" Source="/Assets/Icons/double-width.png" Width="20" Height="20" RenderOptions.BitmapInterpolationMode="HighQuality" Stretch="Uniform" />
+                                    </Button>
+                                    <Button x:Name="MosaicShapeAttributeButton" Width="38" Height="28" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Separated mosaics" Click="OnMosaicShapeAttributeClicked">
+                                        <Image x:Name="MosaicShapeAttributeIcon" Source="/Assets/Icons/mosaic-separated.png" Width="20" Height="20" RenderOptions.BitmapInterpolationMode="HighQuality" Stretch="Uniform" />
+                                    </Button>
+                                    <Button x:Name="HoldMosaicAttributeButton" Width="38" Height="28" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Hold mosaics" Click="OnHoldMosaicAttributeClicked">
+                                        <Image x:Name="HoldMosaicAttributeIcon" Source="/Assets/Icons/hold-mosaics.png" Width="20" Height="20" RenderOptions.BitmapInterpolationMode="HighQuality" Stretch="Uniform" />
+                                    </Button>
                                 </StackPanel>
                             </Grid>
                         </Border>
