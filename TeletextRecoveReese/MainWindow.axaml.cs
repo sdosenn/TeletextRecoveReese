@@ -400,6 +400,7 @@ public partial class MainWindow : Window
         public string? CaptureNamingFormat { get; set; }
         public string? Theme { get; set; }
         public int? UiScalePercent { get; set; }
+        public string? LastUsedFolderPath { get; set; }
     }
 
     private sealed class CaptureCardPreset
@@ -1353,7 +1354,7 @@ public partial class MainWindow : Window
         };
         selectFfmpegButton.Click += async (_, _) =>
         {
-            var files = await dialog.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            var files = await OpenFilePickerRememberingFolderAsync(dialog.StorageProvider, new FilePickerOpenOptions
             {
                 Title = "Select FFmpeg executable",
                 AllowMultiple = false,
@@ -4105,7 +4106,7 @@ public partial class MainWindow : Window
 
     private async void OnOpenClicked(object? sender, RoutedEventArgs e)
     {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        var files = await OpenFilePickerRememberingFolderAsync(new FilePickerOpenOptions
         {
             Title = "Open teletext broadcast capture",
             AllowMultiple = false,
@@ -6880,7 +6881,7 @@ public partial class MainWindow : Window
 
     private async void OnOpenVbiCaptureClicked(object? sender, RoutedEventArgs e)
     {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        var files = await OpenFilePickerRememberingFolderAsync(new FilePickerOpenOptions
         {
             Title = "Open raw VBI capture",
             AllowMultiple = false,
@@ -7129,7 +7130,7 @@ public partial class MainWindow : Window
             }
 
             _broadcastStreamIdentity = AnalyzeTeletextStreamIdentity(_broadcastPackets);
-            IStorageFile? savedOutputFile = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+            IStorageFile? savedOutputFile = await SaveFilePickerRememberingFolderAsync(new FilePickerSaveOptions
             {
                 Title = "Save deconvolved T42 capture (Cancel to open without saving)",
                 SuggestedFileName = SuggestedTeletextFileName(
@@ -7266,7 +7267,7 @@ public partial class MainWindow : Window
 
     private async Task OpenSquashFileAsync()
     {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        var files = await OpenFilePickerRememberingFolderAsync(new FilePickerOpenOptions
         {
             Title = "Open teletext page or squashed capture",
             AllowMultiple = false,
@@ -8509,6 +8510,71 @@ public partial class MainWindow : Window
         bitmap = new Bitmap(stream);
         _toolbarIconBitmaps.Add(name, bitmap);
         return bitmap;
+    }
+
+    private async Task<IStorageFolder?> GetLastUsedFolderAsync(IStorageProvider storageProvider)
+    {
+        string? path = _sessionState.LastUsedFolderPath;
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return null;
+
+        try
+        {
+            return await storageProvider.TryGetFolderFromPathAsync(new Uri(Path.GetFullPath(path)));
+        }
+        catch
+        {
+            // A removed drive or an inaccessible directory should never prevent
+            // the platform picker from opening at its normal default location.
+            return null;
+        }
+    }
+
+    private void RememberPickerFolder(IStorageItem item)
+    {
+        if (!item.Path.IsFile) return;
+
+        string path = item.Path.LocalPath;
+        string? directory = item is IStorageFolder
+            ? path
+            : Path.GetDirectoryName(path);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return;
+
+        _sessionState.LastUsedFolderPath = directory;
+        SaveSessionState();
+    }
+
+    private async Task<IReadOnlyList<IStorageFile>> OpenFilePickerRememberingFolderAsync(
+        IStorageProvider storageProvider,
+        FilePickerOpenOptions options)
+    {
+        using IStorageFolder? startFolder = await GetLastUsedFolderAsync(storageProvider);
+        options.SuggestedStartLocation ??= startFolder;
+        IReadOnlyList<IStorageFile> files = await storageProvider.OpenFilePickerAsync(options);
+        if (files.Count > 0) RememberPickerFolder(files[0]);
+        return files;
+    }
+
+    private Task<IReadOnlyList<IStorageFile>> OpenFilePickerRememberingFolderAsync(
+        FilePickerOpenOptions options) =>
+        OpenFilePickerRememberingFolderAsync(StorageProvider, options);
+
+    private async Task<IStorageFile?> SaveFilePickerRememberingFolderAsync(FilePickerSaveOptions options)
+    {
+        using IStorageFolder? startFolder = await GetLastUsedFolderAsync(StorageProvider);
+        options.SuggestedStartLocation ??= startFolder;
+        IStorageFile? file = await StorageProvider.SaveFilePickerAsync(options);
+        if (file is not null) RememberPickerFolder(file);
+        return file;
+    }
+
+    private async Task<IReadOnlyList<IStorageFolder>> OpenFolderPickerRememberingFolderAsync(
+        FolderPickerOpenOptions options)
+    {
+        using IStorageFolder? startFolder = await GetLastUsedFolderAsync(StorageProvider);
+        options.SuggestedStartLocation ??= startFolder;
+        IReadOnlyList<IStorageFolder> folders = await StorageProvider.OpenFolderPickerAsync(options);
+        if (folders.Count > 0) RememberPickerFolder(folders[0]);
+        return folders;
     }
 
     private void LoadSessionState()
@@ -10681,7 +10747,7 @@ public partial class MainWindow : Window
             saveRawButton.IsEnabled = false;
             try
             {
-                IStorageFile? destination = await StorageProvider.SaveFilePickerAsync(
+                IStorageFile? destination = await SaveFilePickerRememberingFolderAsync(
                     new FilePickerSaveOptions
                     {
                         Title = "Save raw VBI capture",
@@ -10770,7 +10836,7 @@ public partial class MainWindow : Window
     private async Task SaveOpenedLiveDecodedCaptureAsync(string temporaryOutput)
     {
         _broadcastStreamIdentity = AnalyzeTeletextStreamIdentity(_broadcastPackets);
-        IStorageFile? destination = await StorageProvider.SaveFilePickerAsync(
+        IStorageFile? destination = await SaveFilePickerRememberingFolderAsync(
             new FilePickerSaveOptions
             {
                 Title = "Save decoded live capture",
@@ -10931,7 +10997,7 @@ public partial class MainWindow : Window
         if (!HasUnsavedCapturedStream()) return false;
 
         _broadcastStreamIdentity = AnalyzeTeletextStreamIdentity(_broadcastPackets);
-        IStorageFile? destination = await StorageProvider.SaveFilePickerAsync(
+        IStorageFile? destination = await SaveFilePickerRememberingFolderAsync(
             new FilePickerSaveOptions
             {
                 Title = "Save captured full broadcast stream",
@@ -11217,7 +11283,7 @@ public partial class MainWindow : Window
         if (settings is not { } selected) return;
 
         _squashStreamIdentity = AnalyzeTeletextStreamIdentity(BuildSquashOutputPackets());
-        using var outputFile = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        using var outputFile = await SaveFilePickerRememberingFolderAsync(new FilePickerSaveOptions
         {
             Title = "Save teletext video",
             SuggestedFileName = SuggestedTeletextFileName(
@@ -11517,7 +11583,7 @@ public partial class MainWindow : Window
         }
 
         string pageAddress = $"{page.Magazine:X1}{page.PageNumber:X2}-{page.SubPage:X4}";
-        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        var file = await SaveFilePickerRememberingFolderAsync(new FilePickerSaveOptions
         {
             Title = "Export current teletext page as PNG",
             SuggestedFileName = $"teletext-{pageAddress}.png",
@@ -11565,7 +11631,7 @@ public partial class MainWindow : Window
         string sourceName = string.IsNullOrWhiteSpace(sourcePath)
             ? "teletext"
             : Path.GetFileNameWithoutExtension(sourcePath);
-        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        var file = await SaveFilePickerRememberingFolderAsync(new FilePickerSaveOptions
         {
             Title = "Export current teletext page as T42",
             SuggestedFileName = $"{sourceName}-{pageAddress}.t42",
@@ -11622,7 +11688,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        var folders = await OpenFolderPickerRememberingFolderAsync(new FolderPickerOpenOptions
         {
             Title = "Choose folder for batch screenshots",
             AllowMultiple = false,
@@ -11708,7 +11774,7 @@ public partial class MainWindow : Window
         // edited headers affect its own suggested name. Never inherit metadata
         // from the Full Broadcast pane: each grid owns an independent identity.
         _squashStreamIdentity = AnalyzeTeletextStreamIdentity(BuildSquashOutputPackets());
-        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        var file = await SaveFilePickerRememberingFolderAsync(new FilePickerSaveOptions
         {
             Title = "Save squashed T42 capture",
             SuggestedFileName = SuggestedTeletextFileName(
