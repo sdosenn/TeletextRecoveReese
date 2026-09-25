@@ -400,6 +400,8 @@ public partial class MainWindow : Window
         public bool? ShowLiveDeconvolvedPage { get; set; }
         public bool? RecordRawVbiToDisk { get; set; }
         public bool? KeepEmptyLiveCapturePackets { get; set; }
+        public bool? AutoStopLiveCaptureOnNoTeletext { get; set; }
+        public int? LiveCaptureNoTeletextTimeoutMinutes { get; set; }
         public string? DateDisplayOrder { get; set; }
         public string? CaptureNamingFormat { get; set; }
         public string? Theme { get; set; }
@@ -5079,6 +5081,54 @@ public partial class MainWindow : Window
             };
             var deconvolutionControl = new ToggleableDeconvolutionControl(
                 true, input.LinesPerFrame);
+            int configuredNoTeletextTimeoutMinutes = Math.Clamp(
+                _sessionState.LiveCaptureNoTeletextTimeoutMinutes ?? 5,
+                1, 30);
+            int? activeNoTeletextTimeoutMinutes =
+                _sessionState.AutoStopLiveCaptureOnNoTeletext == true
+                    ? configuredNoTeletextTimeoutMinutes
+                    : null;
+            long lastDecodedPacketCount = 0;
+            long lastDecodedPacketTimestamp = Stopwatch.GetTimestamp();
+            var liveNoTeletextTimeoutInput = new NumericUpDown
+            {
+                Width = 72,
+                Minimum = 1,
+                Maximum = 30,
+                Increment = 1,
+                Value = configuredNoTeletextTimeoutMinutes,
+                IsEnabled = activeNoTeletextTimeoutMinutes is not null,
+            };
+            var liveAutoStopNoTeletextCheckBox = new CheckBox
+            {
+                Content = "Stop after no Teletext packets for",
+                IsChecked = activeNoTeletextTimeoutMinutes is not null,
+            };
+            var liveAutoStopNoTeletextPanel = new StackPanel
+            {
+                Spacing = 4,
+                Children =
+                {
+                    liveAutoStopNoTeletextCheckBox,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 8,
+                        Children =
+                        {
+                            liveNoTeletextTimeoutInput,
+                            new TextBlock
+                            {
+                                Text = "minutes",
+                                VerticalAlignment = VerticalAlignment.Center,
+                            },
+                        },
+                    },
+                },
+            };
+            ToolTip.SetTip(
+                liveAutoStopNoTeletextPanel,
+                "Can be enabled, disabled or changed while capture is running");
             var resetAllClockOffsetsButton = new Button
             {
                 Content = "Reset all",
@@ -5434,6 +5484,7 @@ public partial class MainWindow : Window
                                                     showRawPreviewCheckBox,
                                                     showVideoPreviewCheckBox,
                                                     runDeconvolutionCheckBox,
+                                                    liveAutoStopNoTeletextPanel,
                                                     showLiveControls,
                                                 },
                                             },
@@ -5456,6 +5507,7 @@ public partial class MainWindow : Window
                 },
             };
             bool allowClose = false;
+            bool autoStoppedForNoTeletext = false;
             bool rawPreviewActive = true;
             bool videoPreviewActive = true;
             var rawPreviewUpdates = new LatestUiPreview<Action>(render => render());
@@ -5927,8 +5979,35 @@ public partial class MainWindow : Window
                 // This controls only CPU/OpenCL work. Video preview has its own
                 // independent pipe controlled by showVideoPreviewCheckBox.
                 deconvolutionControl.Enabled = runDeconvolutionCheckBox.IsChecked == true;
+                lastDecodedPacketTimestamp = Stopwatch.GetTimestamp();
                 Interlocked.Exchange(ref fpsBaselineFrames, input.CapturedFrames);
                 Interlocked.Exchange(ref fpsBaselineTimestamp, Stopwatch.GetTimestamp());
+            };
+            liveAutoStopNoTeletextCheckBox.IsCheckedChanged += (_, _) =>
+            {
+                bool enabled = liveAutoStopNoTeletextCheckBox.IsChecked == true;
+                configuredNoTeletextTimeoutMinutes = Math.Clamp(
+                    (int)(liveNoTeletextTimeoutInput.Value ?? 5), 1, 30);
+                activeNoTeletextTimeoutMinutes = enabled
+                    ? configuredNoTeletextTimeoutMinutes
+                    : null;
+                liveNoTeletextTimeoutInput.IsEnabled = enabled;
+                lastDecodedPacketTimestamp = Stopwatch.GetTimestamp();
+                _sessionState.AutoStopLiveCaptureOnNoTeletext = enabled;
+                _sessionState.LiveCaptureNoTeletextTimeoutMinutes =
+                    configuredNoTeletextTimeoutMinutes;
+                SaveSessionState();
+            };
+            liveNoTeletextTimeoutInput.ValueChanged += (_, _) =>
+            {
+                configuredNoTeletextTimeoutMinutes = Math.Clamp(
+                    (int)(liveNoTeletextTimeoutInput.Value ?? 5), 1, 30);
+                if (liveAutoStopNoTeletextCheckBox.IsChecked == true)
+                    activeNoTeletextTimeoutMinutes = configuredNoTeletextTimeoutMinutes;
+                lastDecodedPacketTimestamp = Stopwatch.GetTimestamp();
+                _sessionState.LiveCaptureNoTeletextTimeoutMinutes =
+                    configuredNoTeletextTimeoutMinutes;
+                SaveSessionState();
             };
             dialog.Closed += (_, _) =>
             {
@@ -6177,15 +6256,45 @@ public partial class MainWindow : Window
             var reporter = new Progress<VbiDeconvolutionProgress>(value =>
             {
                 lastProgress = value;
+                if (value.PacketsWritten > lastDecodedPacketCount)
+                {
+                    lastDecodedPacketCount = value.PacketsWritten;
+                    lastDecodedPacketTimestamp = Stopwatch.GetTimestamp();
+                }
+                else if (!deconvolutionControl.Enabled)
+                {
+                    // Decoded-packet silence cannot be measured while decoding is
+                    // paused. Restart the timeout when deconvolution resumes.
+                    lastDecodedPacketTimestamp = Stopwatch.GetTimestamp();
+                }
+
+                TimeSpan noTeletextElapsed =
+                    Stopwatch.GetElapsedTime(lastDecodedPacketTimestamp);
+                if (!autoStoppedForNoTeletext
+                    && activeNoTeletextTimeoutMinutes is { } timeoutMinutes
+                    && deconvolutionControl.Enabled
+                    && noTeletextElapsed >= TimeSpan.FromMinutes(timeoutMinutes))
+                {
+                    autoStoppedForNoTeletext = true;
+                    StopCapture();
+                    phaseText.Text =
+                        $"No Teletext packets for {timeoutMinutes} "
+                        + (timeoutMinutes == 1 ? "minute" : "minutes")
+                        + " — stopping capture…";
+                }
+
                 long baselineFrames = Interlocked.Read(ref fpsBaselineFrames);
                 long baselineTimestamp = Interlocked.Read(ref fpsBaselineTimestamp);
                 double fpsElapsedSeconds = Stopwatch.GetElapsedTime(baselineTimestamp).TotalSeconds;
                 double captureFps = fpsElapsedSeconds > 0
                     ? (input.CapturedFrames - baselineFrames) / fpsElapsedSeconds
                     : 0;
-                phaseText.Text = deconvolutionControl.Enabled
-                    ? $"Live deconvolution — {captureFps:0.0} fps"
-                    : $"Capture only — {captureFps:0.0} fps";
+                if (!autoStoppedForNoTeletext)
+                {
+                    phaseText.Text = deconvolutionControl.Enabled
+                        ? $"Live deconvolution — {captureFps:0.0} fps"
+                        : $"Capture only — {captureFps:0.0} fps";
+                }
                 string headerDiagnostics = liveAssembler is null
                     ? "Headers waiting…"
                     : $"Headers {liveAssembler.HeaderPacketsAccepted:N0} ok / {liveAssembler.HeaderPacketsRejected:N0} rejected   " +
@@ -6194,7 +6303,12 @@ public partial class MainWindow : Window
                 detailText.Text =
                     $"Frames {value.ProcessedLines / Math.Max(input.LinesPerFrame, 1):N0}   Lines {value.ProcessedLines:N0}   Teletext {value.TeletextLines:N0}   Packets {value.PacketsWritten:N0}\n" +
                     headerDiagnostics;
-                timingText.Text = $"Elapsed {FormatVbiDuration(elapsed.Elapsed)}   Device {input.SamplingRate:N0} Hz · {input.SamplesPerLine} samples/line · {input.LinesPerFrame} lines/frame";
+                string autoStopStatus = activeNoTeletextTimeoutMinutes is { } configuredMinutes
+                    ? deconvolutionControl.Enabled
+                        ? $"   No-data auto-stop in {FormatVbiDuration(TimeSpan.FromTicks(Math.Max(0, (TimeSpan.FromMinutes(configuredMinutes) - noTeletextElapsed).Ticks)))}"
+                        : "   No-data auto-stop paused"
+                    : string.Empty;
+                timingText.Text = $"Elapsed {FormatVbiDuration(elapsed.Elapsed)}   Device {input.SamplingRate:N0} Hz · {input.SamplesPerLine} samples/line · {input.LinesPerFrame} lines/frame{autoStopStatus}";
             });
             Exception? failure = null;
             _ = Task.Run(async () =>
@@ -6283,7 +6397,8 @@ public partial class MainWindow : Window
                 }
                 LiveCaptureCompletionChoice completionChoice =
                     await ShowLiveCaptureCompletionDialogAsync(
-                        temporaryRawCapture, packetCount);
+                        temporaryRawCapture, packetCount,
+                        autoStoppedForNoTeletext ? activeNoTeletextTimeoutMinutes : null);
                 if (completionChoice == LiveCaptureCompletionChoice.Discard)
                     return;
 
@@ -10859,10 +10974,25 @@ public partial class MainWindow : Window
 
     private async Task<LiveCaptureCompletionChoice> ShowLiveCaptureCompletionDialogAsync(
         string? rawCapturePath,
-        long packetCount)
+        long packetCount,
+        int? autoStopNoTeletextMinutes = null)
     {
         LiveCaptureCompletionChoice choice = LiveCaptureCompletionChoice.Discard;
         bool hasRawCapture = rawCapturePath is not null && File.Exists(rawCapturePath);
+        string resultText = packetCount > 0
+            ? hasRawCapture
+                ? $"Recovered {packetCount:N0} Teletext packets. You can save the raw VBI capture, then open the decoded stream or discard everything."
+                : $"Recovered {packetCount:N0} Teletext packets. Raw VBI recording was disabled; open the decoded stream or discard everything."
+            : hasRawCapture
+                ? "No Teletext packets were recovered. You can still save the raw VBI capture for later analysis."
+                : "No Teletext packets were recovered. Raw VBI recording was disabled for this capture.";
+        if (autoStopNoTeletextMinutes is { } timeoutMinutes)
+        {
+            string duration = timeoutMinutes == 1
+                ? "1 minute"
+                : $"{timeoutMinutes} minutes";
+            resultText = $"Capture stopped automatically after {duration} without a decoded Teletext packet.\n\n{resultText}";
+        }
         var saveRawButton = new Button
         {
             Content = "Save VBI file…",
@@ -10886,7 +11016,9 @@ public partial class MainWindow : Window
         };
         var dialog = new Window
         {
-            Title = "Live VBI capture complete",
+            Title = autoStopNoTeletextMinutes is null
+                ? "Live VBI capture complete"
+                : "Live VBI capture stopped automatically",
             Width = 560,
             SizeToContent = SizeToContent.Height,
             CanResize = false,
@@ -10899,13 +11031,7 @@ public partial class MainWindow : Window
                 {
                     new TextBlock
                     {
-                        Text = packetCount > 0
-                            ? hasRawCapture
-                                ? $"Recovered {packetCount:N0} Teletext packets. You can save the raw VBI capture, then open the decoded stream or discard everything."
-                                : $"Recovered {packetCount:N0} Teletext packets. Raw VBI recording was disabled; open the decoded stream or discard everything."
-                            : hasRawCapture
-                                ? "No Teletext packets were recovered. You can still save the raw VBI capture for later analysis."
-                                : "No Teletext packets were recovered. Raw VBI recording was disabled for this capture.",
+                        Text = resultText,
                         TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
                     },
                     new Grid
