@@ -5092,7 +5092,7 @@ public partial class MainWindow : Window
             long lastDecodedPacketTimestamp = Stopwatch.GetTimestamp();
             var liveNoTeletextTimeoutInput = new NumericUpDown
             {
-                Width = 72,
+                Width = 120,
                 Minimum = 1,
                 Maximum = 30,
                 Increment = 1,
