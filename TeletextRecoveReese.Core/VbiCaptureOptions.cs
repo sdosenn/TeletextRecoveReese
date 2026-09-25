@@ -13,7 +13,8 @@ public sealed record VbiCaptureOptions(
     float StandardDeviationThreshold = 14,
     float SignalLevelThreshold = 64,
     float CriFcRangeThreshold = 28,
-    double CriFcConfidenceThreshold = 0.35);
+    double CriFcConfidenceThreshold = 0.35,
+    bool KeepEmptyPackets = false);
 
 public readonly record struct VbiDeconvolutionProgress(
     long ProcessedLines,

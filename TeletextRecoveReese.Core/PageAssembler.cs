@@ -43,6 +43,7 @@ public class PageAssembler
         LastUpdatedPage = null;
         LastFinalizedPage = null;
         if (raw42.Length != 42) return;
+        if (TeletextPacket.IsPadding(raw42)) return;
 
         var (mrag, mragBad) = DecodeNibblePair(raw42[0], raw42[1]);
         if (mragBad)

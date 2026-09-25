@@ -13,29 +13,29 @@
         <NativeMenu>
             <NativeMenuItem Header="File">
                 <NativeMenu>
-                    <NativeMenuItem Header="Open Squashed or Single…" Gesture="Meta+O" Click="OnNativeOpenSquashedClicked" />
-                    <NativeMenuItem Header="Open Broadcast Stream…" Click="OnNativeOpenClicked" />
-                    <NativeMenuItem Header="Open VBI Capture">
+                    <NativeMenuItem Header="Open squashed or single…" Gesture="Meta+O" Click="OnNativeOpenSquashedClicked" />
+                    <NativeMenuItem Header="Open broadcast stream…" Click="OnNativeOpenClicked" />
+                    <NativeMenuItem Header="Open VBI capture">
                         <NativeMenu>
-                            <NativeMenuItem Header="From File…" Click="OnNativeOpenVbiCaptureClicked" />
-                            <NativeMenuItem Header="Live Capture…" Click="OnNativeOpenLiveVbiCaptureClicked" />
+                            <NativeMenuItem Header="From file…" Click="OnNativeOpenVbiCaptureClicked" />
+                            <NativeMenuItem Header="Live capture…" Click="OnNativeOpenLiveVbiCaptureClicked" />
                         </NativeMenu>
                     </NativeMenuItem>
-                    <NativeMenuItem Header="Open Recent"><NativeMenu /></NativeMenuItem>
+                    <NativeMenuItem Header="Open recent"><NativeMenu /></NativeMenuItem>
                     <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Save" Gesture="Meta+S" Click="OnNativeSaveClicked" />
-                    <NativeMenuItem Header="Save As…" Gesture="Meta+Shift+S" Click="OnNativeSaveAsClicked" />
-                    <NativeMenuItem Header="Save Captured Stream…" IsVisible="False" Click="OnNativeSaveCapturedStreamClicked" />
+                    <NativeMenuItem Header="Save as…" Gesture="Meta+Shift+S" Click="OnNativeSaveAsClicked" />
+                    <NativeMenuItem Header="Save captured stream…" IsVisible="False" Click="OnNativeSaveCapturedStreamClicked" />
                     <NativeMenuItemSeparator />
-                    <NativeMenuItem Header="Close Squashed Page" Click="OnNativeCloseSquashedPageClicked" />
-                    <NativeMenuItem Header="Close Full Broadcast" Click="OnNativeCloseFullBroadcastClicked" />
+                    <NativeMenuItem Header="Close squashed page" Click="OnNativeCloseSquashedPageClicked" />
+                    <NativeMenuItem Header="Close full broadcast" Click="OnNativeCloseFullBroadcastClicked" />
                     <NativeMenuItemSeparator />
-                    <NativeMenuItem Header="Export Single Page…" Click="OnNativeExportCurrentPageT42Clicked" />
-                    <NativeMenuItem Header="Export Screenshot…" Click="OnNativeExportScreenshotClicked" />
-                    <NativeMenuItem Header="Batch Export Screenshots…" Click="OnNativeBatchExportScreenshotsClicked" />
-                    <NativeMenuItem Header="Export Video…" Click="OnNativeExportVideoClicked" />
+                    <NativeMenuItem Header="Export single page…" Click="OnNativeExportCurrentPageT42Clicked" />
+                    <NativeMenuItem Header="Export screenshot…" Click="OnNativeExportScreenshotClicked" />
+                    <NativeMenuItem Header="Batch export screenshots…" Click="OnNativeBatchExportScreenshotsClicked" />
+                    <NativeMenuItem Header="Export video…" Click="OnNativeExportVideoClicked" />
                     <NativeMenuItemSeparator />
-                    <NativeMenuItem Header="Close Window" Gesture="Meta+W" Click="OnNativeExitClicked" />
+                    <NativeMenuItem Header="Close window" Gesture="Meta+W" Click="OnNativeExitClicked" />
                 </NativeMenu>
             </NativeMenuItem>
             <NativeMenuItem Header="Edit">
@@ -59,33 +59,34 @@
             </NativeMenuItem>
             <NativeMenuItem Header="View">
                 <NativeMenu>
-                    <NativeMenuItem Header="X/26 Enhancements Sidebar"
+                    <NativeMenuItem Header="X/26 enhancements sidebar"
                                     ToggleType="CheckBox"
                                     IsChecked="True"
                                     Click="OnNativeX26EnhancementsSidebarClicked" />
-                    <NativeMenuItem Header="Page Bookmarks Sidebar"
+                    <NativeMenuItem Header="Page bookmarks sidebar"
                                     ToggleType="CheckBox"
                                     IsChecked="True"
                                     Click="OnNativeVideoBookmarksSidebarClicked" />
-                    <NativeMenuItem Header="Suppress Flash"
+                    <NativeMenuItem Header="Suppress flash"
                                     ToggleType="CheckBox"
                                     Click="OnNativeSuppressFlashClicked" />
-                    <NativeMenuItem Header="Fastext and CRC Toolbar"
+                    <NativeMenuItem Header="Fastext and CRC toolbar"
                                     ToggleType="CheckBox"
                                     IsChecked="True"
                                     Click="OnNativeFastextCrcToolbarClicked" />
-                    <NativeMenuItem Header="Toolbar on Bottom"
+                    <NativeMenuItem Header="Toolbar on bottom"
                                     ToggleType="CheckBox"
                                     Click="OnNativeToolbarOnBottomClicked" />
                 </NativeMenu>
             </NativeMenuItem>
             <NativeMenuItem Header="Page">
                 <NativeMenu>
-                    <NativeMenuItem Header="New Page" Gesture="Meta+N" Click="OnNativeNewPageClicked" />
-                    <NativeMenuItem Header="Delete Current Page" Click="OnNativeDeletePageClicked" />
-                    <NativeMenuItem Header="Create Squashed Stream" IsEnabled="False" Click="OnNativeCreateSquashedStreamClicked" />
+                    <NativeMenuItem Header="New page" Gesture="Meta+N" Click="OnNativeNewPageClicked" />
+                    <NativeMenuItem Header="Delete current page" Click="OnNativeDeletePageClicked" />
+                    <NativeMenuItem Header="Create squashed stream" IsEnabled="False" Click="OnNativeCreateSquashedStreamClicked" />
+                    <NativeMenuItem Header="Apply squashed repairs to full broadcast…" IsEnabled="False" Click="OnNativeApplySquashedRepairsClicked" />
                     <NativeMenuItemSeparator/>
-                    <NativeMenuItem Header="G0 Subset">
+                    <NativeMenuItem Header="G0 subset">
                         <NativeMenu>
                             <NativeMenuItem Header="Auto (from stream)" CommandParameter="auto" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
                             <NativeMenuItem Header="Default G0 + enhancements" CommandParameter="default" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
@@ -106,7 +107,7 @@
                     <NativeMenuItem Header="Preferences…" Click="OnNativePreferencesClicked" />
                     <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Font…" Click="OnNativeChooseFontClicked" />
-                    <NativeMenuItem Header="Capture Card Presets…" Click="OnNativeCaptureCardPresetsClicked" />
+                    <NativeMenuItem Header="Capture card presets…" Click="OnNativeCaptureCardPresetsClicked" />
                     <NativeMenuItem Header="Disable video preview in live VBI capture"
                                     ToggleType="CheckBox"
                                     Click="OnNativeDisableLiveVbiVideoPreviewClicked" />
@@ -126,25 +127,25 @@
         <!-- Standard Menu -->
         <Menu x:Name="WindowMenu" DockPanel.Dock="Top">
             <MenuItem Header="_File">
-                <MenuItem Header="Open _Squashed or Single..." InputGesture="Ctrl+O" Click="OnOpenSquashedClicked" />
+                <MenuItem Header="Open _squashed or single..." InputGesture="Ctrl+O" Click="OnOpenSquashedClicked" />
                 <MenuItem Header="Open broadcast stream..." Click="OnOpenClicked" />
-                <MenuItem Header="Open _VBI Capture">
-                    <MenuItem Header="From _File..." Click="OnOpenVbiCaptureClicked" />
-                    <MenuItem x:Name="OpenLiveVbiCaptureMenuItem" Header="_Live Capture..." Click="OnOpenLiveVbiCaptureClicked" />
+                <MenuItem Header="Open _VBI capture">
+                    <MenuItem Header="From _file..." Click="OnOpenVbiCaptureClicked" />
+                    <MenuItem x:Name="OpenLiveVbiCaptureMenuItem" Header="_Live capture..." Click="OnOpenLiveVbiCaptureClicked" />
                 </MenuItem>
-                <MenuItem x:Name="OpenRecentMenuItem" Header="Open _Recent" />
+                <MenuItem x:Name="OpenRecentMenuItem" Header="Open _recent" />
                 <Separator />
                 <MenuItem x:Name="SaveMenuItem" Header="_Save" InputGesture="Ctrl+S" Click="OnSaveClicked" />
-                <MenuItem x:Name="SaveAsMenuItem" Header="Save _As..." Click="OnSaveAsClicked" />
-                <MenuItem x:Name="SaveCapturedStreamMenuItem" Header="Save _Captured Stream..." IsVisible="False" Click="OnSaveCapturedStreamClicked" />
+                <MenuItem x:Name="SaveAsMenuItem" Header="Save _as..." Click="OnSaveAsClicked" />
+                <MenuItem x:Name="SaveCapturedStreamMenuItem" Header="Save _captured stream..." IsVisible="False" Click="OnSaveCapturedStreamClicked" />
                 <Separator />
-                <MenuItem x:Name="CloseSquashedPageMenuItem" Header="Close Squashed Page" Click="OnCloseSquashedPageClicked" />
-                <MenuItem x:Name="CloseFullBroadcastMenuItem" Header="Close Full Broadcast" Click="OnCloseFullBroadcastClicked" />
+                <MenuItem x:Name="CloseSquashedPageMenuItem" Header="Close squashed page" Click="OnCloseSquashedPageClicked" />
+                <MenuItem x:Name="CloseFullBroadcastMenuItem" Header="Close full broadcast" Click="OnCloseFullBroadcastClicked" />
                 <Separator />
-                <MenuItem Header="Export _Single Page..." Click="OnExportCurrentPageT42Clicked" />
-                <MenuItem Header="Export _Screenshot..." Click="OnExportScreenshotClicked" />
-                <MenuItem x:Name="BatchExportScreenshotsMenuItem" Header="_Batch Export Screenshots..." Click="OnBatchExportScreenshotsClicked" />
-                <MenuItem x:Name="ExportVideoMenuItem" Header="Export _Video..." Click="OnExportVideoClicked" />
+                <MenuItem Header="Export _single page..." Click="OnExportCurrentPageT42Clicked" />
+                <MenuItem Header="Export _screenshot..." Click="OnExportScreenshotClicked" />
+                <MenuItem x:Name="BatchExportScreenshotsMenuItem" Header="_Batch export screenshots..." Click="OnBatchExportScreenshotsClicked" />
+                <MenuItem x:Name="ExportVideoMenuItem" Header="Export _video..." Click="OnExportVideoClicked" />
                 <Separator />
                 <MenuItem Header="E_xit" Click="OnExitClicked" />
             </MenuItem>
@@ -172,35 +173,36 @@
             </MenuItem>
             <MenuItem Header="_View">
                 <MenuItem x:Name="X26EnhancementsMenuItem"
-                          Header="X/26 _Enhancements Sidebar"
+                          Header="X/26 _enhancements sidebar"
                           ToggleType="CheckBox"
                           IsChecked="True"
                           Click="OnX26EnhancementsSidebarClicked" />
                 <MenuItem x:Name="VideoBookmarksMenuItem"
-                          Header="Page _Bookmarks Sidebar"
+                          Header="Page _bookmarks sidebar"
                           ToggleType="CheckBox"
                           IsChecked="True"
                           Click="OnVideoBookmarksSidebarClicked" />
                 <MenuItem x:Name="SuppressFlashMenuItem"
-                          Header="Suppress _Flash"
+                          Header="Suppress _flash"
                           ToggleType="CheckBox"
                           Click="OnSuppressFlashClicked" />
                 <MenuItem x:Name="FastextCrcToolbarMenuItem"
-                          Header="_Fastext and CRC Toolbar"
+                          Header="_Fastext and CRC toolbar"
                           ToggleType="CheckBox"
                           IsChecked="True"
                           Click="OnFastextCrcToolbarClicked" />
                 <MenuItem x:Name="ToolbarOnBottomMenuItem"
-                          Header="Toolbar on _Bottom"
+                          Header="Toolbar on _bottom"
                           ToggleType="CheckBox"
                           Click="OnToolbarOnBottomClicked" />
             </MenuItem>
             <MenuItem Header="_Page">
-                <MenuItem Header="_New Page" InputGesture="Ctrl+N" Click="OnNewPageClicked" />
-                <MenuItem Header="_Delete Current Page" Click="OnDeletePageClicked" />
-                <MenuItem x:Name="CreateSquashedStreamMenuItem" Header="Create _Squashed Stream" IsEnabled="False" Click="OnCreateSquashedStreamClicked" />
+                <MenuItem Header="_New page" InputGesture="Ctrl+N" Click="OnNewPageClicked" />
+                <MenuItem Header="_Delete current page" Click="OnDeletePageClicked" />
+                <MenuItem x:Name="CreateSquashedStreamMenuItem" Header="Create _squashed stream" IsEnabled="False" Click="OnCreateSquashedStreamClicked" />
+                <MenuItem x:Name="ApplySquashedRepairsMenuItem" Header="Apply squashed repairs to _full broadcast..." IsEnabled="False" Click="OnApplySquashedRepairsClicked" />
                 <Separator/>
-                <MenuItem x:Name="G0SubsetMenuItem" Header="G0 _Subset">
+                <MenuItem x:Name="G0SubsetMenuItem" Header="G0 _subset">
                     <MenuItem Header="Auto (from stream)" CommandParameter="auto" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>
                     <MenuItem Header="Default G0 + enhancements" CommandParameter="default" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>
                     <Separator/>
@@ -217,7 +219,7 @@
                 <MenuItem Header="_Preferences..." Click="OnPreferencesClicked" />
                 <Separator />
                 <MenuItem Header="_Font..." Click="OnChooseFontClicked" />
-                <MenuItem Header="_Capture Card Presets..." Click="OnCaptureCardPresetsClicked" />
+                <MenuItem Header="_Capture card presets..." Click="OnCaptureCardPresetsClicked" />
                 <Separator />
                 <MenuItem x:Name="DisableLiveVbiVideoPreviewMenuItem"
                           Header="Disable video preview in live VBI capture"
@@ -311,7 +313,7 @@
                                 <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13" Margin="2,0"/>
                                 <Button x:Name="SquashNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnSquashNextClicked"/>
                                 <Separator Width="1" Background="{DynamicResource PanelBorderBrush}" Margin="2,2"/>
-                                <Button x:Name="SquashJumpToBroadcastButton" IsEnabled="False" Content="Jump to in full" Height="26" Padding="8,0" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToBroadcastClicked"/>
+                                <Button x:Name="SquashJumpToBroadcastButton" IsEnabled="False" Content="Show in full broadcast" Height="26" Padding="8,0" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToBroadcastClicked"/>
                             </StackPanel>
                         </Border>
                         <Border x:Name="SquashEditToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34">
@@ -359,9 +361,9 @@
                         <Border x:Name="SquashDisplayToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34">
                             <Grid ColumnDefinitions="*,Auto">
                                 <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
-                                    <Button x:Name="ControlCodesButton" Content="Codes: Off" Width="88" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnControlCodesClicked"/>
-                                    <Button x:Name="DiacriticsButton" Content="Diacritics: Off" Width="112" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnDiacriticsClicked"/>
-                                    <Button x:Name="SelectionBytesButton" Content="Bytes: Off" Width="96" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnSelectionBytesClicked"/>
+                                    <Button x:Name="ControlCodesButton" Content="Codes: off" Width="88" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnControlCodesClicked"/>
+                                    <Button x:Name="DiacriticsButton" Content="Diacritics: off" Width="112" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnDiacriticsClicked"/>
+                                    <Button x:Name="SelectionBytesButton" Content="Bytes: off" Width="96" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnSelectionBytesClicked"/>
                                     <TextBox x:Name="VideoBookmarkTextBox" Width="200" Height="28" Margin="6,0,0,0" PlaceholderText="Page bookmark" TextChanged="OnVideoBookmarkTextChanged"/>
                                 </StackPanel>
                                 <TextBlock x:Name="UndoInfoText"
@@ -597,7 +599,7 @@
                                 <TextBlock Text="Nav" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13" Margin="2,0"/>
                                 <Button x:Name="BroadcastNextButton" IsEnabled="False" Content="&gt;" Width="32" Height="26" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnBroadcastNextClicked"/>
                                 <Separator Width="1" Background="{DynamicResource PanelBorderBrush}" Margin="2,2"/>
-                                <Button x:Name="BroadcastJumpToSquashButton" IsEnabled="False" Content="Jump to in squash" Height="26" Padding="8,0" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToSquashClicked"/>
+                                <Button x:Name="BroadcastJumpToSquashButton" IsEnabled="False" Content="Show in squashed" Height="26" Padding="8,0" FontSize="13" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Click="OnJumpToSquashClicked"/>
                             </StackPanel>
                         </Border>
                         <Border x:Name="BroadcastEditToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34"
@@ -630,11 +632,11 @@
                         </Border>
                         <Border x:Name="BroadcastDisplayToolbar" Background="{DynamicResource ToolbarBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="4,3" MinHeight="34">
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <Button x:Name="BroadcastControlCodesButton" Content="Codes: Off" Width="88" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnBroadcastControlCodesClicked"/>
-                                <Button x:Name="BroadcastDiacriticsButton" Content="Diacritics: Off" Width="112" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnBroadcastDiacriticsClicked"/>
-                                <Button x:Name="BroadcastSelectionBytesButton" Content="Bytes: Off" Width="96" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnBroadcastSelectionBytesClicked"/>
+                                <Button x:Name="BroadcastControlCodesButton" Content="Codes: off" Width="88" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnBroadcastControlCodesClicked"/>
+                                <Button x:Name="BroadcastDiacriticsButton" Content="Diacritics: off" Width="112" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnBroadcastDiacriticsClicked"/>
+                                <Button x:Name="BroadcastSelectionBytesButton" Content="Bytes: off" Width="96" Height="28" Padding="6,0" FontSize="13" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="OnBroadcastSelectionBytesClicked"/>
                                 <Button x:Name="BroadcastFlashRollButton"
-                                        Content="Roll: Off"
+                                        Content="Roll: off"
                                         Width="88"
                                         Height="28"
                                         Padding="6,0"

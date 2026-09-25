@@ -7,6 +7,7 @@ public static class VbiDeconvolutionEngine
     private const double TeletextBitRate = 6_937_500.0;
     private const int TeletextPacketBits = 16 + 8 + 42 * 8;
     private const int DecoderInputBits = 368;
+    private static readonly byte[] EmptyPacket = new byte[TeletextPacket.Length];
     public static readonly bool UseLegacyFixedDetectionForTest = false;
 
     public static string ValidateOpenClBackend()
@@ -236,6 +237,7 @@ public static class VbiDeconvolutionEngine
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 processed++;
+                bool wrotePacket = false;
                 if (preparedLines[index] is not null)
                 {
                     teletext++;
@@ -243,6 +245,7 @@ public static class VbiDeconvolutionEngine
                     if (packet is not null)
                     {
                         await output.WriteAsync(packet, cancellationToken).ConfigureAwait(false);
+                        wrotePacket = true;
                         written++;
                         if (decodedPackets?.IsEnabled == true)
                         {
@@ -259,6 +262,8 @@ public static class VbiDeconvolutionEngine
                         }
                     }
                 }
+                if (!wrotePacket && options.KeepEmptyPackets)
+                    await output.WriteAsync(EmptyPacket, cancellationToken).ConfigureAwait(false);
                 if ((processed & 31) == 0 || processed == totalLines)
                     progress?.Report(new VbiDeconvolutionProgress(
                         processed, totalLines, teletext, written,

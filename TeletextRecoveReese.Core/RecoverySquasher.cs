@@ -32,7 +32,9 @@ public static class RecoverySquasher
         for (int index = 0; index < broadcastPackets.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            assembler.Feed(broadcastPackets[index], index);
+            byte[] packet = broadcastPackets[index];
+            if (!TeletextPacket.IsPadding(packet))
+                assembler.Feed(packet, index);
             if ((index & 0x3FF) == 0 || index == broadcastPackets.Count - 1)
                 reportProgress?.Invoke("Reading captured versions", index + 1, broadcastPackets.Count);
         }

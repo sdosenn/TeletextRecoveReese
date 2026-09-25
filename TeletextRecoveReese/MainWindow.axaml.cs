@@ -93,6 +93,7 @@ public partial class MainWindow : Window
         public void Feed(byte[] packet, int packetIndex)
         {
             if (packet.Length != 42) return;
+            if (TeletextPacket.IsPadding(packet)) return;
             var low = Hamming.Decode84(packet[0]);
             var high = Hamming.Decode84(packet[1]);
             if (low.UncorrectableError || high.UncorrectableError) return;
@@ -212,6 +213,7 @@ public partial class MainWindow : Window
 
     private readonly PageStore _store = new();
     private readonly PageStore _squashStore = new();
+    private static readonly byte[] EmptyT42Packet = new byte[TeletextPacket.Length];
     private readonly List<byte[]> _broadcastPackets = new();
     private readonly List<byte[]> _squashPackets = new();
     private readonly HashSet<int> _deletedSquashPacketIndices = new();
@@ -240,6 +242,7 @@ public partial class MainWindow : Window
     private TeletextStreamIdentity _broadcastStreamIdentity = TeletextStreamIdentity.Empty;
     private bool _squashDirty;
     private bool _broadcastFileOpen;
+    private bool _broadcastHasAppliedRepairs;
     private bool _squashFileOpen;
     private bool _mosaicColorMode;
     private bool _structuralDirty;
@@ -396,6 +399,7 @@ public partial class MainWindow : Window
         public bool? LinkPaneNavigation { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
         public bool? RecordRawVbiToDisk { get; set; }
+        public bool? KeepEmptyLiveCapturePackets { get; set; }
         public string? DateDisplayOrder { get; set; }
         public string? CaptureNamingFormat { get; set; }
         public string? Theme { get; set; }
@@ -612,6 +616,7 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeOpenRecentMenuItem;
     private NativeMenuItem? _nativeG0SubsetMenuItem;
     private NativeMenuItem? _nativeCreateSquashedStreamMenuItem;
+    private NativeMenuItem? _nativeApplySquashedRepairsMenuItem;
     private NativeMenuItem? _nativeOpenLiveVbiCaptureMenuItem;
     private NativeMenuItem? _nativeSaveCapturedStreamMenuItem;
     private NativeMenuItem? _nativeSaveMenuItem;
@@ -2904,7 +2909,7 @@ public partial class MainWindow : Window
         await ShowMessageAsync(
             "Full broadcast capture is read-only",
             "A full broadcast capture cannot be edited directly.\n\n" +
-            "To restore and edit Teletext pages, choose Page > Create Squashed Stream. " +
+            "To restore and edit Teletext pages, choose Page > Create squashed stream. " +
             "The squashed stream will open in the editable left pane.");
     }
 
@@ -3578,6 +3583,9 @@ public partial class MainWindow : Window
     private void OnNativeCreateSquashedStreamClicked(object? sender, EventArgs e) =>
         OnCreateSquashedStreamClicked(sender, new RoutedEventArgs());
 
+    private void OnNativeApplySquashedRepairsClicked(object? sender, EventArgs e) =>
+        OnApplySquashedRepairsClicked(sender, new RoutedEventArgs());
+
     private void OnNativeG0SubsetClicked(object? sender, EventArgs e)
     {
         if (sender is NativeMenuItem item)
@@ -3959,45 +3967,52 @@ public partial class MainWindow : Window
             .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Page", StringComparison.Ordinal))?
             .Menu?.Items
             .OfType<NativeMenuItem>()
-            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "G0 Subset", StringComparison.Ordinal));
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "G0 subset", StringComparison.Ordinal));
 
         _nativeCreateSquashedStreamMenuItem = menu.Items
             .OfType<NativeMenuItem>()
             .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Page", StringComparison.Ordinal))?
             .Menu?.Items
             .OfType<NativeMenuItem>()
-            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Create Squashed Stream", StringComparison.Ordinal));
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Create squashed stream", StringComparison.Ordinal));
+
+        _nativeApplySquashedRepairsMenuItem = menu.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Page", StringComparison.Ordinal))?
+            .Menu?.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Apply squashed repairs to full broadcast…", StringComparison.Ordinal));
 
         if (menu.Items.Count > 0 && menu.Items[0] is NativeMenuItem { Menu: { } fileMenu })
         {
             _nativeOpenLiveVbiCaptureMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
-                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Open VBI Capture", StringComparison.Ordinal))?
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Open VBI capture", StringComparison.Ordinal))?
                 .Menu?.Items
                 .OfType<NativeMenuItem>()
-                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Live Capture…", StringComparison.Ordinal));
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Live capture…", StringComparison.Ordinal));
             _nativeOpenRecentMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
-                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Open Recent", StringComparison.Ordinal))
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Open recent", StringComparison.Ordinal))
                 ?? fileMenu.Items.ElementAtOrDefault(2) as NativeMenuItem;
             _nativeSaveCapturedStreamMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
-                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Save Captured Stream…", StringComparison.Ordinal));
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Save captured stream…", StringComparison.Ordinal));
             _nativeSaveMenuItem = fileMenu.Items.OfType<NativeMenuItem>()
                 .FirstOrDefault(item => item.Header?.ToString() == "Save");
             _nativeSaveAsMenuItem = fileMenu.Items.OfType<NativeMenuItem>()
-                .FirstOrDefault(item => item.Header?.ToString() == "Save As…");
+                .FirstOrDefault(item => item.Header?.ToString() == "Save as…");
             _nativeBatchExportScreenshotsMenuItem = fileMenu.Items.OfType<NativeMenuItem>()
-                .FirstOrDefault(item => item.Header?.ToString() == "Batch Export Screenshots…");
+                .FirstOrDefault(item => item.Header?.ToString() == "Batch export screenshots…");
             _nativeCloseSquashedPageMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
-                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Close Squashed Page", StringComparison.Ordinal));
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Close squashed page", StringComparison.Ordinal));
             _nativeCloseFullBroadcastMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
-                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Close Full Broadcast", StringComparison.Ordinal));
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Close full broadcast", StringComparison.Ordinal));
             _nativeExportVideoMenuItem = fileMenu.Items
                 .OfType<NativeMenuItem>()
-                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Export Video…", StringComparison.Ordinal));
+                .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Export video…", StringComparison.Ordinal));
         }
 
         if (menu.Items.Count > 1 && menu.Items[1] is NativeMenuItem { Menu: { } editMenu })
@@ -4009,15 +4024,15 @@ public partial class MainWindow : Window
         if (menu.Items.Count > 2 && menu.Items[2] is NativeMenuItem { Menu: { } viewMenu })
         {
             _nativeX26EnhancementsMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
-                .FirstOrDefault(item => item.Header?.ToString() == "X/26 Enhancements Sidebar");
+                .FirstOrDefault(item => item.Header?.ToString() == "X/26 enhancements sidebar");
             _nativeVideoBookmarksMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
-                .FirstOrDefault(item => item.Header?.ToString() == "Page Bookmarks Sidebar");
+                .FirstOrDefault(item => item.Header?.ToString() == "Page bookmarks sidebar");
             _nativeSuppressFlashMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
-                .FirstOrDefault(item => item.Header?.ToString() == "Suppress Flash");
+                .FirstOrDefault(item => item.Header?.ToString() == "Suppress flash");
             _nativeFastextCrcToolbarMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
-                .FirstOrDefault(item => item.Header?.ToString() == "Fastext and CRC Toolbar");
+                .FirstOrDefault(item => item.Header?.ToString() == "Fastext and CRC toolbar");
             _nativeToolbarOnBottomMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
-                .FirstOrDefault(item => item.Header?.ToString() == "Toolbar on Bottom");
+                .FirstOrDefault(item => item.Header?.ToString() == "Toolbar on bottom");
         }
 
         _nativeDisableLiveVbiVideoPreviewMenuItem = menu.Items
@@ -4271,6 +4286,14 @@ public partial class MainWindow : Window
         ToolTip.SetTip(
             recordRawVbiCheckBox,
             "Keeps the complete raw sample stream so it can be saved when capture stops");
+        var keepEmptyPacketsCheckBox = new CheckBox
+        {
+            Content = "Preserve every VBI line in decoded T42 (line-aware)",
+            IsChecked = _sessionState.KeepEmptyLiveCapturePackets == true,
+        };
+        ToolTip.SetTip(
+            keepEmptyPacketsCheckBox,
+            "Writes a 42-byte zero placeholder when a VBI line cannot be decoded, compatible with vhs-teletext --keep-empty");
         var dialog = new Window
         {
             Title = "Live VBI capture",
@@ -4343,6 +4366,7 @@ public partial class MainWindow : Window
                     previewBorder,
                     previewStatusText,
                     recordRawVbiCheckBox,
+                    keepEmptyPacketsCheckBox,
                     new Grid
                     {
                         ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"),
@@ -4725,6 +4749,11 @@ public partial class MainWindow : Window
             _sessionState.RecordRawVbiToDisk = recordRawVbiCheckBox.IsChecked == true;
             SaveSessionState();
         };
+        keepEmptyPacketsCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            _sessionState.KeepEmptyLiveCapturePackets = keepEmptyPacketsCheckBox.IsChecked == true;
+            SaveSessionState();
+        };
         inputCombo.SelectionChanged += async (_, _) =>
         {
             if (OperatingSystem.IsLinux()) RefreshStandardsForInput();
@@ -4769,11 +4798,13 @@ public partial class MainWindow : Window
                 await StartLiveVbiCaptureAsync(
                     captureInterface, preset, selectedVideoInterface,
                     recordRawVbiCheckBox.IsChecked == true,
+                    keepEmptyPacketsCheckBox.IsChecked == true,
                     captureInput, captureStandard, null, null);
             else if (OperatingSystem.IsWindows())
                 await StartLiveVbiCaptureAsync(
                     captureInterface, preset, null,
                     recordRawVbiCheckBox.IsChecked == true,
+                    keepEmptyPacketsCheckBox.IsChecked == true,
                     null, null, directShowInput, directShowStandard);
         };
 
@@ -4813,6 +4844,7 @@ public partial class MainWindow : Window
         CaptureCardPreset preset,
         string? videoInterfacePath,
         bool recordRawVbi,
+        bool keepEmptyPackets,
         LinuxV4l2Input? linuxInput,
         LinuxV4l2Standard? linuxStandard,
         DirectShowVideoInput? directShowInput,
@@ -4874,7 +4906,8 @@ public partial class MainWindow : Window
                 StandardDeviationThreshold: resolvedPreset.StandardDeviationThreshold,
                 SignalLevelThreshold: resolvedPreset.SignalLevelThreshold,
                 CriFcRangeThreshold: resolvedPreset.CriFcRangeThreshold,
-                CriFcConfidenceThreshold: resolvedPreset.CriFcConfidenceThreshold);
+                CriFcConfidenceThreshold: resolvedPreset.CriFcConfidenceThreshold,
+                KeepEmptyPackets: keepEmptyPackets);
             string temporaryOutput = Path.Combine(
                 Path.GetTempPath(), $"TeletextRecoveReese-live-{Guid.NewGuid():N}.t42");
             string? temporaryRawCapture = recordRawVbi
@@ -6228,9 +6261,9 @@ public partial class MainWindow : Window
 
             try
             {
-                long packetCount = File.Exists(temporaryOutput)
-                    ? new FileInfo(temporaryOutput).Length / 42
-                    : lastProgress.PacketsWritten;
+                // A line-aware file also contains all-zero positional slots, so
+                // its byte length is not the number of recovered Teletext packets.
+                long packetCount = lastProgress.PacketsWritten;
                 if (usingAutoDetectedPreset && packetCount > 0
                     && await OfferDriverDetectedPresetAsync(packetCount))
                 {
@@ -6895,7 +6928,7 @@ public partial class MainWindow : Window
         if (file is null) return;
         if (!file.Path.IsFile)
         {
-            await ShowMessageAsync("Open VBI Capture", "VBI deconvolution currently requires a local file.");
+            await ShowMessageAsync("Open VBI capture", "VBI deconvolution currently requires a local file.");
             return;
         }
 
@@ -7384,7 +7417,7 @@ public partial class MainWindow : Window
         _sessionState.SquashFilePath = null;
         await ShowMessageAsync(
             "Full broadcast detected",
-            "This file contains multiple versions of the same page and appears to be a full broadcast capture. It has been opened in the read-only Full Broadcast view.");
+            "This file contains multiple versions of the same page and appears to be a full broadcast capture. It has been opened in the read-only full broadcast view.");
         return true;
     }
 
@@ -7455,6 +7488,7 @@ public partial class MainWindow : Window
         BroadcastGrid.ClearSelection();
         _broadcastFilePath = null;
         _broadcastFileOpen = false;
+        _broadcastHasAppliedRepairs = false;
         _broadcastStreamIdentity = TeletextStreamIdentity.Empty;
         _suppressComboEvents = false;
         UpdateBroadcastVersionButtons();
@@ -7524,10 +7558,12 @@ public partial class MainWindow : Window
 
             if (filled != packet.Length) continue;
 
-            var capturedPacket = (byte[])packet.Clone();
+            bool isPadding = TeletextPacket.IsPadding(packet);
+            var capturedPacket = isPadding ? EmptyT42Packet : (byte[])packet.Clone();
             int packetIndex = capturedPackets.Count;
             capturedPackets.Add(capturedPacket);
-            assembler.Feed(capturedPacket, packetIndex);
+            if (!isPadding)
+                assembler.Feed(capturedPacket, packetIndex);
             filled = 0;
         }
 
@@ -7569,10 +7605,12 @@ public partial class MainWindow : Window
             }
 
             if (filled != packet.Length) continue;
-            byte[] capturedPacket = (byte[])packet.Clone();
+            bool isPadding = TeletextPacket.IsPadding(packet);
+            byte[] capturedPacket = isPadding ? EmptyT42Packet : (byte[])packet.Clone();
             int packetIndex = capturedPackets.Count;
             capturedPackets.Add(capturedPacket);
-            indexer.Feed(capturedPacket, packetIndex);
+            if (!isPadding)
+                indexer.Feed(capturedPacket, packetIndex);
             filled = 0;
         }
 
@@ -7959,9 +7997,16 @@ public partial class MainWindow : Window
     private void UpdateSaveCapturedStreamMenuVisibility()
     {
         bool visible = HasUnsavedCapturedStream();
+        string header = _broadcastHasAppliedRepairs
+            ? "Save repaired captured stream…"
+            : "Save captured stream…";
+        SaveCapturedStreamMenuItem.Header = header;
         SaveCapturedStreamMenuItem.IsVisible = visible;
         if (_nativeSaveCapturedStreamMenuItem is not null)
+        {
+            _nativeSaveCapturedStreamMenuItem.Header = header;
             _nativeSaveCapturedStreamMenuItem.IsVisible = visible;
+        }
     }
 
     private void UpdateClosePaneMenuAvailability()
@@ -8220,7 +8265,7 @@ public partial class MainWindow : Window
     {
         bool show = !SquashGrid.ShowControlCodes;
         SquashGrid.ShowControlCodes = show;
-        ControlCodesButton.Content = show ? "Codes: On" : "Codes: Off";
+        ControlCodesButton.Content = show ? "Codes: on" : "Codes: off";
         ControlCodesButton.Background = show
             ? new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#296A43"))
             : null;
@@ -8230,7 +8275,7 @@ public partial class MainWindow : Window
     {
         bool show = !BroadcastGrid.ShowControlCodes;
         BroadcastGrid.ShowControlCodes = show;
-        BroadcastControlCodesButton.Content = show ? "Codes: On" : "Codes: Off";
+        BroadcastControlCodesButton.Content = show ? "Codes: on" : "Codes: off";
         BroadcastControlCodesButton.Background = show
             ? new SolidColorBrush(Color.Parse("#296A43"))
             : null;
@@ -8240,7 +8285,7 @@ public partial class MainWindow : Window
     {
         bool show = !SquashGrid.ShowSelectionBytes;
         SquashGrid.ShowSelectionBytes = show;
-        SelectionBytesButton.Content = show ? "Bytes: On" : "Bytes: Off";
+        SelectionBytesButton.Content = show ? "Bytes: on" : "Bytes: off";
         SelectionBytesButton.Background = show
             ? new SolidColorBrush(Color.Parse("#296A43"))
             : null;
@@ -8252,7 +8297,7 @@ public partial class MainWindow : Window
     {
         bool show = !BroadcastGrid.ShowSelectionBytes;
         BroadcastGrid.ShowSelectionBytes = show;
-        BroadcastSelectionBytesButton.Content = show ? "Bytes: On" : "Bytes: Off";
+        BroadcastSelectionBytesButton.Content = show ? "Bytes: on" : "Bytes: off";
         BroadcastSelectionBytesButton.Background = show
             ? new SolidColorBrush(Color.Parse("#296A43"))
             : null;
@@ -8264,7 +8309,7 @@ public partial class MainWindow : Window
     {
         bool show = !SquashGrid.ShowDiacriticMarkers;
         SquashGrid.ShowDiacriticMarkers = show;
-        DiacriticsButton.Content = show ? "Diacritics: On" : "Diacritics: Off";
+        DiacriticsButton.Content = show ? "Diacritics: on" : "Diacritics: off";
         DiacriticsButton.Background = show
             ? new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#7A2830"))
             : null;
@@ -8274,7 +8319,7 @@ public partial class MainWindow : Window
     {
         bool show = !BroadcastGrid.ShowDiacriticMarkers;
         BroadcastGrid.ShowDiacriticMarkers = show;
-        BroadcastDiacriticsButton.Content = show ? "Diacritics: On" : "Diacritics: Off";
+        BroadcastDiacriticsButton.Content = show ? "Diacritics: on" : "Diacritics: off";
         BroadcastDiacriticsButton.Background = show
             ? new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#7A2830"))
             : null;
@@ -8291,42 +8336,42 @@ public partial class MainWindow : Window
         bool legacyShowCodes = _sessionState.ShowControlCodes ?? false;
         bool showSquashCodes = _sessionState.ShowSquashControlCodes ?? legacyShowCodes;
         SquashGrid.ShowControlCodes = showSquashCodes;
-        ControlCodesButton.Content = showSquashCodes ? "Codes: On" : "Codes: Off";
+        ControlCodesButton.Content = showSquashCodes ? "Codes: on" : "Codes: off";
         ControlCodesButton.Background = showSquashCodes
             ? new SolidColorBrush(Color.Parse("#296A43"))
             : null;
 
         bool showBroadcastCodes = _sessionState.ShowBroadcastControlCodes ?? legacyShowCodes;
         BroadcastGrid.ShowControlCodes = showBroadcastCodes;
-        BroadcastControlCodesButton.Content = showBroadcastCodes ? "Codes: On" : "Codes: Off";
+        BroadcastControlCodesButton.Content = showBroadcastCodes ? "Codes: on" : "Codes: off";
         BroadcastControlCodesButton.Background = showBroadcastCodes
             ? new SolidColorBrush(Color.Parse("#296A43"))
             : null;
 
         bool showSquashSelectionBytes = _sessionState.ShowSquashSelectionBytes ?? false;
         SquashGrid.ShowSelectionBytes = showSquashSelectionBytes;
-        SelectionBytesButton.Content = showSquashSelectionBytes ? "Bytes: On" : "Bytes: Off";
+        SelectionBytesButton.Content = showSquashSelectionBytes ? "Bytes: on" : "Bytes: off";
         SelectionBytesButton.Background = showSquashSelectionBytes
             ? new SolidColorBrush(Color.Parse("#296A43"))
             : null;
 
         bool showBroadcastSelectionBytes = _sessionState.ShowBroadcastSelectionBytes ?? false;
         BroadcastGrid.ShowSelectionBytes = showBroadcastSelectionBytes;
-        BroadcastSelectionBytesButton.Content = showBroadcastSelectionBytes ? "Bytes: On" : "Bytes: Off";
+        BroadcastSelectionBytesButton.Content = showBroadcastSelectionBytes ? "Bytes: on" : "Bytes: off";
         BroadcastSelectionBytesButton.Background = showBroadcastSelectionBytes
             ? new SolidColorBrush(Color.Parse("#296A43"))
             : null;
 
         bool showSquashDiacritics = _sessionState.ShowSquashDiacritics ?? false;
         SquashGrid.ShowDiacriticMarkers = showSquashDiacritics;
-        DiacriticsButton.Content = showSquashDiacritics ? "Diacritics: On" : "Diacritics: Off";
+        DiacriticsButton.Content = showSquashDiacritics ? "Diacritics: on" : "Diacritics: off";
         DiacriticsButton.Background = showSquashDiacritics
             ? new SolidColorBrush(Color.Parse("#7A2830"))
             : null;
 
         bool showBroadcastDiacritics = _sessionState.ShowBroadcastDiacritics ?? false;
         BroadcastGrid.ShowDiacriticMarkers = showBroadcastDiacritics;
-        BroadcastDiacriticsButton.Content = showBroadcastDiacritics ? "Diacritics: On" : "Diacritics: Off";
+        BroadcastDiacriticsButton.Content = showBroadcastDiacritics ? "Diacritics: on" : "Diacritics: off";
         BroadcastDiacriticsButton.Background = showBroadcastDiacritics
             ? new SolidColorBrush(Color.Parse("#7A2830"))
             : null;
@@ -8745,7 +8790,7 @@ public partial class MainWindow : Window
 
         foreach (RecentFileEntry entry in _sessionState.RecentFiles.Take(10))
         {
-            string pane = entry.BroadcastPane ? "Full Broadcast" : "Squashed/Single";
+            string pane = entry.BroadcastPane ? "Full broadcast" : "Squashed/single";
             string label = $"{Path.GetFileName(entry.Path)} — {pane}";
             var item = new MenuItem { Header = label, Tag = entry };
             item.Click += OnOpenRecentClicked;
@@ -8778,7 +8823,7 @@ public partial class MainWindow : Window
             _sessionState.RecentFiles.Remove(entry);
             RebuildOpenRecentMenus();
             SaveSessionState();
-            await ShowMessageAsync("Open Recent", "The selected file no longer exists and was removed from Open Recent.");
+            await ShowMessageAsync("Open recent", "The selected file no longer exists and was removed from Open recent.");
             return;
         }
 
@@ -9492,6 +9537,14 @@ public partial class MainWindow : Window
         CreateSquashedStreamMenuItem.IsEnabled = canCreate;
         if (_nativeCreateSquashedStreamMenuItem is not null)
             _nativeCreateSquashedStreamMenuItem.IsEnabled = canCreate;
+
+        bool canApplyRepairs = _broadcastFileOpen
+            && _broadcastPackets.Count > 0
+            && _squashFileOpen
+            && _squashStore.TotalInstanceCount > 0;
+        ApplySquashedRepairsMenuItem.IsEnabled = canApplyRepairs;
+        if (_nativeApplySquashedRepairsMenuItem is not null)
+            _nativeApplySquashedRepairsMenuItem.IsEnabled = canApplyRepairs;
     }
 
     private void UpdateRestorationProgress(int totalAddresses, int currentIndex)
@@ -9872,7 +9925,7 @@ public partial class MainWindow : Window
     private void UpdateFlashRollButton()
     {
         if (BroadcastFlashRollButton is null) return;
-        BroadcastFlashRollButton.Content = _flashRollActive ? "Roll: On" : "Roll: Off";
+        BroadcastFlashRollButton.Content = _flashRollActive ? "Roll: on" : "Roll: off";
         BroadcastFlashRollButton.Background = _flashRollActive
             ? new SolidColorBrush(Color.Parse("#8A5B20"))
             : null;
@@ -10300,6 +10353,132 @@ public partial class MainWindow : Window
             dialog.Close();
             await ShowMessageAsync("Squash recovery failed", ex.Message);
         }
+    }
+
+    private async void OnApplySquashedRepairsClicked(object? sender, RoutedEventArgs e)
+    {
+        if (!_broadcastFileOpen || _broadcastPackets.Count == 0
+            || !_squashFileOpen || _squashStore.TotalInstanceCount == 0)
+            return;
+
+        int paddingSlots = _broadcastPackets.Count(packet => TeletextPacket.IsPadding(packet));
+        if (!await ConfirmApplySquashedRepairsAsync(paddingSlots)) return;
+
+        IReadOnlyList<TeletextPage> repairs = _squashStore.AllInstances
+            .Select(instance => instance.Page)
+            .ToList();
+        BroadcastBackPropagationResult result;
+        try
+        {
+            result = await Task.Run(() =>
+                BroadcastBackPropagator.Apply(_broadcastPackets, repairs));
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Could not apply squashed repairs", ex.Message);
+            return;
+        }
+
+        if (result.ReplacedPackets == 0)
+        {
+            await ShowMessageAsync(
+                "Apply squashed repairs",
+                "No matching full broadcast packets needed to be changed.");
+            return;
+        }
+
+        _broadcastPackets.Clear();
+        _broadcastPackets.AddRange(result.Packets);
+        _store.Clear();
+        var indexer = new BroadcastPacketIndexer(_store);
+        for (int index = 0; index < _broadcastPackets.Count; index++)
+        {
+            byte[] packet = _broadcastPackets[index];
+            if (!TeletextPacket.IsPadding(packet))
+                indexer.Feed(packet, index);
+        }
+        indexer.FinalizeAll();
+
+        // Back-propagation always creates a new derived capture. Never let an
+        // ordinary Save operation silently overwrite the archival source.
+        _broadcastFilePath = null;
+        _sessionState.BroadcastFilePath = null;
+        _broadcastHasAppliedRepairs = true;
+        _broadcastStreamIdentity = AnalyzeTeletextStreamIdentity(_broadcastPackets);
+        BroadcastInfoText.Text = "Full broadcast — repaired line-aware copy";
+        BroadcastFilePathText.Text = FormatFileFooter(null, _store.TotalInstanceCount);
+        PopulatePageCombo();
+        UpdateSaveCapturedStreamMenuVisibility();
+        UpdateNavigationButtons();
+        UpdateWindowAndPaneTitles();
+        SaveSessionState();
+
+        await ShowMessageAsync(
+            "Squashed repairs applied",
+            $"Updated {result.ReplacedPackets:N0} packet occurrence(s) across "
+            + $"{result.MatchedPageTransmissions:N0} matching page transmission(s).\n\n"
+            + $"All {_broadcastPackets.Count:N0} full broadcast slots, including "
+            + $"{result.PaddingSlots:N0} empty line-aware slots, stayed in their original positions. "
+            + "Use File > Save repaired captured stream to save the repaired copy.");
+    }
+
+    private async Task<bool> ConfirmApplySquashedRepairsAsync(int paddingSlots)
+    {
+        bool apply = false;
+        var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
+        var applyButton = new Button
+        {
+            Content = "Create repaired copy",
+            Width = 155,
+            IsDefault = true,
+        };
+        string alignmentText = paddingSlots > 0
+            ? $"The full broadcast contains {paddingSlots:N0} empty VBI slots; every slot will remain at exactly the same index."
+            : "No empty VBI slots were detected. Packet order and packet count will still remain unchanged, but exact missing-line timing cannot be reconstructed.";
+        var dialog = new Window
+        {
+            Title = "Apply squashed repairs to full broadcast",
+            Width = 570,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(22),
+                Spacing = 16,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Every matching occurrence of an edited squashed page will replace the corresponding full broadcast body, enhancement and Fastext packets. Original header routing, subcode/control flags, date and clock are preserved.",
+                        TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    new TextBlock
+                    {
+                        Text = alignmentText,
+                        Foreground = Brushes.LightGray,
+                        TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    new TextBlock
+                    {
+                        Text = "The opened source file will not be overwritten. The result becomes an Untitled captured stream that must be saved separately.",
+                        Foreground = Brushes.LightGray,
+                        TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { cancelButton, applyButton },
+                    },
+                },
+            },
+        };
+        cancelButton.Click += (_, _) => dialog.Close();
+        applyButton.Click += (_, _) => { apply = true; dialog.Close(); };
+        await dialog.ShowDialog(this);
+        return apply;
     }
 
     private async void OnNewPageClicked(object? sender, RoutedEventArgs e) =>
@@ -11000,7 +11179,9 @@ public partial class MainWindow : Window
         IStorageFile? destination = await SaveFilePickerRememberingFolderAsync(
             new FilePickerSaveOptions
             {
-                Title = "Save captured full broadcast stream",
+                Title = _broadcastHasAppliedRepairs
+                    ? "Save repaired captured stream"
+                    : "Save captured full broadcast stream",
                 SuggestedFileName = SuggestedTeletextFileName(
                     _broadcastStreamIdentity,
                     $"captured-stream-{DateTime.Now:yyyyMMdd-HHmmss}.t42"),
@@ -11916,7 +12097,8 @@ public partial class MainWindow : Window
             }
         }
 
-        if (insertAfter.Count == 0 && _deletedSquashPacketIndices.Count == 0) return output;
+        if (insertAfter.Count == 0 && _deletedSquashPacketIndices.Count == 0)
+            return RemovePaddingPackets(output);
 
         var expanded = new List<byte[]>(output.Count + insertAfter.Values.Sum(rows => rows.Count));
         for (int index = 0; index < output.Count; index++)
@@ -11927,7 +12109,15 @@ public partial class MainWindow : Window
                 && insertAfter.TryGetValue(index, out var additions))
                 expanded.AddRange(additions);
         }
-        return expanded;
+        return RemovePaddingPackets(expanded);
+    }
+
+    private static IReadOnlyList<byte[]> RemovePaddingPackets(List<byte[]> packets)
+    {
+        if (!packets.Any(packet => TeletextPacket.IsPadding(packet))) return packets;
+        return packets
+            .Where(packet => !TeletextPacket.IsPadding(packet))
+            .ToList();
     }
 
     private void OnExitClicked(object? sender, RoutedEventArgs e) => Close();

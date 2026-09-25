@@ -5,13 +5,30 @@ namespace TeletextRecoveReese.Core;
 /// </summary>
 public class TeletextPacket
 {
+    public const int Length = 42;
+
     public byte[] Raw { get; }
 
     public TeletextPacket(byte[] raw42)
     {
-        if (raw42.Length != 42)
+        if (raw42.Length != Length)
             throw new ArgumentException("A teletext packet must be exactly 42 bytes (2 address + 40 payload).");
         Raw = raw42;
+    }
+
+    /// <summary>
+    /// vhs-teletext --keep-empty represents an input VBI line that could not be
+    /// deconvolved as one all-zero 42-byte packet. It is a positional placeholder,
+    /// not a damaged Teletext packet.
+    /// </summary>
+    public static bool IsPadding(ReadOnlySpan<byte> raw42)
+    {
+        if (raw42.Length != Length) return false;
+        foreach (byte value in raw42)
+        {
+            if (value != 0) return false;
+        }
+        return true;
     }
 
     /// <summary>Decodes magazine (1-8) and row (0-31) from the address bytes.</summary>

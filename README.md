@@ -100,6 +100,10 @@ The editor uses one or two synchronized panes:
 - Create a squashed stream directly from an open full broadcast using filters.
 - Build consensus rows from repeated receptions and parity quality.
 - Preserve X/26 packets selected from the available versions.
+- Optionally keep every live-capture VBI line as a vhs-teletext-compatible
+  all-zero T42 slot when no packet can be recovered.
+- Apply edited squashed pages back to every matching Full Broadcast occurrence
+  without moving line-aware slots or overwriting the archival source file.
 
 ## Page bookmarks
 
@@ -156,6 +160,8 @@ text field has focus, all typing and cursor keys remain inside that field.
 
 - Raw sequence of 42-byte Teletext packets.
 - Original packet data is preserved wherever possible during restoration.
+- Line-aware captures use an all-zero 42-byte positional placeholder compatible
+  with `vhs-teletext --keep-empty`; squashed exports omit those placeholders.
 
 ## Building from source
 
