@@ -118,6 +118,8 @@ The editor uses one or two synchronized panes:
 - Simulate Teletext flash with a real timer.
 - Move all three toolbars below the grids with **View > Toolbar on Bottom**.
 - Show or hide the X/26 and page-bookmark sidebar sections.
+- Optionally link the two visual halves of a double-height cell so selecting the
+  lower half edits its rendered upper source cell.
 - Remember display toggles, font, recent files, panes, selected pages, and video
   settings between sessions.
 - Reopen up to ten recent files in the pane and page where they were last used.

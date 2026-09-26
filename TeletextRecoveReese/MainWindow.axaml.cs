@@ -397,6 +397,7 @@ public partial class MainWindow : Window
         public bool? ShowVideoCapturePreview { get; set; }
         public bool? DisableLiveVbiVideoPreview { get; set; }
         public bool? LinkPaneNavigation { get; set; }
+        public bool? LinkDoubleHeightCells { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
         public bool? RecordRawVbiToDisk { get; set; }
         public bool? KeepEmptyLiveCapturePackets { get; set; }
@@ -628,6 +629,7 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeCloseFullBroadcastMenuItem;
     private NativeMenuItem? _nativeDisableLiveVbiVideoPreviewMenuItem;
     private NativeMenuItem? _nativeLinkPaneNavigationMenuItem;
+    private NativeMenuItem? _nativeLinkDoubleHeightCellsMenuItem;
     private string? _ffmpegPath;
     private bool _ffmpegFoundAutomatically;
     private bool _showX26EnhancementsSidebar = true;
@@ -2233,7 +2235,10 @@ public partial class MainWindow : Window
         if (deltaX != 0 || deltaY != 0)
         {
             int column = Math.Clamp(activeGrid.SelectedColumn + deltaX, 0, 39);
-            int row = Math.Clamp(activeGrid.SelectedRow + deltaY, 0, 24);
+            int verticalStep = deltaY > 0 && activeGrid.IsLinkedDoubleHeightSelection
+                ? activeGrid.SelectionHeight
+                : deltaY;
+            int row = Math.Clamp(activeGrid.SelectedRow + verticalStep, 0, 24);
             activeGrid.SetSelectionSize(1, 1);
             activeGrid.MoveSelectionTo(column, row);
             e.Handled = true;
@@ -3727,6 +3732,31 @@ public partial class MainWindow : Window
             SaveSessionState();
     }
 
+    private void OnLinkDoubleHeightCellsClicked(object? sender, RoutedEventArgs e) =>
+        SetLinkDoubleHeightCells(LinkDoubleHeightCellsMenuItem.IsChecked, saveSession: true);
+
+    private void OnNativeLinkDoubleHeightCellsClicked(object? sender, EventArgs e)
+    {
+        bool linked = !(_sessionState.LinkDoubleHeightCells ?? true);
+        SetLinkDoubleHeightCells(linked, saveSession: true);
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_nativeLinkDoubleHeightCellsMenuItem is not null)
+                _nativeLinkDoubleHeightCellsMenuItem.IsChecked = linked;
+        }, DispatcherPriority.Background);
+    }
+
+    private void SetLinkDoubleHeightCells(bool linked, bool saveSession)
+    {
+        LinkDoubleHeightCellsMenuItem.IsChecked = linked;
+        if (_nativeLinkDoubleHeightCellsMenuItem is not null)
+            _nativeLinkDoubleHeightCellsMenuItem.IsChecked = linked;
+        SquashGrid.LinkDoubleHeightCells = linked;
+        _sessionState.LinkDoubleHeightCells = linked;
+        if (saveSession)
+            SaveSessionState();
+    }
+
     private void OnNativeCaptureCardPresetsClicked(object? sender, EventArgs e) =>
         OnCaptureCardPresetsClicked(sender, new RoutedEventArgs());
 
@@ -4048,6 +4078,11 @@ public partial class MainWindow : Window
             .FirstOrDefault(item => item.Header?.ToString() == "Options")?
             .Menu?.Items.OfType<NativeMenuItem>()
             .FirstOrDefault(item => item.Header?.ToString() == "Link pane navigation");
+        _nativeLinkDoubleHeightCellsMenuItem = menu.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => item.Header?.ToString() == "Options")?
+            .Menu?.Items.OfType<NativeMenuItem>()
+            .FirstOrDefault(item => item.Header?.ToString() == "Auto-select both double-height cells");
     }
 
     /// <summary>Copies one row (0=header, 1-24=body) from the currently displayed
@@ -8508,6 +8543,9 @@ public partial class MainWindow : Window
         SetLinkPaneNavigation(
             _sessionState.LinkPaneNavigation ?? false,
             saveSession: false);
+        SetLinkDoubleHeightCells(
+            _sessionState.LinkDoubleHeightCells ?? true,
+            saveSession: false);
     }
 
     private void OnColorClicked(object? sender, RoutedEventArgs e)
@@ -9653,13 +9691,18 @@ public partial class MainWindow : Window
         if (_nativeCreateSquashedStreamMenuItem is not null)
             _nativeCreateSquashedStreamMenuItem.IsEnabled = canCreate;
 
-        bool canApplyRepairs = _broadcastFileOpen
+        bool canApplyRepairs = SquashPaneGrid.IsVisible
+            && _broadcastFileOpen
             && _broadcastPackets.Count > 0
             && _squashFileOpen
             && _squashStore.TotalInstanceCount > 0;
+        ApplySquashedRepairsMenuItem.IsVisible = true;
         ApplySquashedRepairsMenuItem.IsEnabled = canApplyRepairs;
         if (_nativeApplySquashedRepairsMenuItem is not null)
+        {
+            _nativeApplySquashedRepairsMenuItem.IsVisible = true;
             _nativeApplySquashedRepairsMenuItem.IsEnabled = canApplyRepairs;
+        }
     }
 
     private void UpdateRestorationProgress(int totalAddresses, int currentIndex)

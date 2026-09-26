@@ -114,6 +114,10 @@
                     <NativeMenuItem Header="Link pane navigation"
                                     ToggleType="CheckBox"
                                     Click="OnNativeLinkPaneNavigationClicked" />
+                    <NativeMenuItem Header="Auto-select both double-height cells"
+                                    ToggleType="CheckBox"
+                                    IsChecked="True"
+                                    Click="OnNativeLinkDoubleHeightCellsClicked" />
                 </NativeMenu>
             </NativeMenuItem>
         </NativeMenu>
@@ -229,6 +233,11 @@
                           Header="Link pane navigation"
                           ToggleType="CheckBox"
                           Click="OnLinkPaneNavigationClicked" />
+                <MenuItem x:Name="LinkDoubleHeightCellsMenuItem"
+                          Header="Auto-select both double-height cells"
+                          ToggleType="CheckBox"
+                          IsChecked="True"
+                          Click="OnLinkDoubleHeightCellsClicked" />
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="_About" Click="AboutButton_Click" />

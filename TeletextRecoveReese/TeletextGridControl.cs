@@ -194,6 +194,7 @@ public class TeletextGridControl : Control
     private bool _hasSelection = true;
     private int _dragRow = 0;
     private int _dragCol = 0;
+    private int _linkedDoubleHeightDragTopRow = -1;
     private int _cloneSourceColumn;
     private int _cloneSourceRow;
     private int _cloneWidth;
@@ -212,6 +213,7 @@ public class TeletextGridControl : Control
     private bool _showControlCodes;
     private bool _showSelectionBytes;
     private bool _showDiacriticMarkers;
+    private bool _linkDoubleHeightCells;
     private bool _suppressFlash;
     private bool _flashPhaseVisible = true;
     private bool _isDraggingDiacritic;
@@ -241,6 +243,21 @@ public class TeletextGridControl : Control
     public int SelectedColumn => _selectedColumn;
     public int SelectionWidth => _selectionWidth;
     public int SelectionHeight => _selectionHeight;
+    public bool IsLinkedDoubleHeightSelection
+    {
+        get
+        {
+            if (!LinkDoubleHeightCells
+                || Page is not { } page
+                || _selectionWidth != 1
+                || _selectionHeight != 2
+                || _selectedRow >= Rows - 1
+                || !page.Grid[_selectedColumn, _selectedRow].DoubleHeight)
+                return false;
+
+            return FindLevelOneBottomHalfRows(page)[_selectedRow + 1];
+        }
+    }
 
     public bool RecoveryBrowseActive
     {
@@ -290,6 +307,19 @@ public class TeletextGridControl : Control
                 ContextMenu = null;
             }
             CloseHoverInfoOverlay();
+            InvalidateVisual();
+        }
+    }
+
+    public bool LinkDoubleHeightCells
+    {
+        get => _linkDoubleHeightCells;
+        set
+        {
+            if (_linkDoubleHeightCells == value) return;
+            _linkDoubleHeightCells = value;
+            if (value)
+                NormalizeDoubleHeightSingleCellSelection();
             InvalidateVisual();
         }
     }
@@ -371,6 +401,7 @@ public class TeletextGridControl : Control
         _anchorRow = _selectedRow;
         _dragCol = _selectedColumn;
         _dragRow = _selectedRow;
+        NormalizeDoubleHeightSingleCellSelection();
         _hasSelection = true;
         InvalidateVisual();
         CellSelected?.Invoke(this, EventArgs.Empty);
@@ -386,6 +417,42 @@ public class TeletextGridControl : Control
         _anchorRow = _selectedRow;
         _dragCol = _selectedColumn + _selectionWidth - 1;
         _dragRow = _selectedRow + _selectionHeight - 1;
+        NormalizeDoubleHeightSingleCellSelection();
+    }
+
+    private void NormalizeDoubleHeightSingleCellSelection()
+    {
+        if (!LinkDoubleHeightCells
+            || Page is not { } page
+            || _selectionWidth != 1
+            || _selectionHeight != 1)
+            return;
+
+        int topRow;
+        bool[] bottomHalfRows = FindLevelOneBottomHalfRows(page);
+        if (_selectedRow > 0
+            && bottomHalfRows[_selectedRow]
+            && page.Grid[_selectedColumn, _selectedRow - 1].DoubleHeight)
+        {
+            topRow = _selectedRow - 1;
+        }
+        else if (_selectedRow < Rows - 1
+                 && bottomHalfRows[_selectedRow + 1]
+                 && page.Grid[_selectedColumn, _selectedRow].DoubleHeight)
+        {
+            topRow = _selectedRow;
+        }
+        else
+        {
+            return;
+        }
+
+        _selectedRow = topRow;
+        _selectionHeight = 2;
+        _anchorCol = _selectedColumn;
+        _anchorRow = topRow;
+        _dragCol = _selectedColumn;
+        _dragRow = topRow + 1;
     }
 
     public async Task FlashReadOnlyWarningAsync()
@@ -442,6 +509,7 @@ public class TeletextGridControl : Control
 
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
+        _linkedDoubleHeightDragTopRow = -1;
         var pos = e.GetPosition(this);
         int col = Math.Clamp((int)(pos.X / CellWidth), 0, Columns - 1);
         int row = Math.Clamp((int)(pos.Y / CellHeight), 0, Rows - 1);
@@ -544,6 +612,9 @@ public class TeletextGridControl : Control
         _isDragging = true;
         _dragRow = row;
         _dragCol = col;
+        NormalizeDoubleHeightSingleCellSelection();
+        if (IsLinkedDoubleHeightSelection)
+            _linkedDoubleHeightDragTopRow = _selectedRow;
         InvalidateVisual();
 
         CellSelected?.Invoke(this, EventArgs.Empty);
@@ -590,6 +661,11 @@ public class TeletextGridControl : Control
         // Calculate selection rectangle (mouse drag multi-select)
         int minRow = Math.Min(_anchorRow, row);
         int maxRow = Math.Max(_anchorRow, row);
+        if (_linkedDoubleHeightDragTopRow >= 0)
+        {
+            minRow = Math.Min(minRow, _linkedDoubleHeightDragTopRow);
+            maxRow = Math.Max(maxRow, _linkedDoubleHeightDragTopRow + 1);
+        }
         int minCol = Math.Min(_anchorCol, col);
         int maxCol = Math.Max(_anchorCol, col);
         _selectionWidth = maxCol - minCol + 1;
@@ -645,6 +721,8 @@ public class TeletextGridControl : Control
             return;
         }
         _isDragging = false;
+        NormalizeDoubleHeightSingleCellSelection();
+        _linkedDoubleHeightDragTopRow = -1;
         CellSelected?.Invoke(this, EventArgs.Empty);
     }
 
