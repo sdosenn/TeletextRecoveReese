@@ -23,6 +23,8 @@
                     </NativeMenuItem>
                     <NativeMenuItem Header="Open recent"><NativeMenu /></NativeMenuItem>
                     <NativeMenuItemSeparator />
+                    <NativeMenuItem Header="Import DVB teletext…" Click="OnNativeImportDvbTeletextClicked" />
+                    <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Save" Gesture="Meta+S" Click="OnNativeSaveClicked" />
                     <NativeMenuItem Header="Save as…" Gesture="Meta+Shift+S" Click="OnNativeSaveAsClicked" />
                     <NativeMenuItem Header="Save captured stream…" IsVisible="False" Click="OnNativeSaveCapturedStreamClicked" />
@@ -138,6 +140,8 @@
                     <MenuItem x:Name="OpenLiveVbiCaptureMenuItem" Header="_Live capture..." Click="OnOpenLiveVbiCaptureClicked" />
                 </MenuItem>
                 <MenuItem x:Name="OpenRecentMenuItem" Header="Open _recent" />
+                <Separator />
+                <MenuItem Header="Import _DVB teletext..." Click="OnImportDvbTeletextClicked" />
                 <Separator />
                 <MenuItem x:Name="SaveMenuItem" Header="_Save" InputGesture="Ctrl+S" Click="OnSaveClicked" />
                 <MenuItem x:Name="SaveAsMenuItem" Header="Save _as..." Click="OnSaveAsClicked" />

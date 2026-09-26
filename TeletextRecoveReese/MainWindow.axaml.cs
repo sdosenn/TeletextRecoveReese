@@ -3534,6 +3534,9 @@ public partial class MainWindow : Window
     private void OnNativeOpenVbiCaptureClicked(object? sender, EventArgs e) =>
         OnOpenVbiCaptureClicked(sender, new RoutedEventArgs());
 
+    private void OnNativeImportDvbTeletextClicked(object? sender, EventArgs e) =>
+        OnImportDvbTeletextClicked(sender, new RoutedEventArgs());
+
     private void OnNativeOpenLiveVbiCaptureClicked(object? sender, EventArgs e) =>
         OnOpenLiveVbiCaptureClicked(sender, new RoutedEventArgs());
 
@@ -4177,6 +4180,241 @@ public partial class MainWindow : Window
         await using var stream = await file.OpenReadAsync();
         await LoadBroadcastStreamAsync(stream, displayPath);
         await RememberFileAsync(file.Path.IsFile ? file.Path.LocalPath : null, broadcast: true);
+    }
+
+    private async void OnImportDvbTeletextClicked(object? sender, RoutedEventArgs e)
+    {
+        if (HasUnsavedCapturedStream())
+        {
+            UnsavedCaptureCloseChoice choice = await ConfirmUnsavedCapturedStreamOnCloseAsync();
+            if (choice == UnsavedCaptureCloseChoice.Cancel) return;
+            if (choice == UnsavedCaptureCloseChoice.Save
+                && !await SaveCapturedStreamAsync())
+                return;
+        }
+
+        IReadOnlyList<IStorageFile> files = await OpenFilePickerRememberingFolderAsync(
+            new FilePickerOpenOptions
+            {
+                Title = "Import DVB teletext",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("MPEG transport streams")
+                    {
+                        Patterns = new[] { "*.ts", "*.mts", "*.m2ts", "*.trp", "*.tp" },
+                    },
+                    FilePickerFileTypes.All,
+                },
+            });
+        IStorageFile? file = files.FirstOrDefault();
+        if (file is null) return;
+        if (!file.Path.IsFile)
+        {
+            await ShowMessageAsync(
+                "Import DVB teletext",
+                "DVB teletext import currently requires a local transport-stream file.");
+            return;
+        }
+
+        string inputPath = file.Path.LocalPath;
+        using var cancellation = new CancellationTokenSource();
+        var progressBar = new ProgressBar
+        {
+            Width = 500,
+            Minimum = 0,
+            Maximum = 100,
+        };
+        var progressText = new TextBlock
+        {
+            Text = "Searching for DVB teletext services…",
+            Foreground = Brushes.LightGray,
+        };
+        var cancelButton = new Button
+        {
+            Content = "Cancel",
+            Width = 90,
+            IsCancel = true,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        var progressDialog = new Window
+        {
+            Title = "Importing DVB teletext",
+            Width = 550,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(22),
+                Spacing = 14,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = $"Reading {Path.GetFileName(inputPath)}",
+                        TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    progressBar,
+                    progressText,
+                    cancelButton,
+                },
+            },
+        };
+        bool operationFinished = false;
+        cancelButton.Click += (_, _) =>
+        {
+            cancelButton.IsEnabled = false;
+            progressText.Text = "Cancelling…";
+            cancellation.Cancel();
+        };
+        progressDialog.Closing += (_, args) =>
+        {
+            if (operationFinished) return;
+            args.Cancel = true;
+            cancelButton.IsEnabled = false;
+            progressText.Text = "Cancelling…";
+            cancellation.Cancel();
+        };
+        IProgress<DvbTeletextExtractionProgress> progress =
+            new Progress<DvbTeletextExtractionProgress>(value =>
+            {
+                progressBar.Value = Math.Clamp(value.Percent, 0, 100);
+                progressText.Text =
+                    $"{value.BytesRead / (1024.0 * 1024.0):N1} of "
+                    + $"{value.TotalBytes / (1024.0 * 1024.0):N1} MiB "
+                    + $"({value.Percent:0}%)";
+            });
+
+        DvbTeletextExtractionResult? extraction = null;
+        Exception? failure = null;
+        progressDialog.Show(this);
+        await Task.Yield();
+        try
+        {
+            extraction = await Task.Run(() =>
+            {
+                using var input = new FileStream(
+                    inputPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                    1024 * 1024, FileOptions.SequentialScan);
+                return DvbTeletextExtractor.Extract(input, progress, cancellation.Token);
+            }, cancellation.Token);
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+        finally
+        {
+            operationFinished = true;
+            progressDialog.Close();
+        }
+
+        if (failure is OperationCanceledException || cancellation.IsCancellationRequested)
+            return;
+        if (failure is not null)
+        {
+            await ShowMessageAsync("Could not import DVB teletext", failure.Message);
+            return;
+        }
+        if (extraction is null || extraction.Services.Count == 0)
+        {
+            await ShowMessageAsync(
+                "Import DVB teletext",
+                "No valid DVB teletext service was found in the selected transport stream.");
+            return;
+        }
+
+        DvbTeletextService? service = await SelectDvbTeletextServiceAsync(extraction.Services);
+        if (service is null) return;
+
+        CaptureRecentFilePositions();
+        HideUntitledUnmodifiedSquashForBroadcast();
+        await using var decoded = new MemoryStream(service.T42Data, writable: false);
+        await LoadBroadcastStreamAsync(decoded, filePath: null);
+        _broadcastFilePath = null;
+        _sessionState.BroadcastFilePath = null;
+        _broadcastHasAppliedRepairs = false;
+        BroadcastInfoText.Text = $"Full broadcast — DVB teletext · PID 0x{service.Pid:X}";
+        BroadcastFilePathText.Text =
+            $"{inputPath} · PID 0x{service.Pid:X} — Pages: {_store.TotalInstanceCount}";
+        UpdateSaveCapturedStreamMenuVisibility();
+        UpdateWindowAndPaneTitles();
+        SaveSessionState();
+
+        await ShowMessageAsync(
+            "DVB teletext imported",
+            $"Imported {service.PacketCount:N0} Teletext packets from {service.DisplayName}.\n\n"
+            + "The decoded full broadcast is open as Untitled. Use Save captured stream to save it as a T42 file.");
+    }
+
+    private async Task<DvbTeletextService?> SelectDvbTeletextServiceAsync(
+        IReadOnlyList<DvbTeletextService> services)
+    {
+        if (services.Count == 1) return services[0];
+
+        string[] labels = services.Select(service => service.DisplayName).ToArray();
+        var combo = new ComboBox
+        {
+            Width = 520,
+            ItemsSource = labels,
+            SelectedIndex = 0,
+        };
+        var details = new TextBlock
+        {
+            Width = 520,
+            Foreground = Brushes.LightGray,
+            TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
+        };
+        void UpdateDetails()
+        {
+            int index = Math.Clamp(combo.SelectedIndex, 0, services.Count - 1);
+            DvbTeletextService selected = services[index];
+            details.Text = selected.Descriptors.Count == 0
+                ? "No teletext descriptor metadata was present; the service was identified from valid DVB teletext data units."
+                : string.Join("\n", selected.Descriptors.Select(descriptor =>
+                    $"{descriptor.Language} · page {descriptor.Magazine}{descriptor.PageNumber:00} · type {descriptor.TeletextType}"));
+        }
+        combo.SelectionChanged += (_, _) => UpdateDetails();
+        var importButton = new Button { Content = "Import", Width = 90, IsDefault = true };
+        var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
+        var dialog = new Window
+        {
+            Title = "Choose DVB teletext service",
+            Width = 570,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(22),
+                Spacing = 14,
+                Children =
+                {
+                    new TextBlock { Text = "Teletext service" },
+                    combo,
+                    details,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { cancelButton, importButton },
+                    },
+                },
+            },
+        };
+        DvbTeletextService? result = null;
+        cancelButton.Click += (_, _) => dialog.Close();
+        importButton.Click += (_, _) =>
+        {
+            int index = Math.Clamp(combo.SelectedIndex, 0, services.Count - 1);
+            result = services[index];
+            dialog.Close();
+        };
+        UpdateDetails();
+        await dialog.ShowDialog(this);
+        return result;
     }
 
     private void OnTeletextGridDragOver(object? sender, DragEventArgs e)
@@ -9748,17 +9986,28 @@ public partial class MainWindow : Window
         }
     }
 
+    private void HideUntitledUnmodifiedSquashForBroadcast()
+    {
+        if (_squashFileOpen
+            && string.IsNullOrWhiteSpace(_squashFilePath)
+            && !_squashDirty)
+            _squashPaneEstablished = false;
+    }
+
     private void UpdateSquashOnlyFileActionsVisibility(bool squashVisible)
     {
         SaveMenuItem.IsEnabled = squashVisible;
         SaveAsMenuItem.IsEnabled = squashVisible;
         BatchExportScreenshotsMenuItem.IsEnabled = squashVisible;
+        ExportVideoMenuItem.IsEnabled = squashVisible;
         if (_nativeSaveMenuItem is not null)
             _nativeSaveMenuItem.IsEnabled = squashVisible;
         if (_nativeSaveAsMenuItem is not null)
             _nativeSaveAsMenuItem.IsEnabled = squashVisible;
         if (_nativeBatchExportScreenshotsMenuItem is not null)
             _nativeBatchExportScreenshotsMenuItem.IsEnabled = squashVisible;
+        if (_nativeExportVideoMenuItem is not null)
+            _nativeExportVideoMenuItem.IsEnabled = squashVisible;
     }
 
     // ---- Full broadcast stream: Magazine -> Page -> Subpage -> Version cascade --
@@ -11482,6 +11731,8 @@ public partial class MainWindow : Window
 
     private async void OnExportVideoClicked(object? sender, RoutedEventArgs e)
     {
+        if (!SquashPaneGrid.IsVisible) return;
+
         if (_ffmpegPath is null)
         {
             await ShowMessageAsync(

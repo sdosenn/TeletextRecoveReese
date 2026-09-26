@@ -43,6 +43,7 @@ otherwise disappear. Thank you for helping keep the work moving.
 ## Highlights
 
 - Inspect full broadcast captures.
+- Import DVB teletext services directly from `.ts`, `.mts`, and `.m2ts` recordings.
 - Compare every version of a page, subpage, row, or selected block.
 - Restore good rows and blocks into a separate editable page.
 - Edit text, mosaics, control codes, national subsets, and X/26 diacritics.
@@ -164,6 +165,12 @@ text field has focus, all typing and cursor keys remain inside that field.
 - Original packet data is preserved wherever possible during restoration.
 - Line-aware captures use an all-zero 42-byte positional placeholder compatible
   with `vhs-teletext --keep-empty`; squashed exports omit those placeholders.
+
+### DVB transport streams
+
+- MPEG-TS and M2TS imports locate valid DVB teletext PES services automatically.
+- EN 300 472 data units are converted directly to T42 without rendering, OCR, or
+  video transcoding.
 
 ## Building from source
 
