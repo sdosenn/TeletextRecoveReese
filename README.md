@@ -5,8 +5,8 @@ Codex.<br>
 Capture VBI, deconvolve and restore teletext from VHS tapes all in one cross-platform GUI application.
 
 <p align="left">
-  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.8-beta">
-    <img src="https://img.shields.io/badge/Download_latest_release-0.8_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.8 beta">
+  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.9-beta">
+    <img src="https://img.shields.io/badge/Download_latest_release-0.9_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.8 beta">
   </a>
 </p>
 
@@ -17,8 +17,7 @@ Capture VBI, deconvolve and restore teletext from VHS tapes all in one cross-pla
 Deconvolve data in real time and see teletext in the precise moment on the tape that's playing.<br>
 No need to store data to disk and separately deconvolve it later. Do it all in one pass.<br>
 Or better yet, hot swap tapes to quickly date taped broadcasts.<br>
-Live capture can stop automatically after 1–30 minutes without a decoded Teletext packet.
-
+Of course raw VBI can be stored for preservation if needed.<br>
 
 <img width="780" height="452" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/4263db68-66a8-4cfc-b447-ec28574045d8" />
 
@@ -173,16 +172,23 @@ dotnet restore
 dotnet run --project TeletextRecoveReese
 ```
 
+Build the complete solution:
+
+```bash
+dotnet build TeletextRecoveReese.sln
+```
+
+## Command line options
 Restore the previous session at startup:
 
 ```bash
 dotnet run --project TeletextRecoveReese -- -loadlast
 ```
 
-Build the complete solution:
+Explicitly start a new session at startup:
 
 ```bash
-dotnet build TeletextRecoveReese.sln
+dotnet run --project TeletextRecoveReese -- -startnew
 ```
 
 ## Status
