@@ -2657,10 +2657,44 @@ public partial class MainWindow : Window
         int height = Math.Min(Math.Max(grid.SelectionHeight, 1), 25 - startY);
         byte[] block = CreateByteBlock(page, startX, startY, width, height);
         var item = DataTransferItem.Create(TeletextClipboardFormat, block);
+        item.SetText(CreatePlainTextBlock(page, startX, startY, width, height));
         var transfer = new DataTransfer();
         transfer.Add(item);
         await Clipboard.SetDataAsync(transfer);
         return block;
+    }
+
+    private static string CreatePlainTextBlock(
+        TeletextPage page,
+        int startX,
+        int startY,
+        int width,
+        int height)
+    {
+        var text = new StringBuilder(height * (width + Environment.NewLine.Length));
+        for (int y = 0; y < height; y++)
+        {
+            if (y > 0) text.Append(Environment.NewLine);
+            for (int x = 0; x < width; x++)
+            {
+                Cell cell = page.Grid[startX + x, startY + y];
+                if (cell.IsMosaic)
+                {
+                    text.Append(' ');
+                }
+                else if (!string.IsNullOrEmpty(cell.EnhancementText))
+                {
+                    text.Append(cell.EnhancementText);
+                }
+                else
+                {
+                    text.Append(cell.Character is >= ' ' and not '\x7F'
+                        ? cell.Character
+                        : ' ');
+                }
+            }
+        }
+        return text.ToString();
     }
 
     private static byte[] CreateByteBlock(
@@ -2708,14 +2742,136 @@ public partial class MainWindow : Window
         if (SquashGrid.Page is null || Clipboard is null) return;
 
         byte[]? block = await Clipboard.TryGetValueAsync(TeletextClipboardFormat);
-        if (block is null || block.Length < 6
-            || block[0] != (byte)'T' || block[1] != (byte)'4' || block[2] != (byte)'2'
-            || block[3] != 2)
-            return;
-
         int startX = Math.Clamp(SquashGrid.SelectedColumn, 0, 39);
         int startY = Math.Clamp(SquashGrid.SelectedRow, 0, 24);
-        PasteByteBlockIntoSquash(block, startX, startY, updateSquashSelection: true);
+        if (block is not null && block.Length >= 6
+            && block[0] == (byte)'T' && block[1] == (byte)'4' && block[2] == (byte)'2'
+            && block[3] == 2)
+        {
+            PasteByteBlockIntoSquash(block, startX, startY, updateSquashSelection: true);
+            return;
+        }
+
+        string? text = await Clipboard.TryGetTextAsync();
+        if (!string.IsNullOrEmpty(text))
+            PastePlainTextIntoSquash(text, startX, startY);
+    }
+
+    private void PastePlainTextIntoSquash(string clipboardText, int startX, int startY)
+    {
+        if (SquashGrid.Page is not { } page) return;
+
+        string[] lines = clipboardText
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n');
+        int pasteHeight = Math.Min(lines.Length, 25 - startY);
+        int pasteWidth = 0;
+        int replacedCharacters = 0;
+        bool changed = false;
+        bool addedEnhancements = false;
+        EnsurePageHistory(page);
+
+        for (int lineIndex = 0; lineIndex < pasteHeight; lineIndex++)
+        {
+            int column = startX;
+            TextElementEnumerator elements = StringInfo.GetTextElementEnumerator(lines[lineIndex]);
+            while (column < 40 && elements.MoveNext())
+            {
+                string element = elements.GetTextElement();
+                if (element == "\t") element = " ";
+                int row = startY + lineIndex;
+                int relativeWidth = column - startX + 1;
+                pasteWidth = Math.Max(pasteWidth, relativeWidth);
+
+                if (row == 0 && column < 8)
+                {
+                    column++;
+                    continue;
+                }
+
+                bool isDiacritic = false;
+                char baseCharacter = default;
+                int diacritical = -1;
+                byte code;
+                if (TryEncodeDisplayedG0Character(page, element, out code))
+                {
+                    // Prefer an exact Level-1 national-subset character when the
+                    // current page can represent it without an enhancement packet.
+                }
+                else if (TryGetLevel15Diacritic(
+                             element, out baseCharacter, out diacritical))
+                {
+                    isDiacritic = true;
+                    code = (byte)baseCharacter;
+                }
+                else
+                {
+                    code = (byte)'?';
+                    replacedCharacters++;
+                }
+
+                byte[] raw = page.RawRows[row] is { } existing
+                    ? (byte[])existing.Clone()
+                    : CreateBlankPacket(page, row);
+                raw[2 + column] = WithOddParity(code);
+                PageAssembler.ApplyRow(page, row, raw);
+                changed = true;
+
+                if (isDiacritic)
+                {
+                    if (TrySetLevel15DiacriticReplacingCorruptPackets(
+                            page, column, row, baseCharacter, diacritical, out _))
+                    {
+                        addedEnhancements = true;
+                    }
+                    else
+                    {
+                        replacedCharacters++;
+                    }
+                }
+                column++;
+            }
+        }
+
+        if (!changed) return;
+
+        PageAssembler.ApplyLevel15Enhancements(page);
+        CommitPageEdit(page);
+        SquashGrid.SetSelectionSize(Math.Max(pasteWidth, 1), Math.Max(pasteHeight, 1));
+        if (addedEnhancements) UpdateEnhancementList(page);
+        SquashGrid.InvalidateVisual();
+        if (replacedCharacters > 0)
+        {
+            _ = SquashGrid.ShowSelectionStatusAsync(
+                $"{replacedCharacters} unsupported "
+                + (replacedCharacters == 1 ? "character" : "characters")
+                + " replaced");
+        }
+    }
+
+    private static bool TryEncodeDisplayedG0Character(
+        TeletextPage page,
+        string textElement,
+        out byte code)
+    {
+        code = default;
+        if (textElement.Length != 1) return false;
+
+        char character = textElement[0];
+        int nationalOption = page.NationalOptionOverride ?? page.NationalOption;
+        for (int candidate = 0x20; candidate <= 0x7F; candidate++)
+        {
+            if (CharacterSets.Decode((byte)candidate, nationalOption) != character) continue;
+            code = (byte)candidate;
+            return true;
+        }
+
+        // Preserve the editor's existing direct G0 input behaviour when a national
+        // option replaces the visual meaning of an otherwise valid ASCII code.
+        if (character is < ' ' or > '\x7F') return false;
+        code = (byte)character;
+        return true;
     }
 
     private void PasteByteBlockIntoSquash(
@@ -2852,11 +3008,16 @@ public partial class MainWindow : Window
     private static bool TryGetLevel15Diacritic(
         KeyEventArgs e,
         out char baseCharacter,
+        out int diacritical) =>
+        TryGetLevel15Diacritic(e.KeySymbol, out baseCharacter, out diacritical);
+
+    private static bool TryGetLevel15Diacritic(
+        string? symbol,
+        out char baseCharacter,
         out int diacritical)
     {
         baseCharacter = default;
         diacritical = -1;
-        string? symbol = e.KeySymbol;
         if (string.IsNullOrEmpty(symbol)) return false;
 
         if (symbol is "Đ" or "đ")
