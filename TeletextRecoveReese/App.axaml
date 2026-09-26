@@ -6,6 +6,8 @@
     <NativeMenu.Menu>
         <NativeMenu>
             <NativeMenuItem Header="About TeletextRecoveReese…" Click="OnNativeAboutClicked" />
+            <NativeMenuItemSeparator />
+            <NativeMenuItem Header="Preferences…" Gesture="Meta+," Click="OnNativePreferencesClicked" />
         </NativeMenu>
     </NativeMenu.Menu>
     <Application.Styles>

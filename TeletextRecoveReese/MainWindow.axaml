@@ -106,8 +106,6 @@
             </NativeMenuItem>
             <NativeMenuItem Header="Options">
                 <NativeMenu>
-                    <NativeMenuItem Header="Preferences…" Click="OnNativePreferencesClicked" />
-                    <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Font…" Click="OnNativeChooseFontClicked" />
                     <NativeMenuItem Header="Capture card presets…" Click="OnNativeCaptureCardPresetsClicked" />
                     <NativeMenuItem Header="Disable video preview in live VBI capture"

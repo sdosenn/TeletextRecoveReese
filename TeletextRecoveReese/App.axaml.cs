@@ -63,6 +63,15 @@ public class App : Application
             aboutWindow.Show();
     }
 
+    private async void OnNativePreferencesClicked(object? sender, EventArgs e)
+    {
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime
+            {
+                MainWindow: MainWindow mainWindow,
+            })
+            await mainWindow.ShowPreferencesFromApplicationMenuAsync();
+    }
+
     public override void OnFrameworkInitializationCompleted()
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)

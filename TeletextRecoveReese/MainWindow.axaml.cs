@@ -1215,6 +1215,8 @@ public partial class MainWindow : Window
     private async void OnPreferencesClicked(object? sender, RoutedEventArgs e) =>
         await ShowPreferencesAsync();
 
+    internal Task ShowPreferencesFromApplicationMenuAsync() => ShowPreferencesAsync();
+
     private async Task ShowPreferencesAsync()
     {
         string[] dateOrders = ["Day.Month.Year", "Month.Day.Year", "Year-Month-Day"];
@@ -2216,6 +2218,21 @@ public partial class MainWindow : Window
             {
                 await WarnBroadcastReadOnlyAsync();
             }
+            return;
+        }
+
+        bool pageNavigationModifier = e.KeyModifiers.HasFlag(KeyModifiers.Control)
+            || OperatingSystem.IsMacOS()
+               && e.KeyModifiers.HasFlag(KeyModifiers.Meta);
+        if (pageNavigationModifier
+            && e.Key is Key.Left or Key.Right)
+        {
+            e.Handled = true;
+            int direction = e.Key == Key.Right ? 1 : -1;
+            if (activeGrid == BroadcastGrid)
+                NavigateBroadcast(direction);
+            else if (activeGrid == SquashGrid)
+                NavigateSquash(direction);
             return;
         }
 
