@@ -368,6 +368,9 @@ public partial class MainWindow : Window
         public int? BroadcastPage { get; set; }
         public int? BroadcastSubpage { get; set; }
         public int? BroadcastVersion { get; set; }
+        public int? BroadcastRangeStartPacket { get; set; }
+        public int? BroadcastRangeEndPacketExclusive { get; set; }
+        public int? BroadcastRangeEndSampleHeaderPacket { get; set; }
         public int? SquashMagazine { get; set; }
         public int? SquashPage { get; set; }
         public int? SquashSubpage { get; set; }
@@ -807,6 +810,9 @@ public partial class MainWindow : Window
         _sessionState.BroadcastPage = null;
         _sessionState.BroadcastSubpage = null;
         _sessionState.BroadcastVersion = null;
+        _sessionState.BroadcastRangeStartPacket = null;
+        _sessionState.BroadcastRangeEndPacketExclusive = null;
+        _sessionState.BroadcastRangeEndSampleHeaderPacket = null;
         SaveSessionState();
     }
 
@@ -2131,6 +2137,9 @@ public partial class MainWindow : Window
         _sessionState.BroadcastPage = null;
         _sessionState.BroadcastSubpage = null;
         _sessionState.BroadcastVersion = null;
+        _sessionState.BroadcastRangeStartPacket = null;
+        _sessionState.BroadcastRangeEndPacketExclusive = null;
+        _sessionState.BroadcastRangeEndSampleHeaderPacket = null;
 
         if (!_squashPaneEstablished)
         {
@@ -9301,6 +9310,20 @@ public partial class MainWindow : Window
             {
                 await using var stream = File.OpenRead(broadcastPath);
                 await LoadBroadcastStreamAsync(stream, broadcastPath);
+                if (_sessionState.BroadcastRangeStartPacket is { } rangeStart
+                    && _sessionState.BroadcastRangeEndPacketExclusive is { } rangeEnd
+                    && _sessionState.BroadcastRangeEndSampleHeaderPacket is { } endHeader
+                    && rangeStart >= 0
+                    && rangeEnd > rangeStart
+                    && rangeEnd <= _broadcastPackets.Count
+                    && endHeader >= rangeStart
+                    && endHeader < rangeEnd)
+                {
+                    _broadcastRangeStartPacket = rangeStart;
+                    _broadcastRangeEndPacketExclusive = rangeEnd;
+                    _broadcastRangeEndSampleHeaderPacket = endHeader;
+                    ReindexActiveBroadcastRange();
+                }
             }
             catch { }
         }
@@ -9329,7 +9352,10 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(path)) return;
 
         if (broadcast)
+        {
             _sessionState.BroadcastFilePath = path;
+            CaptureBroadcastRangeSessionState();
+        }
         else
             _sessionState.SquashFilePath = path;
 
@@ -9510,6 +9536,7 @@ public partial class MainWindow : Window
         _sessionState.SuppressFlash = SquashGrid.SuppressFlash;
         _sessionState.ShowFastextCrcToolbar = FastextCrcToolbarMenuItem.IsChecked;
         _sessionState.ToolbarOnBottom = ToolbarOnBottomMenuItem.IsChecked;
+        CaptureBroadcastRangeSessionState();
 
         if (!string.IsNullOrWhiteSpace(_squashFilePath)
             && TryGetSquashAddress(out var squashAddress))
@@ -9779,6 +9806,7 @@ public partial class MainWindow : Window
         _broadcastRangeStartPacket = start;
         _broadcastRangeEndPacketExclusive = endExclusive;
         _broadcastRangeEndSampleHeaderPacket = endSampleHeaderPacket;
+        CaptureBroadcastRangeSessionState();
         ReindexActiveBroadcastRange();
         await Task.Yield();
     }
@@ -9822,6 +9850,22 @@ public partial class MainWindow : Window
         _broadcastRangeStartPacket = 0;
         _broadcastRangeEndPacketExclusive = null;
         _broadcastRangeEndSampleHeaderPacket = null;
+    }
+
+    private void CaptureBroadcastRangeSessionState()
+    {
+        if (_broadcastRangeEndSampleHeaderPacket is null)
+        {
+            _sessionState.BroadcastRangeStartPacket = null;
+            _sessionState.BroadcastRangeEndPacketExclusive = null;
+            _sessionState.BroadcastRangeEndSampleHeaderPacket = null;
+            return;
+        }
+
+        _sessionState.BroadcastRangeStartPacket = _broadcastRangeStartPacket;
+        _sessionState.BroadcastRangeEndPacketExclusive = _broadcastRangeEndPacketExclusive;
+        _sessionState.BroadcastRangeEndSampleHeaderPacket =
+            _broadcastRangeEndSampleHeaderPacket;
     }
 
     private void NavigateActivePane(int direction)
@@ -11278,8 +11322,18 @@ public partial class MainWindow : Window
         await Task.Yield();
         try
         {
+            int rangeStart = Math.Clamp(
+                _broadcastRangeStartPacket, 0, _broadcastPackets.Count);
+            int rangeEndExclusive = Math.Clamp(
+                _broadcastRangeEndPacketExclusive ?? _broadcastPackets.Count,
+                rangeStart,
+                _broadcastPackets.Count);
+            List<byte[]> recoveryPackets = _broadcastPackets
+                .Skip(rangeStart)
+                .Take(rangeEndExclusive - rangeStart)
+                .ToList();
             var packets = await Task.Run(() => RecoverySquasher.Build(
-                _broadcastPackets,
+                recoveryPackets,
                 options,
                 (phase, completed, total) => progress.Report((phase, completed, total)),
                 cancellation.Token));
@@ -11418,7 +11472,7 @@ public partial class MainWindow : Window
                     },
                     new TextBlock
                     {
-                        Text = "The opened source file will not be overwritten. The result becomes an Untitled captured stream that must be saved separately.",
+                        Text = "The opened source file will not be overwritten. Repairs stay in memory and can be saved explicitly as a repaired captured stream.",
                         Foreground = Brushes.LightGray,
                         TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
                     },
