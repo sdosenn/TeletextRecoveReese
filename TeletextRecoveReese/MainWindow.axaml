@@ -95,6 +95,8 @@
                     <NativeMenuItem Header="Previous page" Gesture="Meta+Left" Click="OnNativePreviousPageShortcutClicked" />
                     <NativeMenuItem Header="Next page" Gesture="Meta+Right" Click="OnNativeNextPageShortcutClicked" />
                     <NativeMenuItemSeparator/>
+                    <NativeMenuItem Header="Select full broadcast sample range…" Click="OnNativeSelectBroadcastSampleRangeClicked" />
+                    <NativeMenuItemSeparator/>
                     <NativeMenuItem Header="G0 subset">
                         <NativeMenu>
                             <NativeMenuItem Header="Auto (from stream)" CommandParameter="auto" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
@@ -221,6 +223,8 @@
                 <Separator/>
                 <MenuItem x:Name="PreviousPageMenuItem" Header="_Previous page" InputGesture="Ctrl+Left" Click="OnPreviousPageShortcutClicked" />
                 <MenuItem x:Name="NextPageMenuItem" Header="_Next page" InputGesture="Ctrl+Right" Click="OnNextPageShortcutClicked" />
+                <Separator/>
+                <MenuItem x:Name="SelectBroadcastSampleRangeMenuItem" Header="Select full broadcast sample range..." Click="OnSelectBroadcastSampleRangeClicked" />
                 <Separator/>
                 <MenuItem x:Name="G0SubsetMenuItem" Header="G0 _subset">
                     <MenuItem Header="Auto (from stream)" CommandParameter="auto" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>

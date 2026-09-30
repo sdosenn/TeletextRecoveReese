@@ -15,7 +15,9 @@ public static class BroadcastBackPropagator
 {
     public static BroadcastBackPropagationResult Apply(
         IReadOnlyList<byte[]> broadcastPackets,
-        IEnumerable<TeletextPage> restoredPages)
+        IEnumerable<TeletextPage> restoredPages,
+        int startPacketIndex = 0,
+        int? endPacketIndexExclusive = null)
     {
         var repairs = restoredPages
             .GroupBy(page => (page.Magazine, page.PageNumber, page.SubPage))
@@ -25,8 +27,13 @@ public static class BroadcastBackPropagator
         int replaced = 0;
         int matchedTransmissions = 0;
         int paddingSlots = 0;
+        int start = Math.Clamp(startPacketIndex, 0, broadcastPackets.Count);
+        int endExclusive = Math.Clamp(
+            endPacketIndexExclusive ?? broadcastPackets.Count,
+            start,
+            broadcastPackets.Count);
 
-        for (int index = 0; index < broadcastPackets.Count; index++)
+        for (int index = start; index < endExclusive; index++)
         {
             byte[] source = broadcastPackets[index];
             if (TeletextPacket.IsPadding(source))

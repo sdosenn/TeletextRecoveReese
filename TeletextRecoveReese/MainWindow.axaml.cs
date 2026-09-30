@@ -215,6 +215,9 @@ public partial class MainWindow : Window
     private readonly PageStore _squashStore = new();
     private static readonly byte[] EmptyT42Packet = new byte[TeletextPacket.Length];
     private readonly List<byte[]> _broadcastPackets = new();
+    private int _broadcastRangeStartPacket;
+    private int? _broadcastRangeEndPacketExclusive;
+    private int? _broadcastRangeEndSampleHeaderPacket;
     private readonly List<byte[]> _squashPackets = new();
     private readonly HashSet<int> _deletedSquashPacketIndices = new();
     private readonly bool _loadLastSession;
@@ -622,6 +625,7 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeApplySquashedRepairsMenuItem;
     private NativeMenuItem? _nativePreviousPageMenuItem;
     private NativeMenuItem? _nativeNextPageMenuItem;
+    private NativeMenuItem? _nativeSelectBroadcastSampleRangeMenuItem;
     private NativeMenuItem? _nativeOpenLiveVbiCaptureMenuItem;
     private NativeMenuItem? _nativeSaveCapturedStreamMenuItem;
     private NativeMenuItem? _nativeSaveMenuItem;
@@ -2119,6 +2123,7 @@ public partial class MainWindow : Window
 
         _store.Clear();
         _broadcastPackets.Clear();
+        ResetBroadcastSampleRange();
         ClearBroadcastPane();
         BroadcastPaneGrid.IsVisible = false;
         _sessionState.BroadcastFilePath = null;
@@ -4257,6 +4262,9 @@ public partial class MainWindow : Window
         _nativeNextPageMenuItem = pageMenu?.Items
             .OfType<NativeMenuItem>()
             .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Next page", StringComparison.Ordinal));
+        _nativeSelectBroadcastSampleRangeMenuItem = pageMenu?.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Select full broadcast sample range…", StringComparison.Ordinal));
 
         if (menu.Items.Count > 0 && menu.Items[0] is NativeMenuItem { Menu: { } fileMenu })
         {
@@ -6616,6 +6624,7 @@ public partial class MainWindow : Window
                 if (liveAssembler is not null) return;
                 _store.Clear();
                 _broadcastPackets.Clear();
+                ResetBroadcastSampleRange();
                 ClearBroadcastPane();
                 _broadcastFileOpen = true;
                 BroadcastPaneGrid.IsVisible = true;
@@ -6866,6 +6875,7 @@ public partial class MainWindow : Window
             liveAssembler = null;
             _store.Clear();
             _broadcastPackets.Clear();
+            ResetBroadcastSampleRange();
             ClearBroadcastPane();
             LiveCaptureDateText.IsVisible = false;
             _lastLiveCaptureDate = null;
@@ -7635,6 +7645,7 @@ public partial class MainWindow : Window
             if (liveAssembler is not null) return;
             _store.Clear();
             _broadcastPackets.Clear();
+            ResetBroadcastSampleRange();
             ClearBroadcastPane();
             _broadcastFileOpen = true;
             BroadcastPaneGrid.IsVisible = true;
@@ -7736,6 +7747,7 @@ public partial class MainWindow : Window
             if (liveAssembler is null) return;
             _store.Clear();
             _broadcastPackets.Clear();
+            ResetBroadcastSampleRange();
             ClearBroadcastPane();
             BroadcastInfoText.Text = "Full broadcast";
             BroadcastFilePathText.Text = FormatFileFooter(null, 0);
@@ -7959,6 +7971,7 @@ public partial class MainWindow : Window
         {
             _store.Clear();
             _broadcastPackets.Clear();
+            ResetBroadcastSampleRange();
             ClearBroadcastPane();
             await IndexBroadcastStreamAsync(
                 stream,
@@ -8059,6 +8072,7 @@ public partial class MainWindow : Window
         {
             _store.Clear();
             _broadcastPackets.Clear();
+            ResetBroadcastSampleRange();
             ClearBroadcastPane();
             _squashPaneEstablished = false;
 
@@ -8619,7 +8633,7 @@ public partial class MainWindow : Window
 
     private bool HasUnsavedCapturedStream() =>
         _broadcastFileOpen
-        && string.IsNullOrWhiteSpace(_broadcastFilePath)
+        && (string.IsNullOrWhiteSpace(_broadcastFilePath) || _broadcastHasAppliedRepairs)
         && _broadcastPackets.Count > 0;
 
     private void UpdateSaveCapturedStreamMenuVisibility()
@@ -9544,6 +9558,272 @@ public partial class MainWindow : Window
     private void OnNativePreviousPageShortcutClicked(object? sender, EventArgs e) => NavigateActivePane(-1);
     private void OnNativeNextPageShortcutClicked(object? sender, EventArgs e) => NavigateActivePane(1);
 
+    private async void OnSelectBroadcastSampleRangeClicked(object? sender, RoutedEventArgs e) =>
+        await ShowBroadcastSampleRangeDialogAsync();
+
+    private async void OnNativeSelectBroadcastSampleRangeClicked(object? sender, EventArgs e) =>
+        await ShowBroadcastSampleRangeDialogAsync();
+
+    private sealed record BroadcastSample(PageInstance Instance, int HeaderPacketIndex);
+
+    private List<BroadcastSample> GetBroadcastSamples()
+    {
+        var fullStore = new PageStore();
+        var indexer = new BroadcastPacketIndexer(fullStore);
+        for (int index = 0; index < _broadcastPackets.Count; index++)
+            indexer.Feed(_broadcastPackets[index], index);
+        indexer.FinalizeAll();
+        return fullStore.AllInstances
+        .Select(instance => new BroadcastSample(instance, instance.BroadcastRowPacketIndices[0]))
+        .Where(sample => sample.HeaderPacketIndex >= 0)
+        .OrderBy(sample => sample.HeaderPacketIndex)
+        .ToList();
+    }
+
+    private (int Start, int EndExclusive) GetBroadcastPacketRange(
+        IReadOnlyList<BroadcastSample> samples,
+        int startSample,
+        int endSample)
+    {
+        int start = samples[startSample].HeaderPacketIndex;
+        int end = start + 1;
+        for (int sampleIndex = startSample; sampleIndex <= endSample; sampleIndex++)
+        {
+            foreach (int packetIndex in samples[sampleIndex].Instance.BroadcastRowPacketIndices)
+            {
+                if (packetIndex >= 0)
+                    end = Math.Max(end, packetIndex + 1);
+            }
+        }
+        return (Math.Clamp(start, 0, _broadcastPackets.Count),
+            Math.Clamp(end, start + 1, _broadcastPackets.Count));
+    }
+
+    private async Task ShowBroadcastSampleRangeDialogAsync()
+    {
+        List<BroadcastSample> samples = GetBroadcastSamples();
+        if (!_broadcastFileOpen || samples.Count == 0)
+        {
+            await ShowMessageAsync("Select full broadcast sample range",
+                "Open a full broadcast capture first.");
+            return;
+        }
+
+        bool hadAddress = TryGetBroadcastAddress(out var originalAddress);
+        int originalVersion = Math.Max(VersionComboBox.SelectedIndex, 0);
+        int startIndex = Math.Max(0, samples.FindIndex(sample =>
+            sample.HeaderPacketIndex >= _broadcastRangeStartPacket));
+        int endHeader = _broadcastRangeEndSampleHeaderPacket ?? samples[^1].HeaderPacketIndex;
+        int endIndex = samples.FindLastIndex(sample => sample.HeaderPacketIndex <= endHeader);
+        if (endIndex < startIndex) endIndex = startIndex;
+        var rangeSlider = new BroadcastRangeSlider
+        {
+            Minimum = 0,
+            Maximum = samples.Count - 1,
+            UpperValue = endIndex,
+            LowerValue = startIndex,
+        };
+        var startText = new TextBlock();
+        var endText = new TextBlock();
+        var rangeText = new TextBlock { Foreground = Brushes.LightGray };
+        var saveButton = new Button { Content = "Save selected sample range…", MinWidth = 210 };
+        var cancelButton = new Button { Content = "Cancel", MinWidth = 90, IsCancel = true };
+        var applyButton = new Button { Content = "Apply range", MinWidth = 110 };
+        var dialog = new Window
+        {
+            Title = "Select full broadcast sample range",
+            Width = 720,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(22),
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Choose the first and last captured page sample. Moving either slider previews that decoded sample in the full broadcast pane.",
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    startText,
+                    rangeSlider,
+                    endText,
+                    rangeText,
+                    new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"),
+                        ColumnSpacing = 10,
+                        Children =
+                        {
+                            saveButton,
+                            cancelButton,
+                            applyButton,
+                        },
+                    },
+                },
+            },
+        };
+        Grid.SetColumn(saveButton, 0);
+        Grid.SetColumn(cancelButton, 1);
+        Grid.SetColumn(applyButton, 2);
+
+        string DescribeSample(int index)
+        {
+            BroadcastSample sample = samples[index];
+            return $"Sample {index + 1:N0} of {samples.Count:N0}  ·  "
+                + $"page {sample.Instance.Magazine}{sample.Instance.PageNumber:X2}/"
+                + $"{sample.Instance.Subpage:X4}  ·  packet {sample.HeaderPacketIndex + 1:N0}";
+        }
+
+        void UpdateRangeText()
+        {
+            (int start, int endExclusive) = GetBroadcastPacketRange(samples, startIndex, endIndex);
+            startText.Text = "Start: " + DescribeSample(startIndex);
+            endText.Text = "End: " + DescribeSample(endIndex);
+            rangeText.Text = $"Selected {endIndex - startIndex + 1:N0} samples and "
+                + $"{endExclusive - start:N0} packet slots.";
+        }
+
+        void PreviewSample(int index)
+        {
+            PageInstance instance = samples[index].Instance;
+            SelectBroadcastAddress(
+                (instance.Magazine, instance.PageNumber, instance.Subpage),
+                instance.VersionIndex,
+                persistRecentPosition: false);
+        }
+
+        rangeSlider.RangeChanged += lowerThumbMoved =>
+        {
+            startIndex = rangeSlider.LowerValue;
+            endIndex = rangeSlider.UpperValue;
+            UpdateRangeText();
+            PreviewSample(lowerThumbMoved ? startIndex : endIndex);
+        };
+        saveButton.Click += async (_, _) =>
+        {
+            (int start, int endExclusive) = GetBroadcastPacketRange(samples, startIndex, endIndex);
+            await SaveBroadcastPacketRangeAsync(start, endExclusive);
+        };
+        cancelButton.Click += (_, _) => dialog.Close(false);
+        applyButton.Click += (_, _) => dialog.Close(true);
+
+        UpdateRangeText();
+        bool apply = await dialog.ShowDialog<bool>(this);
+        if (!apply)
+        {
+            if (hadAddress)
+                SelectBroadcastAddress(originalAddress, originalVersion, persistRecentPosition: false);
+            return;
+        }
+
+        (int rangeStart, int rangeEndExclusive) =
+            GetBroadcastPacketRange(samples, startIndex, endIndex);
+        await ApplyBroadcastPacketRangeAsync(
+            rangeStart,
+            rangeEndExclusive,
+            samples[endIndex].HeaderPacketIndex);
+    }
+
+    private async Task SaveBroadcastPacketRangeAsync(int start, int endExclusive)
+    {
+        var selectedPackets = _broadcastPackets.GetRange(start, endExclusive - start);
+        TeletextStreamIdentity identity = AnalyzeTeletextStreamIdentity(selectedPackets);
+        IStorageFile? destination = await SaveFilePickerRememberingFolderAsync(
+            new FilePickerSaveOptions
+            {
+                Title = "Save selected full broadcast sample range",
+                SuggestedFileName = SuggestedTeletextFileName(
+                    identity,
+                    $"broadcast-sample-range-{DateTime.Now:yyyyMMdd-HHmmss}.t42",
+                    prefix: "range"),
+                DefaultExtension = "t42",
+                FileTypeChoices = new[]
+                {
+                    new FilePickerFileType("Raw Teletext packet stream")
+                    {
+                        Patterns = new[] { "*.t42" },
+                    },
+                },
+            });
+        if (destination is null) return;
+        if (!destination.Path.IsFile)
+        {
+            await ShowMessageAsync("Save selected sample range",
+                "The selected destination is not a local file.");
+            return;
+        }
+
+        try
+        {
+            await using var output = new FileStream(destination.Path.LocalPath,
+                FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            foreach (byte[] packet in selectedPackets)
+                await output.WriteAsync(packet);
+            await output.FlushAsync();
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Could not save selected sample range", ex.Message);
+        }
+    }
+
+    private async Task ApplyBroadcastPacketRangeAsync(
+        int start,
+        int endExclusive,
+        int endSampleHeaderPacket)
+    {
+        _broadcastRangeStartPacket = start;
+        _broadcastRangeEndPacketExclusive = endExclusive;
+        _broadcastRangeEndSampleHeaderPacket = endSampleHeaderPacket;
+        ReindexActiveBroadcastRange();
+        await Task.Yield();
+    }
+
+    private void ReindexActiveBroadcastRange()
+    {
+        int start = Math.Clamp(_broadcastRangeStartPacket, 0, _broadcastPackets.Count);
+        int endExclusive = Math.Clamp(
+            _broadcastRangeEndPacketExclusive ?? _broadcastPackets.Count,
+            start,
+            _broadcastPackets.Count);
+
+        StopFlashRoll();
+        _decodedBroadcastInstance = null;
+        _broadcastEnhancementsScanned.Clear();
+        _broadcastFastextScanned.Clear();
+        _store.Clear();
+        int endSampleHeader = _broadcastRangeEndSampleHeaderPacket ?? int.MaxValue;
+        List<BroadcastSample> allSamples = GetBroadcastSamples();
+        List<BroadcastSample> activeSamples = allSamples
+            .Where(sample => sample.HeaderPacketIndex >= start
+                && sample.HeaderPacketIndex <= endSampleHeader)
+            .ToList();
+        foreach (BroadcastSample sample in activeSamples)
+            _store.AddInstance(sample.Instance);
+
+        BroadcastGrid.Page = null;
+        PopulatePageCombo();
+        BroadcastFilePathText.Text = FormatFileFooter(
+            _broadcastFilePath, _store.TotalInstanceCount)
+            + $" — Active sample range: {activeSamples.Count:N0} of {allSamples.Count:N0}";
+        UpdateWorkspacePaneVisibility();
+        UpdateNavigationButtons();
+        UpdateG0SubsetMenuChecks();
+        UpdateWindowAndPaneTitles();
+        SaveSessionState();
+    }
+
+    private void ResetBroadcastSampleRange()
+    {
+        _broadcastRangeStartPacket = 0;
+        _broadcastRangeEndPacketExclusive = null;
+        _broadcastRangeEndSampleHeaderPacket = null;
+    }
+
     private void NavigateActivePane(int direction)
     {
         if (IsActiveGrid() == BroadcastGrid)
@@ -10169,6 +10449,10 @@ public partial class MainWindow : Window
 
         SquashJumpToBroadcastButton.IsEnabled = _broadcastFileOpen;
         BroadcastJumpToSquashButton.IsEnabled = _squashFileOpen;
+        bool canSelectBroadcastRange = _broadcastFileOpen && _store.TotalInstanceCount > 0;
+        SelectBroadcastSampleRangeMenuItem.IsEnabled = canSelectBroadcastRange;
+        if (_nativeSelectBroadcastSampleRangeMenuItem is not null)
+            _nativeSelectBroadcastSampleRangeMenuItem.IsEnabled = canSelectBroadcastRange;
         UpdateCreateSquashedStreamMenuAvailability();
         UpdateSquashAddressToolbarVisibility();
     }
@@ -11039,7 +11323,15 @@ public partial class MainWindow : Window
             || !_squashFileOpen || _squashStore.TotalInstanceCount == 0)
             return;
 
-        int paddingSlots = _broadcastPackets.Count(packet => TeletextPacket.IsPadding(packet));
+        int rangeStart = Math.Clamp(_broadcastRangeStartPacket, 0, _broadcastPackets.Count);
+        int rangeEndExclusive = Math.Clamp(
+            _broadcastRangeEndPacketExclusive ?? _broadcastPackets.Count,
+            rangeStart,
+            _broadcastPackets.Count);
+        int paddingSlots = _broadcastPackets
+            .Skip(rangeStart)
+            .Take(rangeEndExclusive - rangeStart)
+            .Count(packet => TeletextPacket.IsPadding(packet));
         if (!await ConfirmApplySquashedRepairsAsync(paddingSlots)) return;
 
         IReadOnlyList<TeletextPage> repairs = _squashStore.AllInstances
@@ -11049,7 +11341,8 @@ public partial class MainWindow : Window
         try
         {
             result = await Task.Run(() =>
-                BroadcastBackPropagator.Apply(_broadcastPackets, repairs));
+                BroadcastBackPropagator.Apply(
+                    _broadcastPackets, repairs, rangeStart, rangeEndExclusive));
         }
         catch (Exception ex)
         {
@@ -11067,25 +11360,10 @@ public partial class MainWindow : Window
 
         _broadcastPackets.Clear();
         _broadcastPackets.AddRange(result.Packets);
-        _store.Clear();
-        var indexer = new BroadcastPacketIndexer(_store);
-        for (int index = 0; index < _broadcastPackets.Count; index++)
-        {
-            byte[] packet = _broadcastPackets[index];
-            if (!TeletextPacket.IsPadding(packet))
-                indexer.Feed(packet, index);
-        }
-        indexer.FinalizeAll();
-
-        // Back-propagation always creates a new derived capture. Never let an
-        // ordinary Save operation silently overwrite the archival source.
-        _broadcastFilePath = null;
-        _sessionState.BroadcastFilePath = null;
         _broadcastHasAppliedRepairs = true;
         _broadcastStreamIdentity = AnalyzeTeletextStreamIdentity(_broadcastPackets);
-        BroadcastInfoText.Text = "Full broadcast — repaired line-aware copy";
-        BroadcastFilePathText.Text = FormatFileFooter(null, _store.TotalInstanceCount);
-        PopulatePageCombo();
+        ReindexActiveBroadcastRange();
+        BroadcastInfoText.Text = "Full broadcast — repairs applied in selected range";
         UpdateSaveCapturedStreamMenuVisibility();
         UpdateNavigationButtons();
         UpdateWindowAndPaneTitles();
@@ -11095,7 +11373,8 @@ public partial class MainWindow : Window
             "Squashed repairs applied",
             $"Updated {result.ReplacedPackets:N0} packet occurrence(s) across "
             + $"{result.MatchedPageTransmissions:N0} matching page transmission(s).\n\n"
-            + $"All {_broadcastPackets.Count:N0} full broadcast slots, including "
+            + $"Only the active sample range was changed. All {_broadcastPackets.Count:N0} "
+            + "full broadcast slots remain loaded; "
             + $"{result.PaddingSlots:N0} empty line-aware slots, stayed in their original positions. "
             + "Use File > Save repaired captured stream to save the repaired copy.");
     }
@@ -11106,7 +11385,7 @@ public partial class MainWindow : Window
         var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
         var applyButton = new Button
         {
-            Content = "Create repaired copy",
+            Content = "Apply repairs",
             Width = 155,
             IsDefault = true,
         };
@@ -11128,7 +11407,7 @@ public partial class MainWindow : Window
                 {
                     new TextBlock
                     {
-                        Text = "Every matching occurrence of an edited squashed page will replace the corresponding full broadcast body, enhancement and Fastext packets. Original header routing, subcode/control flags, date and clock are preserved.",
+                        Text = "Matching occurrences of edited squashed pages inside the active sample range will replace the corresponding full broadcast body, enhancement and Fastext packets. Occurrences outside the range remain untouched. Original header routing, subcode/control flags, date and clock are preserved.",
                         TextWrapping = global::Avalonia.Media.TextWrapping.Wrap,
                     },
                     new TextBlock
@@ -11907,6 +12186,7 @@ public partial class MainWindow : Window
 
             _broadcastFilePath = destinationPath;
             _sessionState.BroadcastFilePath = destinationPath;
+            _broadcastHasAppliedRepairs = false;
             BroadcastFilePathText.Text = FormatFileFooter(
                 destinationPath, _store.TotalInstanceCount);
             UpdateWindowAndPaneTitles();
