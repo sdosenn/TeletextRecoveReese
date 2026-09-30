@@ -45,6 +45,10 @@
                     <NativeMenuItem Header="Undo" Gesture="Meta+Z" IsEnabled="False" Click="OnNativeUndoClicked" />
                     <NativeMenuItem Header="Redo" Gesture="Meta+Shift+Z" IsEnabled="False" Click="OnNativeRedoClicked" />
                     <NativeMenuItemSeparator />
+                    <NativeMenuItem Header="Select all" Gesture="Meta+A" Click="OnNativeSelectAllClicked" />
+                    <NativeMenuItem Header="Copy" Gesture="Meta+C" Click="OnNativeCopyClicked" />
+                    <NativeMenuItem Header="Paste" Gesture="Meta+V" Click="OnNativePasteClicked" />
+                    <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Insert">
                         <NativeMenu>
                             <NativeMenuItem Header="Alpha color"><NativeMenu><NativeMenuItem Header="Black" CommandParameter="0" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Red" CommandParameter="1" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Green" CommandParameter="2" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Yellow" CommandParameter="3" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Blue" CommandParameter="4" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Magenta" CommandParameter="5" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="Cyan" CommandParameter="6" Click="OnNativeInsertControlCodeClicked"/><NativeMenuItem Header="White" CommandParameter="7" Click="OnNativeInsertControlCodeClicked"/></NativeMenu></NativeMenuItem>
@@ -161,6 +165,10 @@
             <MenuItem Header="_Edit">
                 <MenuItem x:Name="UndoMenuItem" Header="_Undo" InputGesture="Ctrl+Z" IsEnabled="False" Click="OnUndoClicked"/>
                 <MenuItem x:Name="RedoMenuItem" Header="_Redo" InputGesture="Ctrl+Shift+Z" IsEnabled="False" Click="OnRedoClicked"/>
+                <Separator />
+                <MenuItem Header="Select _all" InputGesture="Ctrl+A" Click="OnSelectAllClicked" />
+                <MenuItem Header="_Copy" InputGesture="Ctrl+C" Click="OnCopyClicked" />
+                <MenuItem Header="_Paste" InputGesture="Ctrl+V" Click="OnPasteClicked" />
                 <Separator />
                 <MenuItem Header="_Insert">
                     <MenuItem Header="Alpha color">

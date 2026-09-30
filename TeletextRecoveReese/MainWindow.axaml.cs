@@ -2177,10 +2177,17 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (commandModifier && e.Key == Key.A)
+        {
+            e.Handled = true;
+            SelectAllCells(activeGrid);
+            return;
+        }
+
         if (commandModifier && e.Key == Key.C)
         {
             e.Handled = true;
-            byte[]? copiedBlock = await CopySelectionAsync(activeGrid);
+            byte[]? copiedBlock = await CopyActiveSelectionAsync();
             if (activeGrid == BroadcastGrid
                 && e.KeyModifiers.HasFlag(KeyModifiers.Shift)
                 && copiedBlock is not null)
@@ -2197,14 +2204,7 @@ public partial class MainWindow : Window
         if (commandModifier && e.Key == Key.V)
         {
             e.Handled = true;
-            if (activeGrid == SquashGrid)
-            {
-                await PasteSelectionAsync();
-            }
-            else
-            {
-                await WarnBroadcastReadOnlyAsync();
-            }
+            await PasteIntoActiveGridAsync();
             return;
         }
 
@@ -2669,6 +2669,49 @@ public partial class MainWindow : Window
         _blockBrowseWidth = 0;
         _blockBrowseHeight = 0;
     }
+
+    private static void SelectAllCells(TeletextGridControl grid)
+    {
+        grid.MoveSelectionTo(0, 0);
+        grid.SetSelectionSize(40, 25);
+    }
+
+    private async Task<byte[]?> CopyActiveSelectionAsync()
+    {
+        TeletextGridControl? grid = IsActiveGrid();
+        if (grid is null) return null;
+        return await CopySelectionAsync(grid);
+    }
+
+    private async Task PasteIntoActiveGridAsync()
+    {
+        if (IsActiveGrid() == SquashGrid)
+            await PasteSelectionAsync();
+        else if (IsActiveGrid() == BroadcastGrid)
+            await WarnBroadcastReadOnlyAsync();
+    }
+
+    private void OnSelectAllClicked(object? sender, RoutedEventArgs e)
+    {
+        if (IsActiveGrid() is { } grid) SelectAllCells(grid);
+    }
+
+    private async void OnCopyClicked(object? sender, RoutedEventArgs e) =>
+        await CopyActiveSelectionAsync();
+
+    private async void OnPasteClicked(object? sender, RoutedEventArgs e) =>
+        await PasteIntoActiveGridAsync();
+
+    private void OnNativeSelectAllClicked(object? sender, EventArgs e)
+    {
+        if (IsActiveGrid() is { } grid) SelectAllCells(grid);
+    }
+
+    private async void OnNativeCopyClicked(object? sender, EventArgs e) =>
+        await CopyActiveSelectionAsync();
+
+    private async void OnNativePasteClicked(object? sender, EventArgs e) =>
+        await PasteIntoActiveGridAsync();
 
     private async Task<byte[]?> CopySelectionAsync(TeletextGridControl grid)
     {
