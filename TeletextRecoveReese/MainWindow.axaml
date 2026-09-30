@@ -88,6 +88,9 @@
                     <NativeMenuItem Header="Create squashed stream" IsEnabled="False" Click="OnNativeCreateSquashedStreamClicked" />
                     <NativeMenuItem Header="Apply squashed repairs to full broadcast…" IsEnabled="False" Click="OnNativeApplySquashedRepairsClicked" />
                     <NativeMenuItemSeparator/>
+                    <NativeMenuItem Header="Previous page" Gesture="Meta+Left" Click="OnNativePreviousPageShortcutClicked" />
+                    <NativeMenuItem Header="Next page" Gesture="Meta+Right" Click="OnNativeNextPageShortcutClicked" />
+                    <NativeMenuItemSeparator/>
                     <NativeMenuItem Header="G0 subset">
                         <NativeMenu>
                             <NativeMenuItem Header="Auto (from stream)" CommandParameter="auto" ToggleType="CheckBox" Click="OnNativeG0SubsetClicked"/>
@@ -207,6 +210,9 @@
                 <MenuItem Header="_Delete current page" Click="OnDeletePageClicked" />
                 <MenuItem x:Name="CreateSquashedStreamMenuItem" Header="Create _squashed stream" IsEnabled="False" Click="OnCreateSquashedStreamClicked" />
                 <MenuItem x:Name="ApplySquashedRepairsMenuItem" Header="Apply squashed repairs to _full broadcast..." IsEnabled="False" Click="OnApplySquashedRepairsClicked" />
+                <Separator/>
+                <MenuItem x:Name="PreviousPageMenuItem" Header="_Previous page" InputGesture="Ctrl+Left" Click="OnPreviousPageShortcutClicked" />
+                <MenuItem x:Name="NextPageMenuItem" Header="_Next page" InputGesture="Ctrl+Right" Click="OnNextPageShortcutClicked" />
                 <Separator/>
                 <MenuItem x:Name="G0SubsetMenuItem" Header="G0 _subset">
                     <MenuItem Header="Auto (from stream)" CommandParameter="auto" ToggleType="CheckBox" Click="OnG0SubsetClicked"/>

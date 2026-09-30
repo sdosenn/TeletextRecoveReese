@@ -620,6 +620,8 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeG0SubsetMenuItem;
     private NativeMenuItem? _nativeCreateSquashedStreamMenuItem;
     private NativeMenuItem? _nativeApplySquashedRepairsMenuItem;
+    private NativeMenuItem? _nativePreviousPageMenuItem;
+    private NativeMenuItem? _nativeNextPageMenuItem;
     private NativeMenuItem? _nativeOpenLiveVbiCaptureMenuItem;
     private NativeMenuItem? _nativeSaveCapturedStreamMenuItem;
     private NativeMenuItem? _nativeSaveMenuItem;
@@ -2221,18 +2223,22 @@ public partial class MainWindow : Window
             return;
         }
 
-        bool pageNavigationModifier = e.KeyModifiers.HasFlag(KeyModifiers.Control)
-            || OperatingSystem.IsMacOS()
-               && e.KeyModifiers.HasFlag(KeyModifiers.Meta);
-        if (pageNavigationModifier
-            && e.Key is Key.Left or Key.Right)
+        bool pageNavigationModifier = OperatingSystem.IsMacOS()
+            ? e.KeyModifiers.HasFlag(KeyModifiers.Meta)
+            : e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        if (pageNavigationModifier && e.Key is Key.Left or Key.Right)
         {
+            bool navigateNext = e.Key == Key.Right;
+            bool navigationEnabled = navigateNext
+                ? NextPageMenuItem.IsEnabled
+                : PreviousPageMenuItem.IsEnabled;
+            if (navigationEnabled)
+                NavigateActivePane(navigateNext ? 1 : -1);
+
+            // Avalonia's Linux Menu displays these InputGestures but does not
+            // consistently invoke them. Consume the routed key here so the Menu
+            // cannot also move focus or trigger the command a second time.
             e.Handled = true;
-            int direction = e.Key == Key.Right ? 1 : -1;
-            if (activeGrid == BroadcastGrid)
-                NavigateBroadcast(direction);
-            else if (activeGrid == SquashGrid)
-                NavigateSquash(direction);
             return;
         }
 
@@ -3192,6 +3198,7 @@ public partial class MainWindow : Window
         SquashGrid.IsActive = true;
         BroadcastGrid.IsActive = false;
         BroadcastGrid.ClearSelection();
+        UpdateNavigationMenuAvailability();
         UpdateCellAwareToolbar();
         UpdateVideoBookmarkUi();
         UpdateG0SubsetMenuChecks();
@@ -3202,6 +3209,7 @@ public partial class MainWindow : Window
         BroadcastGrid.IsActive = true;
         SquashGrid.IsActive = false;
         SquashGrid.ClearSelection();
+        UpdateNavigationMenuAvailability();
         UpdateVideoBookmarkUi();
         UpdateG0SubsetMenuChecks();
     }
@@ -4195,6 +4203,17 @@ public partial class MainWindow : Window
             .Menu?.Items
             .OfType<NativeMenuItem>()
             .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Apply squashed repairs to full broadcast…", StringComparison.Ordinal));
+
+        NativeMenu? pageMenu = menu.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Page", StringComparison.Ordinal))?
+            .Menu;
+        _nativePreviousPageMenuItem = pageMenu?.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Previous page", StringComparison.Ordinal));
+        _nativeNextPageMenuItem = pageMenu?.Items
+            .OfType<NativeMenuItem>()
+            .FirstOrDefault(item => string.Equals(item.Header?.ToString(), "Next page", StringComparison.Ordinal));
 
         if (menu.Items.Count > 0 && menu.Items[0] is NativeMenuItem { Menu: { } fileMenu })
         {
@@ -9477,6 +9496,18 @@ public partial class MainWindow : Window
     private void OnBroadcastNextClicked(object? sender, RoutedEventArgs e) => NavigateBroadcast(1);
     private void OnSquashPreviousClicked(object? sender, RoutedEventArgs e) => NavigateSquash(-1);
     private void OnSquashNextClicked(object? sender, RoutedEventArgs e) => NavigateSquash(1);
+    private void OnPreviousPageShortcutClicked(object? sender, RoutedEventArgs e) => NavigateActivePane(-1);
+    private void OnNextPageShortcutClicked(object? sender, RoutedEventArgs e) => NavigateActivePane(1);
+    private void OnNativePreviousPageShortcutClicked(object? sender, EventArgs e) => NavigateActivePane(-1);
+    private void OnNativeNextPageShortcutClicked(object? sender, EventArgs e) => NavigateActivePane(1);
+
+    private void NavigateActivePane(int direction)
+    {
+        if (IsActiveGrid() == BroadcastGrid)
+            NavigateBroadcast(direction);
+        else if (IsActiveGrid() == SquashGrid)
+            NavigateSquash(direction);
+    }
 
     private void NavigateBroadcast(int direction)
     {
@@ -10089,6 +10120,7 @@ public partial class MainWindow : Window
         SquashNextButton.IsEnabled = squashIndex >= 0 && squashIndex < squashAddresses.Count - 1;
         SquashHeaderPreviousButton.IsEnabled = SquashPreviousButton.IsEnabled;
         SquashHeaderNextButton.IsEnabled = SquashNextButton.IsEnabled;
+        UpdateNavigationMenuAvailability();
         SquashDeletePageButton.IsEnabled = squashIndex >= 0;
         UpdateRestorationProgress(squashAddresses.Count, squashIndex);
 
@@ -10096,6 +10128,24 @@ public partial class MainWindow : Window
         BroadcastJumpToSquashButton.IsEnabled = _squashFileOpen;
         UpdateCreateSquashedStreamMenuAvailability();
         UpdateSquashAddressToolbarVisibility();
+    }
+
+    private void UpdateNavigationMenuAvailability()
+    {
+        bool broadcastActive = IsActiveGrid() == BroadcastGrid;
+        bool canNavigatePrevious = broadcastActive
+            ? BroadcastPreviousButton.IsEnabled
+            : SquashPreviousButton.IsEnabled;
+        bool canNavigateNext = broadcastActive
+            ? BroadcastNextButton.IsEnabled
+            : SquashNextButton.IsEnabled;
+
+        PreviousPageMenuItem.IsEnabled = canNavigatePrevious;
+        NextPageMenuItem.IsEnabled = canNavigateNext;
+        if (_nativePreviousPageMenuItem is not null)
+            _nativePreviousPageMenuItem.IsEnabled = canNavigatePrevious;
+        if (_nativeNextPageMenuItem is not null)
+            _nativeNextPageMenuItem.IsEnabled = canNavigateNext;
     }
 
     private void UpdateCreateSquashedStreamMenuAvailability()
