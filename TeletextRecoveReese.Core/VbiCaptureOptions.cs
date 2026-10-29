@@ -44,6 +44,13 @@ public interface IVbiDecodedPacketProgress : IProgress<IReadOnlyList<byte[]>>
     bool IsEnabled { get; }
 }
 
+/// <summary>Receives every decoded packet synchronously, in capture order, with the
+/// index of the selected VBI line it was decoded from (counted from zero).</summary>
+public interface IVbiPacketObserver
+{
+    void OnPacket(long lineIndex, byte[] packet);
+}
+
 public interface IVbiDeconvolutionControl
 {
     bool Enabled { get; }

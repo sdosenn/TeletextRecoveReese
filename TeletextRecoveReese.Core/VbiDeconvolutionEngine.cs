@@ -111,7 +111,8 @@ public static class VbiDeconvolutionEngine
         IProgress<VbiDeconvolutionProgress>? progress,
         IVbiDecodedPacketProgress? decodedPackets,
         CancellationToken cancellationToken,
-        IVbiDeconvolutionControl? deconvolutionControl = null)
+        IVbiDeconvolutionControl? deconvolutionControl = null,
+        IVbiPacketObserver? packetObserver = null)
     {
         bool liveInput = !input.CanSeek;
         int sampleBytes = options.IsUInt16 ? 2 : 1;
@@ -252,6 +253,7 @@ public static class VbiDeconvolutionEngine
                         await output.WriteAsync(packet, cancellationToken).ConfigureAwait(false);
                         wrotePacket = true;
                         written++;
+                        packetObserver?.OnPacket(processed - 1, packet);
                         if (decodedPackets?.IsEnabled == true)
                         {
                             previewBatch.Add((byte[])packet.Clone());

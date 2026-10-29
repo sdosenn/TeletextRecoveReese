@@ -7105,6 +7105,12 @@ public partial class MainWindow : Window
                 timingText.Text = $"Elapsed {FormatVbiDuration(elapsed.Elapsed)}   Device {input.SamplingRate:N0} Hz · {input.SamplesPerLine} samples/line · {input.LinesPerFrame} lines/frame{autoStopStatus}";
             });
             Exception? failure = null;
+            // A TCP VBI sender (Oxide RF) receives each changed header row back as
+            // an image, tagged with its VBI frame, to show or burn in the clock.
+            // Live options carry a whole frame (both fields) in FieldLines.
+            await using TeletextHeaderReturn? headerReturn = input is TcpVbiCaptureStream tcpInput
+                ? new TeletextHeaderReturn(this, tcpInput, options.FieldLines)
+                : null;
             _ = Task.Run(async () =>
             {
                 try
@@ -7117,7 +7123,7 @@ public partial class MainWindow : Window
                     {
                         await VbiDeconvolutionEngine.DeconvolveAsync(
                             input, output, options, reporter, packetReporter,
-                            cancellation.Token, deconvolutionControl);
+                            cancellation.Token, deconvolutionControl, headerReturn);
                     }
                     else
                     {
@@ -7128,7 +7134,7 @@ public partial class MainWindow : Window
                         var recordingInput = new RecordingReadStream(input, rawOutput);
                         await VbiDeconvolutionEngine.DeconvolveAsync(
                             recordingInput, output, options, reporter, packetReporter,
-                            cancellation.Token, deconvolutionControl);
+                            cancellation.Token, deconvolutionControl, headerReturn);
                     }
                 }
                 catch (Exception ex) { failure = ex; }

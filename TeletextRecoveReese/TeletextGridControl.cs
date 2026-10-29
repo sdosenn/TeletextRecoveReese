@@ -106,6 +106,52 @@ public class TeletextGridControl : Control
         }
     }
 
+    /// <summary>Render one row of <paramref name="page"/> exactly as the screenshot
+    /// export draws it, and return it as straight-alpha RGBA pixels.</summary>
+    public (int Width, int Height, byte[] Rgba) RenderRowRgba(TeletextPage page, int row)
+    {
+        var size = new Size(Columns * CellWidth, Rows * CellHeight);
+        // The control need not be in a window; lay it out at the screenshot size.
+        Measure(size);
+        Arrange(new Rect(size));
+        int width = (int)size.Width, height = (int)CellHeight;
+        using var bitmap = new RenderTargetBitmap(
+            new PixelSize(width, (int)size.Height), new Vector(96, 96));
+        _renderingScreenshot = true;
+        _screenshotPageOverride = page;
+        try
+        {
+            InvalidateVisual();
+            bitmap.Render(this);
+        }
+        finally
+        {
+            _screenshotPageOverride = null;
+            _renderingScreenshot = false;
+        }
+        var bgra = new byte[width * height * 4];
+        var handle = System.Runtime.InteropServices.GCHandle.Alloc(bgra, System.Runtime.InteropServices.GCHandleType.Pinned);
+        try
+        {
+            bitmap.CopyPixels(
+                new PixelRect(0, row * height, width, height),
+                handle.AddrOfPinnedObject(), bgra.Length, width * 4);
+        }
+        finally { handle.Free(); }
+        // Premultiplied BGRA to straight RGBA.
+        var rgba = new byte[bgra.Length];
+        for (int i = 0; i < bgra.Length; i += 4)
+        {
+            byte alpha = bgra[i + 3];
+            int Unpremultiply(byte value) => alpha == 0 ? 0 : Math.Min(255, value * 255 / alpha);
+            rgba[i] = (byte)Unpremultiply(bgra[i + 2]);
+            rgba[i + 1] = (byte)Unpremultiply(bgra[i + 1]);
+            rgba[i + 2] = (byte)Unpremultiply(bgra[i]);
+            rgba[i + 3] = alpha;
+        }
+        return (width, height, rgba);
+    }
+
     public void ClearSelection()
     {
         _hasSelection = false;

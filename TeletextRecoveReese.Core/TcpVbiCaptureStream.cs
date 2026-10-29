@@ -1,10 +1,16 @@
+using System.Buffers.Binary;
 using System.Net.Sockets;
 
 namespace TeletextRecoveReese.Core;
 
 // Raw, headerless VBI-only TBC transport. A connection starts with a first field.
+// Teletext header row images can be returned to the sender on the same connection:
+// a 20-byte little-endian header ("OXTH", version 1, kind 1, two reserved bytes,
+// the VBI frame index counted from the first field received as Int64, width and
+// height as UInt16) followed by width x height straight-alpha RGBA pixels.
 public sealed class TcpVbiCaptureStream : LiveVbiCaptureStream
 {
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly TcpClient _client;
     private readonly NetworkStream _source;
     private readonly VbiCaptureOptions _options;
@@ -85,6 +91,28 @@ public sealed class TcpVbiCaptureStream : LiveVbiCaptureStream
         _frame.AsMemory(_offset, available).CopyTo(buffer);
         _offset += available;
         return available;
+    }
+    /// <summary>Send a rendered teletext header row back to the VBI sender.</summary>
+    public async Task SendHeaderImageAsync(
+        long frame, int width, int height, byte[] rgba, CancellationToken cancellationToken = default)
+    {
+        if (width is < 1 or > ushort.MaxValue || height is < 1 or > ushort.MaxValue
+            || rgba.Length != width * height * 4)
+            throw new ArgumentException("Invalid header image size.", nameof(rgba));
+        var header = new byte[20];
+        "OXTH"u8.CopyTo(header);
+        header[4] = 1;
+        header[5] = 1;
+        BinaryPrimitives.WriteInt64LittleEndian(header.AsSpan(8), frame);
+        BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(16), (ushort)width);
+        BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(18), (ushort)height);
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _source.WriteAsync(header, cancellationToken).ConfigureAwait(false);
+            await _source.WriteAsync(rgba, cancellationToken).ConfigureAwait(false);
+        }
+        finally { _writeLock.Release(); }
     }
     public override int Read(byte[] buffer, int offset, int count) =>
         ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
