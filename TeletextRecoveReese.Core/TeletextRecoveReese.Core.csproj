@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>TeletextRecoveReese.Core</RootNamespace>
     <AssemblyName>TeletextRecoveReese.Core</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

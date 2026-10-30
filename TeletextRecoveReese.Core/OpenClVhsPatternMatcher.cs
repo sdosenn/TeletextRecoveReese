@@ -174,7 +174,7 @@ internal sealed class OpenClVhsPatternMatcher : IDisposable
 
     static OpenClVhsPatternMatcher()
     {
-        NativeLibrary.SetDllImportResolver(typeof(OpenClVhsPatternMatcher).Assembly, ResolveOpenClLibrary);
+        NativeLibraryResolver.Register(OpenCl, ResolveOpenClLibrary);
     }
 
     private static IntPtr ResolveOpenClLibrary(

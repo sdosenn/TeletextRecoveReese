@@ -27,3 +27,26 @@ Copyright © 2016 Alistair Buxton and vhs-teletext contributors.
 These files are distributed under the GNU General Public License, version 3
 or, at your option, any later version. TeletextRecoveReese is distributed under
 the GNU General Public License, version 3. See `LICENSE` in the repository root.
+
+## Linux cx231xx and cx25840 drivers
+
+The usermode August VGB100 driver in `TeletextRecoveReese.Core/Vgb100/` is
+ported from the Linux kernel `cx231xx` USB bridge driver
+(`drivers/media/usb/cx231xx`) and the `cx25840` A/V decoder driver
+(`drivers/media/i2c/cx25840`), including the August VGB100 board profile.
+
+Copyright © 2008 Srinivasa Deevi, Conexant Systems Inc., Mauro Carvalho
+Chehab, Hans Verkuil and the Linux kernel contributors.
+
+These sources are distributed under the GNU General Public License, version 2
+or, at your option, any later version, which permits their use under version 3.
+
+## libusb
+
+Release packages for Windows and macOS include the `libusb-1.0` shared library,
+used unmodified by the usermode VGB100 driver.
+
+Source: <https://github.com/libusb/libusb>
+
+libusb is distributed under the GNU Lesser General Public License, version 2.1
+or, at your option, any later version.

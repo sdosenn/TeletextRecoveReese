@@ -18,6 +18,7 @@ env:
   RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
+  LIBUSB_VERSION: 1.0.27
 
 jobs:
   windows:
@@ -45,6 +46,19 @@ jobs:
           -p:IncludeNativeLibrariesForSelfExtract=true
           -p:DebugType=None
           -p:DebugSymbols=false
+
+      - name: Add libusb for the usermode VGB100 driver
+        shell: pwsh
+        run: |
+          $archive = "$env:RUNNER_TEMP/libusb.7z"
+          $extract = "$env:RUNNER_TEMP/libusb"
+          Invoke-WebRequest -Uri "https://github.com/libusb/libusb/releases/download/v$env:LIBUSB_VERSION/libusb-$env:LIBUSB_VERSION.7z" -OutFile $archive
+          7z x $archive "-o$extract" | Out-Null
+          $dll = Get-ChildItem $extract -Recurse -Filter libusb-1.0.dll |
+            Where-Object { $_.FullName -match 'MS64[\\/]dll' } |
+            Select-Object -First 1
+          if (-not $dll) { throw "libusb-1.0.dll (MS64) not found in the libusb release." }
+          Copy-Item $dll.FullName "$env:RUNNER_TEMP/publish/libusb-1.0.dll"
 
       - name: Create ZIP package
         shell: pwsh
@@ -126,9 +140,13 @@ jobs:
           - runtime: osx-x64
             architecture: Intel
             package_suffix: macos-x64
+            clang_arch: x86_64
+            libusb_host: x86_64-apple-darwin
           - runtime: osx-arm64
             architecture: Apple-Silicon
             package_suffix: macos-arm64
+            clang_arch: arm64
+            libusb_host: aarch64-apple-darwin
 
     steps:
       - name: Check out source
@@ -153,11 +171,28 @@ jobs:
           -p:DebugType=None
           -p:DebugSymbols=false
 
+      - name: Build libusb for the usermode VGB100 driver
+        env:
+          CLANG_ARCH: ${{ matrix.clang_arch }}
+          LIBUSB_HOST: ${{ matrix.libusb_host }}
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 --output libusb.tar.bz2 \
+            "https://github.com/libusb/libusb/releases/download/v$LIBUSB_VERSION/libusb-$LIBUSB_VERSION.tar.bz2"
+          tar xjf libusb.tar.bz2
+          cd "libusb-$LIBUSB_VERSION"
+          ./configure --host="$LIBUSB_HOST" --disable-static \
+            CFLAGS="-arch $CLANG_ARCH -mmacosx-version-min=11.0 -O2" \
+            LDFLAGS="-arch $CLANG_ARCH -mmacosx-version-min=11.0"
+          make -j"$(sysctl -n hw.ncpu)"
+          cp libusb/.libs/libusb-1.0.0.dylib "$RUNNER_TEMP/libusb-1.0.0.dylib"
+
       - name: Create application bundle
         run: |
           app="$RUNNER_TEMP/TeletextRecoveReese.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           cp -a "$RUNNER_TEMP/publish/." "$app/Contents/MacOS/"
+          cp "$RUNNER_TEMP/libusb-1.0.0.dylib" "$app/Contents/MacOS/"
           cp Packaging/macos/Info.plist "$app/Contents/Info.plist"
           cp TeletextRecoveReese/Assets/Icons/app-icon.icns "$app/Contents/Resources/app-icon.icns"
           chmod +x "$app/Contents/MacOS/TeletextRecoveReese"

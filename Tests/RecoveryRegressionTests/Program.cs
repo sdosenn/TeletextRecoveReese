@@ -307,6 +307,7 @@ await LinuxVbiReadRegressions.RunAsync();
 LinuxVideoFormatRegressions.Run();
 SquashPageOperationsRegressions.Run();
 BroadcastServiceRegressions.Run();
+Vgb100Regressions.Run();
 
 var cancelled = new CancellationToken(true);
 try
