@@ -1,13 +1,13 @@
 # Third-party notices
 
-## vhs-teletext VHS pattern tables
+## vhs-teletext pattern tables
 
-TeletextRecoveReese includes the following trained VHS signal-pattern tables
-from Alistair Buxton's `vhs-teletext` project:
+TeletextRecoveReese includes the trained VHS, Betamax and Video 2000 (Grundig
+2x4) signal-pattern tables from Alistair Buxton's `vhs-teletext` project:
 
-- `TeletextRecoveReese.Core/Assets/VbiPatterns/vhs/full.dat`
-- `TeletextRecoveReese.Core/Assets/VbiPatterns/vhs/parity.dat`
-- `TeletextRecoveReese.Core/Assets/VbiPatterns/vhs/hamming.dat`
+- `TeletextRecoveReese.Core/Assets/VbiPatterns/vhs/{full,parity,hamming}.dat`
+- `TeletextRecoveReese.Core/Assets/VbiPatterns/betamax/{full,parity,hamming}.dat`
+- `TeletextRecoveReese.Core/Assets/VbiPatterns/grundig_2x4/{full,parity,hamming}.dat`
 
 The `observed_crifc` reference waveform from `teletext/vbi/config.py` is also
 included in `TeletextRecoveReese.Core/VbiPatternResources.cs` for signal

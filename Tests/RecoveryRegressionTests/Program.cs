@@ -308,6 +308,7 @@ LinuxVideoFormatRegressions.Run();
 SquashPageOperationsRegressions.Run();
 BroadcastServiceRegressions.Run();
 Vgb100Regressions.Run();
+VbiTapeFormatRegressions.Run();
 
 var cancelled = new CancellationToken(true);
 try

@@ -55,7 +55,7 @@ public partial class AboutWindow : Window
     [
         ("Avalonia", "AvaloniaUI", "MIT"),
         ("DirectShowLib", "DirectShowLib contributors", "LGPL-2.1"),
-        ("vhs-teletext (VHS patterns, OpenCL matcher)", "Alistair Buxton, David Alan Gilbert", "GPL-3.0+"),
+        ("vhs-teletext (tape patterns, OpenCL matcher)", "Alistair Buxton, David Alan Gilbert", "GPL-3.0+"),
         ("Linux cx231xx / cx25840 drivers (ported)", "Linux kernel contributors", "GPL-2.0+"),
         ("libusb", "libusb contributors", "LGPL-2.1+"),
     ];

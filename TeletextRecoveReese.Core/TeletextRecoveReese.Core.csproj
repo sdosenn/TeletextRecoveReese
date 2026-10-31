@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Assets/VbiPatterns/vhs/*.dat" />
+    <EmbeddedResource Include="Assets/VbiPatterns/*/*.dat" />
   </ItemGroup>
 
 </Project>

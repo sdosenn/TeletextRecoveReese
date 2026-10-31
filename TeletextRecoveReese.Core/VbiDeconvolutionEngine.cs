@@ -30,6 +30,7 @@ public static class VbiDeconvolutionEngine
         if (availableLines <= 0) return offsets;
 
         VbiResamplePlan plan = CreateResamplePlan(options);
+        byte[][] frameLines = SplitFrameLines(rawFrame, options, lineBytes, availableLines);
         // The offset belongs to the actual CRI start marker, not to the middle of
         // the movable search window. Keeping those coordinate systems separate
         // lets the marker drift a little before or after the preset window.
@@ -37,7 +38,7 @@ public static class VbiDeconvolutionEngine
         for (int line = 0; line < availableLines; line++)
         {
             if ((lineMask & (1 << line)) == 0) continue;
-            byte[] rawLine = rawFrame.AsSpan(line * lineBytes, lineBytes).ToArray();
+            byte[] rawLine = frameLines[line];
             foreach (int searchOffset in EnumerateSearchOffsets(maximumOffsetSamples))
             {
                 PreparedLine? prepared = PrepareLine(
@@ -81,10 +82,11 @@ public static class VbiDeconvolutionEngine
         if (availableLines <= 0) return timings;
 
         VbiResamplePlan plan = CreateResamplePlan(options);
+        byte[][] frameLines = SplitFrameLines(rawFrame, options, lineBytes, availableLines);
         for (int line = 0; line < availableLines; line++)
         {
             if ((lineMask & (1 << line)) == 0) continue;
-            byte[] rawLine = rawFrame.AsSpan(line * lineBytes, lineBytes).ToArray();
+            byte[] rawLine = frameLines[line];
             int searchOffset = line < searchOffsets.Count ? searchOffsets[line] : 0;
             double manualPacketSpanSample = manualPacketSpanSamples is not null
                                          && line < manualPacketSpanSamples.Count
@@ -102,6 +104,27 @@ public static class VbiDeconvolutionEngine
                 prepared.Pll is not null);
         }
         return timings;
+    }
+
+    /// <summary>
+    /// Copies the lines of one preview frame, equalizing their levels like
+    /// <see cref="DeconvolveAsync"/> when enabled. A single frame has no history,
+    /// so a first pass finds the frame's strongest line as the reference.
+    /// </summary>
+    private static byte[][] SplitFrameLines(
+        byte[] rawFrame, VbiCaptureOptions options, int lineBytes, int lineCount)
+    {
+        byte[][] lines = new byte[lineCount][];
+        for (int line = 0; line < lineCount; line++)
+            lines[line] = rawFrame.AsSpan(line * lineBytes, lineBytes).ToArray();
+        if (!options.EqualizeLineLevels) return lines;
+
+        var normalizer = new VbiLineGainNormalizer(options.IsUInt16);
+        foreach (byte[] line in lines)
+            normalizer.Normalize((byte[])line.Clone());
+        foreach (byte[] line in lines)
+            normalizer.Normalize(line);
+        return lines;
     }
 
     public static async Task<VbiDeconvolutionResult> DeconvolveAsync(
@@ -137,7 +160,7 @@ public static class VbiDeconvolutionEngine
         try
         {
             for (int i = 0; i < matchers.Length; i++)
-                matchers[i] = new OpenClVhsPatternMatcher();
+                matchers[i] = new OpenClVhsPatternMatcher(options.TapeFormat);
 
         var previewBatch = new List<byte[]>(16);
         long processed = 0, teletext = 0, written = 0;
@@ -146,6 +169,9 @@ public static class VbiDeconvolutionEngine
         int batchSize = Math.Max(32, workerCount * 4);
         if (!liveInput) input.Position = 0;
         var captureTimer = System.Diagnostics.Stopwatch.StartNew();
+        VbiLineGainNormalizer? lineGain = options.EqualizeLineLevels
+            ? new VbiLineGainNormalizer(options.IsUInt16)
+            : null;
 
         async Task<List<CapturedLine>> ReadBatchAsync()
         {
@@ -162,7 +188,10 @@ public static class VbiDeconvolutionEngine
                 bool selected = capturedFieldLine >= options.FieldRangeStart
                     && capturedFieldLine < options.FieldRangeEnd;
                 fieldLine = (fieldLine + 1) % options.FieldLines;
-                if (selected) lines.Add(new CapturedLine(raw, capturedFieldLine));
+                if (!selected) continue;
+                // Sequential, so the decaying reference does not depend on worker order.
+                lineGain?.Normalize(raw);
+                lines.Add(new CapturedLine(raw, capturedFieldLine));
             }
             return lines;
         }

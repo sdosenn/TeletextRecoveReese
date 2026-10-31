@@ -3,19 +3,26 @@ using System.Reflection;
 namespace TeletextRecoveReese.Core;
 
 /// <summary>
-/// Opens the trained VHS byte-pattern tables bundled with the application.
-/// Embedded resources keep the tables available in every packaged build.
+/// Opens the trained byte-pattern tables for each tape format bundled with the
+/// application. Embedded resources keep the tables available in every packaged build.
 /// </summary>
 public static class VbiPatternResources
 {
-    private const string ResourcePrefix =
-        "TeletextRecoveReese.Core.Assets.VbiPatterns.vhs.";
+    private const string ResourcePrefix = "TeletextRecoveReese.Core.Assets.VbiPatterns.";
 
-    public static Stream OpenVhsFull() => Open("full.dat");
+    public static Stream OpenFull(VbiTapeFormat format) => Open(format, "full.dat");
 
-    public static Stream OpenVhsParity() => Open("parity.dat");
+    public static Stream OpenParity(VbiTapeFormat format) => Open(format, "parity.dat");
 
-    public static Stream OpenVhsHamming() => Open("hamming.dat");
+    public static Stream OpenHamming(VbiTapeFormat format) => Open(format, "hamming.dat");
+
+    // Directory names of vhs-teletext's teletext/vbi/data.
+    private static string DataDirectory(VbiTapeFormat format) => format switch
+    {
+        VbiTapeFormat.Betamax => "betamax",
+        VbiTapeFormat.Video2000 => "grundig_2x4",
+        _ => "vhs",
+    };
 
     public const int ObservedCriFcBits = 24;
 
@@ -61,9 +68,9 @@ public static class VbiPatternResources
          65,  61,  59,  57,  57,  57,  57,  58,
     ];
 
-    private static Stream Open(string fileName)
+    private static Stream Open(VbiTapeFormat format, string fileName)
     {
-        string resourceName = ResourcePrefix + fileName;
+        string resourceName = $"{ResourcePrefix}{DataDirectory(format)}.{fileName}";
         return typeof(VbiPatternResources).Assembly.GetManifestResourceStream(resourceName)
                ?? throw new InvalidOperationException(
                    $"Embedded VBI pattern resource '{resourceName}' is missing.");

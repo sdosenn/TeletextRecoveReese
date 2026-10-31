@@ -195,7 +195,7 @@ internal sealed class OpenClVhsPatternMatcher : IDisposable
             "No OpenCL loader was found. Install an OpenCL ICD loader and a driver for the capture machine's GPU.");
     }
 
-    public OpenClVhsPatternMatcher()
+    public OpenClVhsPatternMatcher(VbiTapeFormat tapeFormat = VbiTapeFormat.Vhs)
     {
         Check(clGetPlatformIDs(0, IntPtr.Zero, out uint platformCount), "enumerating OpenCL platforms");
         if (platformCount == 0) throw new InvalidOperationException("No OpenCL platform was found.");
@@ -263,9 +263,9 @@ internal sealed class OpenClVhsPatternMatcher : IDisposable
         Check(createError, "creating the fused OpenCL matcher kernel");
         _input = CreateBuffer(MemReadOnly, 368 * sizeof(float));
         _output = CreateBuffer(MemReadWrite, 42);
-        _full = LoadTable(VbiPatternResources.OpenVhsFull());
-        _parity = LoadTable(VbiPatternResources.OpenVhsParity());
-        _hamming = LoadTable(VbiPatternResources.OpenVhsHamming());
+        _full = LoadTable(VbiPatternResources.OpenFull(tapeFormat));
+        _parity = LoadTable(VbiPatternResources.OpenParity(tapeFormat));
+        _hamming = LoadTable(VbiPatternResources.OpenHamming(tapeFormat));
     }
 
     public void UploadLine(float[] bits) => Write(_input, bits);
@@ -308,11 +308,11 @@ internal sealed class OpenClVhsPatternMatcher : IDisposable
             int width = checked((int)BinaryPrimitives.ReadUInt32BigEndian(header));
             int outputWidth = checked((int)BinaryPrimitives.ReadUInt32BigEndian(header[4..]));
             int count = checked((int)BinaryPrimitives.ReadUInt32BigEndian(header[8..]));
-            if (outputWidth != 1) throw new InvalidDataException("Unsupported VHS pattern output width.");
+            if (outputWidth != 1) throw new InvalidDataException("Unsupported VBI pattern output width.");
             byte[] patternBytes = reader.ReadBytes(checked(width * count));
             byte[] values = reader.ReadBytes(count);
             if (patternBytes.Length != width * count || values.Length != count)
-                throw new EndOfStreamException("A bundled VHS pattern table is truncated.");
+                throw new EndOfStreamException("A bundled VBI pattern table is truncated.");
             IntPtr patternBuffer = CreateBuffer(MemReadOnly, patternBytes.Length);
             IntPtr valueBuffer = CreateBuffer(MemReadOnly, values.Length);
             Write(patternBuffer, patternBytes); Write(valueBuffer, values);

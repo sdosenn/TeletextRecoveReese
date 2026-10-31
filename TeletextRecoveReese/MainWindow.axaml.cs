@@ -415,6 +415,8 @@ public partial class MainWindow : Window
         public List<CaptureCardPreset> CustomCaptureCardPresets { get; set; } = new();
         public int CapturePresetDefaultsVersion { get; set; }
         public int? VbiExtraRoll { get; set; }
+        public VbiTapeFormat? VbiTapeFormat { get; set; }
+        public bool? VbiEqualizeLineLevels { get; set; }
         public bool? VbiAdvancedMode { get; set; }
         public string? LastCaptureCardPresetName { get; set; }
         public string? LastLiveCaptureInterface { get; set; }
@@ -5030,6 +5032,8 @@ public partial class MainWindow : Window
         var useButton = new Button { Content = "Start capture", Width = 110, IsDefault = true };
         var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
         var extraRoll = CreateVbiExtraRollControl();
+        var tapeFormat = CreateVbiTapeFormatControl();
+        var equalizeLineLevels = CreateVbiEqualizeLineLevelsCheckBox();
         var recordRawVbiCheckBox = new CheckBox
         {
             Content = "Write raw VBI to temp file to save later",
@@ -5057,6 +5061,7 @@ public partial class MainWindow : Window
                 Width = 480,
                 Margin = new Thickness(20),
                 Spacing = 12,
+                [Grid.IsSharedSizeScopeProperty] = true,
                 Children =
                 {
                     new Grid
@@ -5118,7 +5123,9 @@ public partial class MainWindow : Window
                     statusText,
                     previewBorder,
                     previewStatusText,
+                    CreateVbiTapeFormatPanel(tapeFormat),
                     CreateVbiExtraRollPanel(extraRoll),
+                    equalizeLineLevels,
                     recordRawVbiCheckBox,
                     keepEmptyPacketsCheckBox,
                     new Grid
@@ -5671,6 +5678,8 @@ public partial class MainWindow : Window
             if (!preset.IsAutoDetected)
                 _sessionState.LastCaptureCardPresetName = preset.Name;
             _sessionState.VbiExtraRoll = (int)(extraRoll.Value ?? 0);
+            SaveVbiTapeFormat(tapeFormat);
+            _sessionState.VbiEqualizeLineLevels = equalizeLineLevels.IsChecked == true;
             _sessionState.LastLiveCaptureInterface = captureInterface.Path;
             _sessionState.LastLiveCaptureInput = captureInput?.Index ?? directShowInput?.PinIndex
                 ?? (usermodeInput is null ? null : (int)usermodeInput.Input);
@@ -5854,7 +5863,9 @@ public partial class MainWindow : Window
                 CriFcRangeThreshold: resolvedPreset.CriFcRangeThreshold,
                 CriFcConfidenceThreshold: resolvedPreset.CriFcConfidenceThreshold,
                 KeepEmptyPackets: keepEmptyPackets,
-                ExtraRoll: _sessionState.VbiExtraRoll ?? 0);
+                ExtraRoll: _sessionState.VbiExtraRoll ?? 0,
+                TapeFormat: _sessionState.VbiTapeFormat ?? VbiTapeFormat.Vhs,
+                EqualizeLineLevels: _sessionState.VbiEqualizeLineLevels ?? false);
             // Preview pixels use eight-bit levels; decoding retains the source precision.
             var previewOptions = options with { IsUInt16 = false };
             string temporaryOutput = Path.Combine(
@@ -6737,9 +6748,13 @@ public partial class MainWindow : Window
                                 previewFirstLine, previewLineCount)
                             .Select(deconvolutionControl.GetManualPacketSpanSamples)
                             .ToArray();
-                        int timingLineMask = previewLineCount >= 32
-                            ? -1
-                            : (1 << previewLineCount) - 1;
+                        // Lines switched off for decoding get no detection markers either.
+                        int timingLineMask = 0;
+                        for (int line = 0; line < Math.Min(previewLineCount, 32); line++)
+                        {
+                            if (deconvolutionControl.GetLineDecodingEnabled(previewFirstLine + line))
+                                timingLineMask |= 1 << line;
+                        }
                         byte[] timingFrame = previewFirstLine == 0
                             ? snapshot
                             : snapshot.AsSpan(
@@ -8114,6 +8129,8 @@ public partial class MainWindow : Window
         if (selection is null) return;
         CaptureCardPreset preset = selection.Value.Preset;
         int extraRoll = _sessionState.VbiExtraRoll ?? 0;
+        VbiTapeFormat tapeFormat = _sessionState.VbiTapeFormat ?? VbiTapeFormat.Vhs;
+        bool equalizeLineLevels = _sessionState.VbiEqualizeLineLevels ?? false;
         bool showLivePreview = _sessionState.ShowLiveDeconvolvedPage ?? true;
         _sessionState.LastCaptureCardPresetName = preset.Name;
         SaveSessionState();
@@ -8287,7 +8304,9 @@ public partial class MainWindow : Window
                     preset.StandardDeviationThreshold,
                     preset.SignalLevelThreshold, preset.CriFcRangeThreshold,
                     preset.CriFcConfidenceThreshold,
-                    ExtraRoll: extraRoll);
+                    ExtraRoll: extraRoll,
+                    TapeFormat: tapeFormat,
+                    EqualizeLineLevels: equalizeLineLevels);
                 result = await VbiDeconvolutionEngine.DeconvolveAsync(
                     input, output, options, reporter, packetReporter, cancellation.Token);
             }
@@ -8450,10 +8469,93 @@ public partial class MainWindow : Window
         VerticalAlignment = VerticalAlignment.Center,
     };
 
+    private sealed record VbiTapeFormatItem(VbiTapeFormat Format, string Name)
+    {
+        public override string ToString() => Name;
+    }
+
+    private ComboBox CreateVbiTapeFormatControl()
+    {
+        List<VbiTapeFormatItem> formats =
+        [
+            new(VbiTapeFormat.Vhs, "VHS"),
+            new(VbiTapeFormat.Betamax, "Betamax"),
+            new(VbiTapeFormat.Video2000, "Video 2000"),
+        ];
+        VbiTapeFormat selected = _sessionState.VbiTapeFormat ?? VbiTapeFormat.Vhs;
+        return new ComboBox
+        {
+            ItemsSource = formats,
+            SelectedItem = formats.FirstOrDefault(item => item.Format == selected) ?? formats[0],
+            Width = 128,
+            Height = 34,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+    }
+
+    private CheckBox CreateVbiEqualizeLineLevelsCheckBox()
+    {
+        var checkBox = new CheckBox
+        {
+            Content = "Equalize line levels",
+            IsChecked = _sessionState.VbiEqualizeLineLevels ?? false,
+        };
+        ToolTip.SetTip(
+            checkBox,
+            "Amplifies weak VBI lines to the level of the strongest Teletext lines before detection, "
+            + "for tapes whose first VBI lines replay darker (seen on Video 2000)");
+        return checkBox;
+    }
+
+    private void SaveVbiTapeFormat(ComboBox control)
+    {
+        if (control.SelectedItem is VbiTapeFormatItem item)
+            _sessionState.VbiTapeFormat = item.Format;
+    }
+
+    // The option rows share their label column so the controls line up; the
+    // dialog sets Grid.IsSharedSizeScope on the container holding the rows.
+    private static ColumnDefinitions CreateVbiOptionColumns() =>
+    [
+        new ColumnDefinition(GridLength.Auto) { SharedSizeGroup = "VbiOptionLabel" },
+        new ColumnDefinition(GridLength.Auto),
+        new ColumnDefinition(1, GridUnitType.Star),
+    ];
+
+    private static Grid CreateVbiTapeFormatPanel(ComboBox control) => new()
+    {
+        Margin = new Thickness(0, 4),
+        ColumnDefinitions = CreateVbiOptionColumns(),
+        ColumnSpacing = 12,
+        Children =
+        {
+            new TextBlock
+            {
+                Text = "Tape format",
+                FontWeight = FontWeight.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+            new Border
+            {
+                [Grid.ColumnProperty] = 1,
+                Child = control,
+            },
+            new TextBlock
+            {
+                [Grid.ColumnProperty] = 2,
+                Text = "Selects the trained signal patterns for the recording format.",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = Brushes.LightGray,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        },
+    };
+
     private static Grid CreateVbiExtraRollPanel(NumericUpDown control) => new()
     {
         Margin = new Thickness(0, 4),
-        ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*"),
+        ColumnDefinitions = CreateVbiOptionColumns(),
         ColumnSpacing = 12,
         Children =
         {
@@ -8484,6 +8586,8 @@ public partial class MainWindow : Window
         _sessionState.CustomCaptureCardPresets ??= new List<CaptureCardPreset>();
         List<CaptureCardPreset> presets = BuiltInCaptureCardPresets.Concat(_sessionState.CustomCaptureCardPresets).ToList();
         var extraRoll = CreateVbiExtraRollControl();
+        var tapeFormat = CreateVbiTapeFormatControl();
+        var equalizeLineLevels = CreateVbiEqualizeLineLevelsCheckBox();
         var combo = new ComboBox { Width = 420, ItemsSource = presets };
         combo.SelectedItem = presets.FirstOrDefault(p => string.Equals(p.Name, _sessionState.LastCaptureCardPresetName, StringComparison.OrdinalIgnoreCase))
                              ?? presets.FirstOrDefault();
@@ -8515,12 +8619,15 @@ public partial class MainWindow : Window
                 Width = 440,
                 Margin = new Thickness(18),
                 Spacing = 12,
+                [Grid.IsSharedSizeScopeProperty] = true,
                 Children =
                 {
                     new TextBlock { Text = "Capture card configuration", FontSize = 16, FontWeight = FontWeight.SemiBold },
                     combo,
                     details,
+                    CreateVbiTapeFormatPanel(tapeFormat),
                     CreateVbiExtraRollPanel(extraRoll),
+                    equalizeLineLevels,
                     new Grid
                     {
                         ColumnDefinitions = new ColumnDefinitions("*,Auto"),
@@ -8546,6 +8653,8 @@ public partial class MainWindow : Window
             {
                 result = (selected, advancedMode.IsChecked == true);
                 _sessionState.VbiExtraRoll = (int)(extraRoll.Value ?? 0);
+                SaveVbiTapeFormat(tapeFormat);
+                _sessionState.VbiEqualizeLineLevels = equalizeLineLevels.IsChecked == true;
                 _sessionState.VbiAdvancedMode = advancedMode.IsChecked == true;
             }
             dialog.Close();

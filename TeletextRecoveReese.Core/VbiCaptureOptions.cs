@@ -1,5 +1,13 @@
 namespace TeletextRecoveReese.Core;
 
+/// <summary>Recording format whose trained vhs-teletext pattern tables are used.</summary>
+public enum VbiTapeFormat
+{
+    Vhs,
+    Betamax,
+    Video2000,
+}
+
 public sealed record VbiCaptureOptions(
     string Name,
     double SampleRate,
@@ -16,7 +24,10 @@ public sealed record VbiCaptureOptions(
     double CriFcConfidenceThreshold = 0.20,
     bool KeepEmptyPackets = false,
     // Samples after resampling to eight samples per bit, matching vhs-teletext.
-    int ExtraRoll = 0);
+    int ExtraRoll = 0,
+    VbiTapeFormat TapeFormat = VbiTapeFormat.Vhs,
+    // Amplify weak lines to the level of the strongest recent lines before detection.
+    bool EqualizeLineLevels = false);
 
 public readonly record struct VbiDeconvolutionProgress(
     long ProcessedLines,
