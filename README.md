@@ -5,8 +5,8 @@ Codex.<br>
 Capture VBI, deconvolve and restore teletext from VHS tapes all in one cross-platform GUI application.
 
 <p align="left">
-  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.9.2-beta">
-    <img src="https://img.shields.io/badge/Download_latest_release-0.9.2_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.9.2 beta">
+  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.9.3-beta">
+    <img src="https://img.shields.io/badge/Download_latest_release-0.9.3_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.9.3 beta">
   </a>
 </p>
 
@@ -20,6 +20,41 @@ Of course raw VBI can be stored for preservation if needed.<br>
 You can also hot swap tapes to quickly date taped broadcasts.<br>
 
 <img width="780" height="452" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/4263db68-66a8-4cfc-b447-ec28574045d8" />
+
+## Supported capture cards
+
+| Capture card | Windows  | Linux | macOS |
+| ------------- |:-------------:|:-------------:|:-------------:|
+| August VGB100 |<span style="color: green">Supported</span> * |<span style="color: green">Supported</span> * |<span style="color: green">Supported</span> *
+| SAA7131 PCI/USB | <span style="color: green">Supported</span> |<span style="color: green">Supported</span>| <span style="color: red">Not supported</span>
+| BT8x8   |<span style="color: orange">Supported</span>|<span style="color: green">Supported</span>|<span style="color: red">Not supported</span>
+| CX88   |<span style="color: orange">Supported</span>|<span style="color: green">Supported</span>|<span style="color: red">Not supported</span>
+
+## Capture card notes
+
+### August VGB
+Officially this card is only supported up to Windows 10.<br>
+Linux drivers have issues with freezing while reading VBI data.<br>
+Use a provided built-in libusb usermode driver as of version 0.9.3-beta.<br>
+This card lacks line TBC features so the signal from VHS tapes can be jittery.
+
+For Windows 10/11 use [Zadig](https://zadig.akeo.ie/) to install signed libusb driver.<br>
+For Linux make sure udev rules allow access to the USB device.<br>
+For macOS install libusb via homebrew.
+
+### SAA7131 based capture cards
+Well supported on modern x64 Windows and a recommended route with desktop PCs.<br>
+Supported on Linux but will experience frame drops if video and VBI is streamed at the same time.
+
+### BT8x8 based capture cards
+Supported on Linux but will experience frame drops if video and VBI is streamed at the same time.<br>
+Lackluster support on modern x64 Windows, there are almost no modern drivers for these cards.<br>
+They lack line TBC features so the signal from VHS tapes can be jittery.
+
+### CX88 based capture cards
+Well supported on Linux and can stream both video and VBI without frame dropps.<br>
+May not have modern Windows drivers as those are Windows XP era cards.<br>
+Use a sampling offset of 2 for these cards for better capture results.
 
 ## ☕ Support the recovery effort
 
