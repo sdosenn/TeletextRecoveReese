@@ -4,14 +4,17 @@ namespace TeletextRecoveReese.Core.Vgb100;
 /// <summary>
 /// Assembles raw VBI frames from the CX23102 bulk stream. Each line follows a
 /// BT.656-style FF 00 00 code; codes 0x2x and 0x6x mark VBI lines of the first
-/// and second field. Lines beyond the 18 exposed per field are discarded, as
-/// some firmwares emit a surplus VBI-tagged line.
+/// and second field. Lines beyond the 18 (625/50) or 12 (525/60) exposed per
+/// field are discarded, as some firmwares emit a surplus VBI-tagged line.
 /// </summary>
 public sealed class Vgb100VbiParser
 {
     public const int SamplesPerLine = 1440;
-    public const int LinesPerField = 18;
-    public const int FrameSize = SamplesPerLine * LinesPerField * 2;
+    public const int PalLinesPerField = 18;  // PAL_VBI_LINES
+    public const int NtscLinesPerField = 12; // NTSC_VBI_LINES
+
+    public int LinesPerField { get; }
+    public int FrameSize => SamplesPerLine * LinesPerField * 2;
 
     private enum State
     {
@@ -23,7 +26,7 @@ public sealed class Vgb100VbiParser
     }
 
     private readonly Action<byte[]> _frameCompleted;
-    private byte[] _frame = new byte[FrameSize];
+    private byte[] _frame;
     private State _state;
     private int _field;
     private int _field1Lines;
@@ -31,7 +34,12 @@ public sealed class Vgb100VbiParser
     private int _lineOffset;
     private bool _keepLine;
 
-    public Vgb100VbiParser(Action<byte[]> frameCompleted) => _frameCompleted = frameCompleted;
+    public Vgb100VbiParser(Action<byte[]> frameCompleted, int linesPerField = PalLinesPerField)
+    {
+        _frameCompleted = frameCompleted;
+        LinesPerField = linesPerField;
+        _frame = new byte[FrameSize];
+    }
 
     public void Reset()
     {

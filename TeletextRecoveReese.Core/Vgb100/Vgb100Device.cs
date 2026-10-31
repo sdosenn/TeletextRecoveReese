@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // User-mode setup of the August VGB100 (CX23102), following the Linux cx231xx
 // driver with the AUGUST_VGB100 board profile: probe (cx231xx_init_dev),
-// v4l2 open and raw VBI streaming. Only the analogue PAL capture path used for
-// Teletext is implemented.
+// v4l2 open, raw VBI and raw video streaming of the analogue inputs.
 namespace TeletextRecoveReese.Core.Vgb100;
 
 public enum Vgb100Input
@@ -11,19 +10,30 @@ public enum Vgb100Input
     SVideo = 1,
 }
 
+public enum Vgb100Standard
+{
+    Pal,
+    Secam,
+    NtscM,
+    NtscJ,
+    PalM,
+    PalN,
+}
+
 public sealed class Vgb100Device
 {
     public const ushort VendorId = 0x1f4d;
     public const ushort ProductId = 0x0102;
     public const ushort SupportedRevision = 0x4002;
 
+    public const byte VideoEndpoint = 0x84;
     public const byte VbiEndpoint = 0x85;
+    public const int VideoAlternateSetting = 3; // 720-wide isochronous video
     public const int VideoInterface = 3;
     public const int VbiInterface = 4;
     public const int SlicedCaptionInterface = 5;
 
     public const int VbiSamplesPerLine = 1440;       // dev->width * 2
-    public const int VbiLinesPerField = 18;          // PAL_VBI_LINES
     public const uint VbiSamplingRate = 6750000 * 4; // vidioc_g_fmt_vbi_cap
 
     // cx231xx_itype
@@ -43,8 +53,10 @@ public sealed class Vgb100Device
     private const uint PwrIsoEn = 0x40;
     private const int PwrSleepInterval = 10;
 
-    // Endpoint enable bits and TS_MODE_REG value for VANC/raw VBI
+    // Endpoint enable bits and TS_MODE_REG values for raw video and VANC/raw VBI
+    private const uint EnableEp4 = 0x08;
     private const uint EnableEp5 = 0x10;
+    private const uint TsModeRawVideo = 0x100;
     private const uint TsModeVbi = 0x300;
 
     // AFE registers (cx231xx-reg.h)
@@ -138,6 +150,29 @@ public sealed class Vgb100Device
 
     public Vgb100Input CurrentInput => (Vgb100Input)_videoInput;
 
+    public static bool Is625Lines(Vgb100Standard standard) =>
+        (StandardId(standard) & V4l2Std.Std625_50) != 0;
+
+    private static ulong StandardId(Vgb100Standard standard) => standard switch
+    {
+        Vgb100Standard.Secam => V4l2Std.Secam,
+        Vgb100Standard.NtscM => V4l2Std.NtscM,
+        Vgb100Standard.NtscJ => V4l2Std.NtscMJp,
+        Vgb100Standard.PalM => V4l2Std.PalM,
+        Vgb100Standard.PalN => V4l2Std.PalN,
+        _ => V4l2Std.Pal,
+    };
+
+    /// <summary>VIDIOC_S_STD: reselecting the current standard is a no-op.</summary>
+    public void SetStandard(Vgb100Standard standard)
+    {
+        ulong norm = StandardId(standard);
+        if (norm == _norm) return;
+        _norm = norm;
+        _decoder.SetStandard(_norm);
+        DoModeControlOverrides();
+    }
+
     // ----- probe: cx231xx_usb_probe() -> cx231xx_init_dev() -----
 
     public void Probe()
@@ -180,7 +215,7 @@ public sealed class Vgb100Device
     {
         Check(SetPowerMode(AvModeExternalAv), "set power mode");
         // cx231xx_set_video_alternate(): 720-wide isochronous video uses alt 3.
-        TrySetAltSetting(VideoInterface, 3);
+        TrySetAltSetting(VideoInterface, VideoAlternateSetting);
     }
 
     public void CloseVbi() => TrySetAltSetting(VideoInterface, 0);
@@ -196,6 +231,18 @@ public sealed class Vgb100Device
     public void StartVbiStreaming() => Check(CaptureStartVbi(true), "enable VBI endpoint");
 
     public void StopVbiStreaming() => CaptureStartVbi(false);
+
+    // ----- raw video streaming: cx231xx_init_isoc() / cx231xx_uninit_isoc() -----
+
+    public void StartVideoStreaming()
+    {
+        int status = _highSpeed
+            ? _bridge.ModeRegister(Cx231xxBridge.TsModeReg, TsModeRawVideo)
+            : _bridge.ModeRegister(Cx231xxBridge.TsModeReg, 0x101);
+        Check(status < 0 ? status : StartStream(EnableEp4), "enable video endpoint");
+    }
+
+    public void StopVideoStreaming() => StopStream(EnableEp4);
 
     /// <summary>VIDIOC_S_INPUT for the VGB100: reselecting the current input is a no-op.</summary>
     public void SelectInput(Vgb100Input input)
@@ -579,8 +626,23 @@ public sealed class Vgb100Device
     private void DoModeControlOverrides()
     {
         _bridge.VideoBlockWriteWord(DfeCtrl3, 0xcd3f0280);
+        if ((_norm & (V4l2Std.Ntsc | V4l2Std.PalM)) != 0)
+        {
+            // Move the closed caption lines out of active video and adjust
+            // the active video start point.
+            Check(_bridge.ReadModifyWriteI2cDword(Cx231xxBridge.VideoBlockI2cAddress, VertTimCtrl,
+                FldVblankCnt, 0x18), "NTSC vertical blanking");
+            Check(_bridge.ReadModifyWriteI2cDword(Cx231xxBridge.VideoBlockI2cAddress, VertTimCtrl,
+                FldVactiveCnt, 0x1e7000), "NTSC active lines");
+            Check(_bridge.ReadModifyWriteI2cDword(Cx231xxBridge.VideoBlockI2cAddress, VertTimCtrl,
+                FldV656BlankCnt, 0x1c000000), "NTSC 656 blanking");
+            Check(_bridge.ReadModifyWriteI2cDword(Cx231xxBridge.VideoBlockI2cAddress, HorizTimCtrl,
+                FldHblankCnt, Cx231xxBridge.SetField(FldHblankCnt, 0x79)), "NTSC horizontal timing");
+            return;
+        }
         if ((_norm & V4l2Std.Std625_50) == 0) return;
 
+        // The AUGUST_VGB100 board uses one timing for every 625-line standard.
         // Keep the 36/40-line PAL blanking from cx25840_std_setup() so raw VBI
         // completes 18-line fields, and start capture 16 samples earlier
         // (HBLANK 125) to retain the Teletext clock run-in.

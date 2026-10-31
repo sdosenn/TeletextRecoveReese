@@ -6,9 +6,13 @@ internal static class Vgb100Regressions
 {
     public static void Run()
     {
-        ParserAssemblesFragmentedFrames();
+        ParserAssemblesFragmentedFrames(Vgb100VbiParser.PalLinesPerField);
+        ParserAssemblesFragmentedFrames(Vgb100VbiParser.NtscLinesPerField);
         ParserWaitsForFirstField();
+        VideoParserInterleavesFieldsAndSwapsBytes(Vgb100VideoParser.PalHeight);
+        VideoParserInterleavesFieldsAndSwapsBytes(Vgb100VideoParser.NtscHeight);
         ProbeAndStreamingProgramTheDevice();
+        NtscProgramsTheDecoderTiming();
         LibUsbAndOpenClLoadTogether();
     }
 
@@ -34,30 +38,31 @@ internal static class Vgb100Regressions
         return data.ToArray();
     }
 
-    private static void ParserAssemblesFragmentedFrames()
+    private static void ParserAssemblesFragmentedFrames(int linesPerField)
     {
         var frames = new List<byte[]>();
-        var parser = new Vgb100VbiParser(frames.Add);
+        var parser = new Vgb100VbiParser(frames.Add, linesPerField);
         // Each field carries one surplus VBI line that must not shift the next frame.
-        byte[] stream = [.. Field(0x20, 1, 19), .. Field(0x60, 101, 19), .. Field(0x20, 1, 19), .. Field(0x60, 101, 19)];
+        int lines = linesPerField + 1;
+        byte[] stream = [.. Field(0x20, 1, lines), .. Field(0x60, 101, lines), .. Field(0x20, 1, lines), .. Field(0x60, 101, lines)];
         for (int offset = 0; offset < stream.Length; offset += 7)
             parser.Feed(stream.AsSpan(offset, Math.Min(7, stream.Length - offset)));
 
         if (frames.Count != 2) throw new Exception($"VGB100 parser produced {frames.Count} frames instead of 2.");
         foreach (byte[] frame in frames)
         {
-            if (frame.Length != Vgb100VbiParser.FrameSize) throw new Exception("VGB100 frame has the wrong size.");
-            for (int line = 0; line < 2 * Vgb100VbiParser.LinesPerField; line++)
+            if (frame.Length != parser.FrameSize) throw new Exception("VGB100 frame has the wrong size.");
+            for (int line = 0; line < 2 * parser.LinesPerField; line++)
             {
-                byte expected = line < Vgb100VbiParser.LinesPerField
+                byte expected = line < parser.LinesPerField
                     ? (byte)(1 + line)
-                    : (byte)(101 + line - Vgb100VbiParser.LinesPerField);
+                    : (byte)(101 + line - parser.LinesPerField);
                 ReadOnlySpan<byte> samples = frame.AsSpan(line * Vgb100VbiParser.SamplesPerLine, Vgb100VbiParser.SamplesPerLine);
                 if (samples.ContainsAnyExcept(expected))
                     throw new Exception($"VGB100 frame line {line} holds the wrong samples.");
             }
         }
-        Console.WriteLine("PASS: VGB100 parser assembles fragmented two-field frames and drops surplus lines");
+        Console.WriteLine($"PASS: VGB100 parser assembles fragmented {linesPerField}-line fields and drops surplus lines");
     }
 
     private static void ParserWaitsForFirstField()
@@ -70,6 +75,42 @@ internal static class Vgb100Regressions
         parser.Feed(Field(0x60, 1, 18));
         if (frames != 1) throw new Exception("VGB100 parser did not resynchronise on the first field.");
         Console.WriteLine("PASS: VGB100 parser resynchronises on the first field");
+    }
+
+    private static void VideoParserInterleavesFieldsAndSwapsBytes(int height)
+    {
+        var frames = new List<byte[]>();
+        var parser = new Vgb100VideoParser(frame => frames.Add(frame.ToArray()), height);
+        var stream = new List<byte>();
+        void AddField(byte code, byte fieldTag)
+        {
+            stream.AddRange(new byte[] { 0xff, 0x00, 0x00, 0xb6 }); // blanking code ends the previous field
+            for (int line = 0; line < parser.LinesPerField; line++)
+            {
+                stream.AddRange(new byte[] { 0xff, 0x00, 0x00, code });
+                for (int pair = 0; pair < Vgb100VideoParser.BytesPerLine / 2; pair++)
+                    stream.AddRange(new[] { fieldTag, (byte)line }); // UYVY order: chroma, luma
+            }
+        }
+        AddField(0xc0, 9); // trailing second field before the first complete frame
+        AddField(0x80, 1);
+        AddField(0xc0, 2);
+        byte[] data = stream.ToArray();
+        for (int offset = 0; offset < data.Length; offset += 2891) // odd chunks split byte pairs
+            parser.Feed(data.AsSpan(offset, Math.Min(2891, data.Length - offset)));
+
+        if (frames.Count != 1) throw new Exception($"VGB100 video parser produced {frames.Count} frames instead of 1.");
+        byte[] frame = frames[0];
+        for (int row = 0; row < parser.Height; row++)
+        {
+            byte luma = (byte)(row / 2);
+            byte chroma = (byte)(row % 2 == 0 ? 1 : 2);
+            int start = row * Vgb100VideoParser.BytesPerLine;
+            if (frame[start] != luma || frame[start + 1] != chroma
+                || frame[start + Vgb100VideoParser.BytesPerLine - 2] != luma)
+                throw new Exception($"VGB100 video row {row} is not interleaved YUYV.");
+        }
+        Console.WriteLine($"PASS: VGB100 video parser interleaves {height}-line fields and swaps UYVY to YUYV");
     }
 
     private static void ProbeAndStreamingProgramTheDevice()
@@ -123,6 +164,23 @@ internal static class Vgb100Regressions
         _ = Vgb100VbiCaptureStream.IsLibUsbAvailable;
         string device = VbiDeconvolutionEngine.ValidateOpenClBackend();
         Console.WriteLine($"PASS: libusb and OpenCL bindings load in one process ({device})");
+    }
+
+    private static void NtscProgramsTheDecoderTiming()
+    {
+        var usb = new SimulatedCx23102();
+        var device = new Vgb100Device(usb);
+        device.Probe();
+        device.SetStandard(Vgb100Standard.NtscM);
+        // cx231xx_do_mode_ctrl_overrides() for NTSC
+        uint vertical = usb.I2cWord(0x44, 0x474);
+        if ((vertical & 0x3ff) != 0x18 || (vertical & 0x3ff000) != 0x1e7000 || (vertical & 0xff000000) != 0x1c000000)
+            throw new Exception($"VGB100 NTSC vertical timing is 0x{vertical:x8}.");
+        if ((usb.I2cWord(0x44, 0x470) & 0x3ff) != 0x79) throw new Exception("VGB100 NTSC HBLANK is not 0x79.");
+        if ((usb.I2cWord(0x44, 0x400) & 0xf) != 1) throw new Exception("VGB100 decoder is not set to NTSC-M.");
+        device.SetStandard(Vgb100Standard.Pal);
+        if ((usb.I2cWord(0x44, 0x474) & 0xff3ff3ff) != 0x28244024) throw new Exception("VGB100 PAL timing was not restored.");
+        Console.WriteLine("PASS: VGB100 NTSC and PAL program the decoder timing");
     }
 
     /// <summary>Register memory model of the CX23102 bridge and its I2C devices.</summary>

@@ -22,6 +22,7 @@ internal static unsafe partial class LibUsb
     public const byte EndpointIn = 0x80;
     public const byte EndpointOut = 0x00;
 
+    public const byte TransferTypeIsochronous = 1;
     public const byte TransferTypeBulk = 2;
 
     public enum TransferStatus
@@ -71,6 +72,21 @@ internal static unsafe partial class LibUsb
         public IntPtr Buffer;
         public int IsoPacketCount;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct IsoPacketDescriptor
+    {
+        public uint Length;
+        public uint ActualLength;
+        public TransferStatus Status;
+    }
+
+    // The iso_packet_desc[] flexible array follows num_iso_packets directly.
+    public static readonly int IsoPacketDescriptorOffset =
+        (int)Marshal.OffsetOf<Transfer>(nameof(Transfer.IsoPacketCount)) + sizeof(int);
+
+    public static IsoPacketDescriptor* IsoPackets(IntPtr transfer) =>
+        (IsoPacketDescriptor*)((byte*)transfer + IsoPacketDescriptorOffset);
 
     static LibUsb()
     {
@@ -147,9 +163,11 @@ internal static unsafe partial class LibUsb
     [LibraryImport(Library)] public static partial byte libusb_get_bus_number(IntPtr device);
     [LibraryImport(Library)] public static partial byte libusb_get_device_address(IntPtr device);
     [LibraryImport(Library)] public static partial int libusb_get_device_speed(IntPtr device);
+    [LibraryImport(Library)] public static partial int libusb_get_max_alt_packet_size(
+        IntPtr device, int interfaceNumber, int alternateSetting, byte endpoint);
     [LibraryImport(Library)] public static partial int libusb_open(IntPtr device, IntPtr* handle);
     [LibraryImport(Library)] public static partial void libusb_close(IntPtr handle);
-    [LibraryImport(Library)] public static partial int libusb_set_auto_detach_kernel_driver(IntPtr handle, int enable);
+    [LibraryImport(Library)] public static partial int libusb_kernel_driver_active(IntPtr handle, int interfaceNumber);
     [LibraryImport(Library)] public static partial int libusb_claim_interface(IntPtr handle, int interfaceNumber);
     [LibraryImport(Library)] public static partial int libusb_release_interface(IntPtr handle, int interfaceNumber);
     [LibraryImport(Library)] public static partial int libusb_set_interface_alt_setting(IntPtr handle, int interfaceNumber, int alternateSetting);

@@ -18,9 +18,9 @@ public sealed record Vgb100DeviceInfo(byte Bus, byte Address, ushort Revision)
 }
 
 /// <summary>
-/// Raw PAL VBI capture from an August VGB100 through libusb, without the
-/// cx231xx kernel driver. Frames hold two fields of 18 lines × 1440 GREY
-/// samples at 27 MHz, the layout the Linux driver exposes.
+/// Raw VBI capture from an August VGB100 through libusb, without the cx231xx
+/// kernel driver. Frames hold two fields of 18 (625/50) or 12 (525/60) lines ×
+/// 1440 GREY samples at 27 MHz, the layout the Linux driver exposes.
 /// </summary>
 public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
 {
@@ -28,6 +28,9 @@ public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
     private const int TransferSize = 32 * 512;
     private const uint ControlTimeoutMs = 1000;
     private const int MaxConsecutiveTransferErrors = 50;
+    private const int VideoTransferCount = 8;
+    private const int VideoPacketsPerTransfer = 64; // 8 ms of microframes per transfer
+    private const int DefaultVideoPacketSize = 3 * 964; // alt 3: 3 × 964-byte transactions
     private static readonly int[] ClaimedInterfaces = [1, Vgb100Device.VideoInterface,
         Vgb100Device.VbiInterface, Vgb100Device.SlicedCaptionInterface];
 
@@ -40,6 +43,11 @@ public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
     private readonly Vgb100VbiParser _parser;
     private readonly List<int> _claimed = new();
     private readonly IntPtr[] _transfers = new IntPtr[TransferCount];
+    private readonly IntPtr[] _videoTransfers = new IntPtr[VideoTransferCount];
+    private readonly Vgb100VideoParser? _videoParser;
+    private int _videoPacketSize = DefaultVideoPacketSize;
+    private volatile bool _videoStopped;
+    private int _consecutiveVideoErrors;
     private IntPtr _context;
     private IntPtr _handle;
     private GCHandle _self;
@@ -59,19 +67,35 @@ public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
 
     public override uint SamplingRate => Vgb100Device.VbiSamplingRate;
     public override int SamplesPerLine => Vgb100Device.VbiSamplesPerLine;
-    public override int FirstFieldLines => Vgb100Device.VbiLinesPerField;
-    public override int SecondFieldLines => Vgb100Device.VbiLinesPerField;
+    public override int FirstFieldLines => _parser.LinesPerField;
+    public override int SecondFieldLines => _parser.LinesPerField;
     public override long CapturedFrames => Interlocked.Read(ref _capturedFrames);
     public override Action<byte[]>? RawFrameCaptured { get; set; }
 
     public Vgb100Input Input { get; }
+    public Vgb100Standard Standard { get; }
     public long StallRecoveries => Interlocked.Read(ref _stallRecoveries);
+
+    /// <summary>True when the isochronous video stream was requested.</summary>
+    public bool VideoEnabled => _videoParser is not null;
+    /// <summary>Why video stopped while VBI capture continues, if it did.</summary>
+    public string? VideoError { get; private set; }
+    /// <summary>Asked before a frame is copied; return false to skip it.</summary>
+    public Func<bool>? TryAcquireVideoFrame { get; set; }
+    /// <summary>Receives 720×576 or 720×480 interlaced YUYV frames on the USB event thread.</summary>
+    public Action<LinuxV4l2VideoFrame>? VideoFrameCaptured { get; set; }
     public ushort DecoderId { get; private set; }
 
-    private Vgb100VbiCaptureStream(Vgb100Input input)
+    private Vgb100VbiCaptureStream(Vgb100Input input, Vgb100Standard standard, bool enableVideo)
     {
         Input = input;
-        _parser = new Vgb100VbiParser(frame => _frames.Writer.TryWrite(frame));
+        Standard = standard;
+        bool lines625 = Vgb100Device.Is625Lines(standard);
+        _parser = new Vgb100VbiParser(frame => _frames.Writer.TryWrite(frame),
+            lines625 ? Vgb100VbiParser.PalLinesPerField : Vgb100VbiParser.NtscLinesPerField);
+        if (enableVideo)
+            _videoParser = new Vgb100VideoParser(OnVideoFrame,
+                lines625 ? Vgb100VideoParser.PalHeight : Vgb100VideoParser.NtscHeight);
     }
 
     public static bool IsLibUsbAvailable => LibUsb.IsAvailable;
@@ -113,9 +137,10 @@ public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
         return result;
     }
 
-    public static Vgb100VbiCaptureStream Open(Vgb100DeviceInfo info, Vgb100Input input)
+    public static Vgb100VbiCaptureStream Open(Vgb100DeviceInfo info, Vgb100Input input,
+        bool enableVideo = false, Vgb100Standard standard = Vgb100Standard.Pal)
     {
-        var stream = new Vgb100VbiCaptureStream(input);
+        var stream = new Vgb100VbiCaptureStream(input, standard, enableVideo);
         try
         {
             stream.OpenDevice(info);
@@ -163,6 +188,19 @@ public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
             LibUsb.Check(result, "libusb_open");
             _handle = handle;
             bool highSpeed = LibUsb.libusb_get_device_speed(device) == 3;
+            if (_videoParser is not null)
+            {
+                try
+                {
+                    int size = LibUsb.libusb_get_max_alt_packet_size(device, Vgb100Device.VideoInterface,
+                        Vgb100Device.VideoAlternateSetting, Vgb100Device.VideoEndpoint);
+                    if (size > 0) _videoPacketSize = size;
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    // libusb before 1.0.23; the VGB100 descriptor value is used.
+                }
+            }
             _device = new Vgb100Device(new Transport(this), highSpeed);
         }
         finally
@@ -170,10 +208,18 @@ public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
             LibUsb.libusb_free_device_list(list, 1);
         }
 
-        // Linux: let libusb detach cx231xx and reattach it when the interfaces are released.
-        LibUsb.libusb_set_auto_detach_kernel_driver(_handle, 1);
         foreach (int interfaceNumber in ClaimedInterfaces)
         {
+            // cx231xx binds only the control interface 1 and keeps the audio
+            // function. Detaching it tears down its ALSA card, which can deadlock
+            // against PipeWire closing that card, so a bound interface is left to
+            // the kernel; vendor control requests need no claimed interface.
+            if (LibUsb.libusb_kernel_driver_active(_handle, interfaceNumber) == 1)
+            {
+                if (interfaceNumber == 1) continue;
+                throw new IOException(
+                    $"VGB100 interface {interfaceNumber} is owned by a kernel driver; usermode capture cannot use it.");
+            }
             int result = LibUsb.libusb_claim_interface(_handle, interfaceNumber);
             if (result == LibUsb.Success)
             {
@@ -193,6 +239,7 @@ public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
         device.Probe();
         DecoderId = device.DecoderId;
         device.SelectInput(Input);
+        device.SetStandard(Standard);
         device.OpenVbi();
         device.PrepareVbiStreaming();
 
@@ -228,7 +275,75 @@ public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
         _eventThread.Start();
 
         device.StartVbiStreaming();
+        if (_videoParser is not null) StartVideo(device, callback);
     }
+
+    private unsafe void StartVideo(Vgb100Device device, delegate* unmanaged[Cdecl]<IntPtr, void> callback)
+    {
+        try
+        {
+            int length = VideoPacketsPerTransfer * _videoPacketSize;
+            for (int i = 0; i < _videoTransfers.Length; i++)
+            {
+                IntPtr transfer = LibUsb.libusb_alloc_transfer(VideoPacketsPerTransfer);
+                if (transfer == IntPtr.Zero) throw new OutOfMemoryException("libusb_alloc_transfer failed.");
+                _videoTransfers[i] = transfer;
+                var native = (LibUsb.Transfer*)transfer;
+                native->DeviceHandle = _handle;
+                native->Endpoint = Vgb100Device.VideoEndpoint;
+                native->Type = LibUsb.TransferTypeIsochronous;
+                native->Timeout = 0;
+                native->Length = length;
+                native->Buffer = (IntPtr)NativeMemory.Alloc((nuint)length);
+                native->Callback = (IntPtr)callback;
+                native->UserData = GCHandle.ToIntPtr(_self);
+                native->IsoPacketCount = VideoPacketsPerTransfer;
+                LibUsb.IsoPacketDescriptor* packets = LibUsb.IsoPackets(transfer);
+                for (int packet = 0; packet < VideoPacketsPerTransfer; packet++)
+                    packets[packet].Length = (uint)_videoPacketSize;
+            }
+            // cx231xx_init_isoc() submits the URBs before enabling the endpoint.
+            foreach (IntPtr transfer in _videoTransfers)
+            {
+                LibUsb.Check(LibUsb.libusb_submit_transfer(transfer), "submit video transfer");
+                Interlocked.Increment(ref _inFlight);
+            }
+            device.StartVideoStreaming();
+        }
+        catch (Exception ex)
+        {
+            StopVideo($"Video preview unavailable: {ex.Message}");
+        }
+    }
+
+    private void StopVideo(string reason)
+    {
+        if (_videoStopped) return;
+        VideoError = reason;
+        _videoStopped = true;
+        foreach (IntPtr transfer in _videoTransfers)
+            if (transfer != IntPtr.Zero) LibUsb.libusb_cancel_transfer(transfer);
+    }
+
+    private void OnVideoFrame(byte[] frame)
+    {
+        Action<LinuxV4l2VideoFrame>? callback = VideoFrameCaptured;
+        if (callback is null) return;
+        try
+        {
+            if (TryAcquireVideoFrame?.Invoke() == false) return;
+            callback(new LinuxV4l2VideoFrame(
+                Vgb100VideoParser.Width, _videoParser!.Height, YuyvFourCc, InterlacedField,
+                Vgb100VideoParser.BytesPerLine, frame.ToArray()));
+        }
+        catch
+        {
+            // A preview consumer must not stop VBI capture.
+        }
+    }
+
+    private const uint YuyvFourCc = 0x56595559;
+    private const uint InterlacedField = 4; // V4L2_FIELD_INTERLACED
 
     private unsafe void EventLoop()
     {
@@ -252,8 +367,50 @@ public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
         stream.OnTransferCompleted(native, transfer);
     }
 
+    private unsafe void OnVideoTransferCompleted(LibUsb.Transfer* native, IntPtr transfer)
+    {
+        switch (native->Status)
+        {
+            case LibUsb.TransferStatus.Completed:
+                if (_stopping || _videoStopped) break;
+                Volatile.Write(ref _consecutiveVideoErrors, 0);
+                LibUsb.IsoPacketDescriptor* packets = LibUsb.IsoPackets(transfer);
+                for (int packet = 0; packet < native->IsoPacketCount; packet++)
+                {
+                    // Like cx231xx_isoc_copy(), skip failed and empty packets.
+                    if (packets[packet].Status != LibUsb.TransferStatus.Completed
+                        || packets[packet].ActualLength == 0
+                        || packets[packet].ActualLength > (uint)_videoPacketSize) continue;
+                    var data = new ReadOnlySpan<byte>(
+                        (byte*)native->Buffer + packet * _videoPacketSize, (int)packets[packet].ActualLength);
+                    try { _videoParser!.Feed(data); }
+                    catch (Exception ex) { StopVideo($"Video preview stopped: {ex.Message}"); }
+                }
+                break;
+            case LibUsb.TransferStatus.Cancelled:
+                break;
+            case LibUsb.TransferStatus.NoDevice:
+                Fail(new IOException("The VGB100 was disconnected."));
+                break;
+            default:
+                _videoParser!.Reset();
+                if (!_stopping && Interlocked.Increment(ref _consecutiveVideoErrors) > MaxConsecutiveTransferErrors)
+                    StopVideo($"Video preview stopped: isochronous transfers keep failing ({native->Status}).");
+                break;
+        }
+
+        if (!_stopping && !_videoStopped && _fault is null && LibUsb.libusb_submit_transfer(transfer) == LibUsb.Success)
+            return;
+        Interlocked.Decrement(ref _inFlight);
+    }
+
     private unsafe void OnTransferCompleted(LibUsb.Transfer* native, IntPtr transfer)
     {
+        if (native->Endpoint == Vgb100Device.VideoEndpoint)
+        {
+            OnVideoTransferCompleted(native, transfer);
+            return;
+        }
         switch (native->Status)
         {
             case LibUsb.TransferStatus.Completed:
@@ -375,8 +532,12 @@ public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
         if (_handle != IntPtr.Zero && _device is not null)
         {
             try { _device.StopVbiStreaming(); } catch { }
+            if (_videoParser is not null)
+            {
+                try { _device.StopVideoStreaming(); } catch { }
+            }
         }
-        foreach (IntPtr transfer in _transfers)
+        foreach (IntPtr transfer in _transfers.Concat(_videoTransfers))
         {
             if (transfer != IntPtr.Zero) LibUsb.libusb_cancel_transfer(transfer);
         }
@@ -387,7 +548,7 @@ public sealed class Vgb100VbiCaptureStream : LiveVbiCaptureStream
 
         if (Volatile.Read(ref _inFlight) == 0)
         {
-            foreach (IntPtr transfer in _transfers)
+            foreach (IntPtr transfer in _transfers.Concat(_videoTransfers))
             {
                 if (transfer == IntPtr.Zero) continue;
                 NativeMemory.Free((void*)((LibUsb.Transfer*)transfer)->Buffer);

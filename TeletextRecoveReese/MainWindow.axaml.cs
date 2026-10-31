@@ -4929,7 +4929,7 @@ public partial class MainWindow : Window
         public override string ToString() => Name;
     }
 
-    private sealed record UsermodeVideoStandard(string Name)
+    private sealed record UsermodeVideoStandard(Vgb100Standard Standard, string Name)
     {
         public override string ToString() => Name;
     }
@@ -5139,6 +5139,7 @@ public partial class MainWindow : Window
         string? selectedVideoInterface = null;
         Task linuxPreviewTask = Task.CompletedTask;
         WindowsDirectShowPreview? directShowPreview = null;
+        Vgb100VbiCaptureStream? usermodePreview = null;
         LatestUiPreview<DirectShowPreviewFrame>? directShowPreviewUpdates = null;
         LatestUiPreview<byte[]>? linuxPreviewUpdates = null;
         CancellationTokenSource? previewCancellation = null;
@@ -5161,6 +5162,17 @@ public partial class MainWindow : Window
             linuxPreviewUpdates = null;
             directShowPreview?.Dispose();
             directShowPreview = null;
+            if (usermodePreview is { } closingUsermodePreview)
+            {
+                // Release the USB device off the UI thread; reopening waits for it.
+                usermodePreview = null;
+                Task previousPreviewTask = linuxPreviewTask;
+                linuxPreviewTask = Task.Run(async () =>
+                {
+                    await previousPreviewTask;
+                    closingUsermodePreview.Dispose();
+                });
+            }
             previewCancellation?.Cancel();
             previewCancellation?.Dispose();
             previewCancellation = null;
@@ -5181,9 +5193,70 @@ public partial class MainWindow : Window
                     "Only VBI interface will be opened.";
                 return;
             }
-            if (interfaceCombo.SelectedItem is LiveCaptureInterface { IsUsermodeVgb100: true })
+            if (interfaceCombo.SelectedItem is LiveCaptureInterface { IsUsermodeVgb100: true } usermodeInterface)
             {
-                previewStatusText.Text = "The usermode VGB100 driver captures VBI only; video preview is not available.";
+                if (inputCombo.SelectedItem is not UsermodeVideoInput usermodeVideoInput
+                    || standardCombo.SelectedItem is not UsermodeVideoStandard usermodeVideoStandard) return;
+                int usermodeGeneration = ++previewGeneration;
+                previewStatusText.Text = $"Opening video preview from {usermodeInterface.Name}…";
+                const int usermodePreviewWidth = 440;
+                const int usermodePreviewHeight = 330;
+                var usermodePreviewUpdates = new LatestUiPreview<byte[]>(pixels =>
+                {
+                    if (usermodeGeneration != previewGeneration) return;
+                    try
+                    {
+                        if (previewImage.Source is not WriteableBitmap bitmap)
+                        {
+                            bitmap = new WriteableBitmap(
+                                new PixelSize(usermodePreviewWidth, usermodePreviewHeight),
+                                new Vector(96, 96), PixelFormats.Bgra8888, AlphaFormat.Opaque);
+                            previewImage.Source = bitmap;
+                        }
+                        UpdateBgraBitmap(bitmap, pixels, usermodePreviewWidth, usermodePreviewHeight);
+                        previewImage.InvalidateVisual();
+                        previewStatusText.Text = $"Live preview · 4:3 · {usermodeInterface.Name} · {usermodeVideoInput.Name} · {usermodeVideoStandard.Name}";
+                    }
+                    catch (Exception ex)
+                    {
+                        previewStatusText.Text = $"Video preview frame failed: {ex.Message}";
+                    }
+                });
+                linuxPreviewUpdates = usermodePreviewUpdates;
+                // The open runs inside linuxPreviewTask so that a restart or the
+                // capture start waits until the device is released.
+                linuxPreviewTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        Vgb100DeviceInfo device = Vgb100VbiCaptureStream.Enumerate()
+                            .FirstOrDefault(info => info.Path == usermodeInterface.Path)
+                            ?? throw new IOException($"{usermodeInterface.Name} is no longer connected.");
+                        Vgb100VbiCaptureStream stream =
+                            Vgb100VbiCaptureStream.Open(device, usermodeVideoInput.Input, enableVideo: true,
+                                usermodeVideoStandard.Standard);
+                        bool current = await Dispatcher.UIThread.InvokeAsync(() =>
+                        {
+                            if (usermodeGeneration != previewGeneration) return false;
+                            usermodePreview = stream;
+                            stream.VideoFrameCaptured = frame =>
+                                usermodePreviewUpdates.Post(
+                                    BuildVideoPreviewBgra(frame, usermodePreviewWidth, usermodePreviewHeight));
+                            if (stream.VideoError is { } videoError)
+                                previewStatusText.Text = videoError;
+                            return true;
+                        });
+                        if (!current) stream.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            if (usermodeGeneration == previewGeneration)
+                                previewStatusText.Text = $"Video preview unavailable: {ex.Message}";
+                        });
+                    }
+                });
                 return;
             }
             if (OperatingSystem.IsWindows())
@@ -5357,17 +5430,27 @@ public partial class MainWindow : Window
                                               (int)input.Input == _sessionState.LastLiveCaptureInput)
                                           ?? inputs[0];
                 inputCombo.IsEnabled = true;
-                List<UsermodeVideoStandard> standards = [new("PAL")];
+                List<UsermodeVideoStandard> standards =
+                [
+                    new(Vgb100Standard.Pal, "PAL"),
+                    new(Vgb100Standard.Secam, "SECAM"),
+                    new(Vgb100Standard.NtscM, "NTSC-M"),
+                    new(Vgb100Standard.NtscJ, "NTSC-J"),
+                    new(Vgb100Standard.PalM, "PAL-M"),
+                    new(Vgb100Standard.PalN, "PAL-N"),
+                ];
                 standardCombo.ItemsSource = standards;
-                standardCombo.SelectedItem = standards[0];
-                standardCombo.IsEnabled = false;
+                standardCombo.SelectedItem = standards.FirstOrDefault(standard =>
+                                                 (ulong)standard.Standard == _sessionState.LastLiveCaptureStandard)
+                                             ?? standards[0];
+                standardCombo.IsEnabled = true;
                 suppressPreviewRestart = false;
                 presetCombo.IsEnabled = true;
                 statusText.Foreground = Brushes.LightGray;
                 statusText.Text = OperatingSystem.IsWindows()
                     ? "Usermode libusb driver. The card needs the WinUSB driver (for example installed with Zadig)."
                     : OperatingSystem.IsLinux()
-                        ? "Usermode libusb driver. The cx231xx kernel driver is detached while capturing and reattached afterwards."
+                        ? "Usermode libusb driver. The cx231xx kernel driver stays loaded and keeps the audio."
                         : "Usermode libusb driver.";
                 await RestartPreviewAsync();
                 UpdateStartButton();
@@ -5506,21 +5589,24 @@ public partial class MainWindow : Window
             useButton.IsEnabled = false;
             statusText.Foreground = Brushes.LightGray;
             statusText.Text = "Searching for capture interfaces…";
+            string? currentPath = (interfaceCombo.SelectedItem as LiveCaptureInterface)?.Path;
             List<LiveCaptureInterface> interfaces = await DiscoverLiveCaptureInterfacesAsync();
             interfaceCombo.ItemsSource = interfaces;
             suppressInterfaceSelection = true;
             interfaceCombo.SelectedItem = interfaces.FirstOrDefault(item =>
+                                                  string.Equals(item.Path, currentPath, StringComparison.Ordinal))
+                                              ?? interfaces.FirstOrDefault(item =>
                                                   string.Equals(item.Path, _sessionState.LastLiveCaptureInterface, StringComparison.Ordinal))
                                               ?? interfaces.FirstOrDefault();
             suppressInterfaceSelection = false;
             statusText.Text = interfaces.Count > 0
                 ? OperatingSystem.IsMacOS()
-                    ? $"Found {interfaces.Count} serial interface(s). The device must provide raw VBI samples using the selected card configuration."
+                    ? $"Found {interfaces.Count} capture interface(s)."
                     : OperatingSystem.IsLinux()
                         ? $"Found {interfaces.Count} Linux VBI device(s)."
                         : $"Found {interfaces.Count} DirectShow video capture device(s). VBI-pin validation occurs when the live transport is opened."
                 : OperatingSystem.IsMacOS()
-                    ? "No serial interfaces were found under /dev/cu.* or /dev/tty.*."
+                    ? "No August VGB100 was found. Check that the card is plugged in."
                     : OperatingSystem.IsLinux()
                         ? "No /dev/vbi* devices were found. Check the capture driver and device permissions."
                         : "No DirectShow video capture devices were reported by Windows.";
@@ -5573,9 +5659,10 @@ public partial class MainWindow : Window
             DirectShowVideoInput? directShowInput = inputCombo.SelectedItem as DirectShowVideoInput;
             DirectShowVideoStandard? directShowStandard = standardCombo.SelectedItem as DirectShowVideoStandard;
             UsermodeVideoInput? usermodeInput = inputCombo.SelectedItem as UsermodeVideoInput;
+            UsermodeVideoStandard? usermodeStandard = standardCombo.SelectedItem as UsermodeVideoStandard;
             if (captureInterface.IsUsermodeVgb100)
             {
-                if (usermodeInput is null) return;
+                if (usermodeInput is null || usermodeStandard is null) return;
             }
             else if (OperatingSystem.IsLinux() && (captureInput is null || captureStandard is null))
                 return;
@@ -5588,7 +5675,8 @@ public partial class MainWindow : Window
             _sessionState.LastLiveCaptureInput = captureInput?.Index ?? directShowInput?.PinIndex
                 ?? (usermodeInput is null ? null : (int)usermodeInput.Input);
             _sessionState.LastLiveCaptureStandard = captureStandard?.Id
-                ?? (directShowStandard is null ? null : (ulong)(int)directShowStandard.Value);
+                ?? (directShowStandard is null ? null : (ulong?)(int)directShowStandard.Value)
+                ?? (usermodeStandard is null ? null : (ulong?)usermodeStandard.Standard);
             SaveSessionState();
             StopPreview();
             await linuxPreviewTask;
@@ -5598,7 +5686,8 @@ public partial class MainWindow : Window
                     captureInterface, preset, null,
                     recordRawVbiCheckBox.IsChecked == true,
                     keepEmptyPacketsCheckBox.IsChecked == true,
-                    null, null, null, null, vgb100Input: usermodeInput!.Input);
+                    null, null, null, null, vgb100Input: usermodeInput!.Input,
+                    vgb100Standard: usermodeStandard!.Standard);
             else if (OperatingSystem.IsLinux())
                 await StartLiveVbiCaptureAsync(
                     captureInterface, preset, selectedVideoInterface,
@@ -5618,7 +5707,34 @@ public partial class MainWindow : Window
             StopPreview();
             ClearPreviewImage();
         };
-        dialog.Opened += async (_, _) => await RefreshInterfacesAsync();
+        // Follow cards being plugged in or removed while the dialog is open.
+        bool hotplugCheckRunning = false;
+        var hotplugTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        hotplugTimer.Tick += async (_, _) =>
+        {
+            if (hotplugCheckRunning || !refreshButton.IsEnabled) return;
+            hotplugCheckRunning = true;
+            try
+            {
+                List<string> present = await Task.Run(DiscoverHotplugInterfacePaths);
+                List<string> listed = (interfaceCombo.ItemsSource as IEnumerable<LiveCaptureInterface> ?? [])
+                    .Where(item => item.IsUsermodeVgb100 || (OperatingSystem.IsLinux() && item.Kind == "Video4Linux VBI"))
+                    .Select(item => item.Path)
+                    .ToList();
+                if (refreshButton.IsEnabled && !present.Order().SequenceEqual(listed.Order()))
+                    await RefreshInterfacesAsync();
+            }
+            finally
+            {
+                hotplugCheckRunning = false;
+            }
+        };
+        dialog.Closed += (_, _) => hotplugTimer.Stop();
+        dialog.Opened += async (_, _) =>
+        {
+            await RefreshInterfacesAsync();
+            hotplugTimer.Start();
+        };
         await dialog.ShowDialog(this);
     }
 
@@ -5655,7 +5771,8 @@ public partial class MainWindow : Window
         DirectShowVideoInput? directShowInput,
         DirectShowVideoStandard? directShowStandard,
         string? sourceFilePath = null,
-        Vgb100Input? vgb100Input = null)
+        Vgb100Input? vgb100Input = null,
+        Vgb100Standard vgb100Standard = Vgb100Standard.Pal)
     {
         bool networkMode = sourceFilePath?.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase) == true;
         bool fileMode = sourceFilePath is not null && !networkMode;
@@ -5677,7 +5794,9 @@ public partial class MainWindow : Window
                 Vgb100DeviceInfo device = Vgb100VbiCaptureStream.Enumerate()
                     .FirstOrDefault(info => info.Path == captureInterface.Path)
                     ?? throw new IOException($"{captureInterface.Name} is no longer connected.");
-                input = await Task.Run(() => Vgb100VbiCaptureStream.Open(device, usermodeInput));
+                bool enableUsermodeVideo = !(_sessionState.DisableLiveVbiVideoPreview ?? false);
+                input = await Task.Run(() =>
+                    Vgb100VbiCaptureStream.Open(device, usermodeInput, enableUsermodeVideo, vgb100Standard));
             }
             else if (OperatingSystem.IsLinux() && linuxInput is not null && linuxStandard is not null)
                 input = new LinuxVbiCaptureStream(
@@ -5855,9 +5974,9 @@ public partial class MainWindow : Window
             {
                 Text = disableVideoPreview
                     ? "Only the VBI interface is active; video preview was not opened."
-                    : input is Vgb100VbiCaptureStream
-                    ? "The usermode VGB100 driver captures VBI only; video preview is not available."
-                    : videoInterfacePath is null && input is not WindowsDirectShowVbiCaptureStream
+                    : input is Vgb100VbiCaptureStream { VideoError: { } usermodeVideoError }
+                    ? usermodeVideoError
+                    : videoInterfacePath is null && input is not (WindowsDirectShowVbiCaptureStream or Vgb100VbiCaptureStream { VideoEnabled: true })
                     ? "No related video interface was found."
                     : "Waiting for the first raw YUV video frame…",
                 Foreground = Brushes.LightGray,
@@ -5875,7 +5994,8 @@ public partial class MainWindow : Window
                 Content = "Live video preview (real time)",
                 IsChecked = !disableVideoPreview && (_sessionState.ShowVideoCapturePreview ?? true),
                 IsEnabled = !disableVideoPreview
-                            && (videoInterfacePath is not null || input is WindowsDirectShowVbiCaptureStream),
+                            && (videoInterfacePath is not null
+                                || input is WindowsDirectShowVbiCaptureStream or Vgb100VbiCaptureStream { VideoEnabled: true }),
             };
             int videoPreviewEnabled = showVideoPreviewCheckBox.IsChecked == true ? 1 : 0;
             var showLiveCheckBox = new CheckBox
@@ -6390,6 +6510,42 @@ public partial class MainWindow : Window
                     }, DispatcherPriority.Render);
                 };
             }
+            if (!disableVideoPreview && input is Vgb100VbiCaptureStream { VideoEnabled: true } usermodeCapture)
+            {
+                usermodeCapture.TryAcquireVideoFrame = () =>
+                    videoPreviewActive
+                    && Volatile.Read(ref videoPreviewEnabled) != 0
+                    && Interlocked.CompareExchange(ref directShowVideoFramePending, 1, 0) == 0;
+                usermodeCapture.VideoFrameCaptured = frame =>
+                {
+                    byte[] pixels;
+                    try
+                    {
+                        pixels = BuildVideoPreviewBgra(frame, videoPreviewWidth, videoPreviewHeight);
+                    }
+                    catch
+                    {
+                        Interlocked.Exchange(ref directShowVideoFramePending, 0);
+                        throw;
+                    }
+                    int frameNumber = Interlocked.Increment(ref videoSnapshotNumber);
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        try
+                        {
+                            if (!videoPreviewActive) return;
+                            UpdateBgraBitmap(videoPreviewBitmap, pixels, videoPreviewWidth, videoPreviewHeight);
+                            videoPreviewImage.InvalidateVisual();
+                            videoPreviewInfoText.Text = usermodeCapture.VideoError
+                                ?? $"VGB100 live video · frame {frameNumber:N0} · {frame.Width}×{frame.Height}";
+                        }
+                        finally
+                        {
+                            Interlocked.Exchange(ref directShowVideoFramePending, 0);
+                        }
+                    }, DispatcherPriority.Render);
+                };
+            }
             rawPreviewFieldCombo.SelectionChanged += (_, _) =>
             {
                 Volatile.Write(
@@ -6888,6 +7044,11 @@ public partial class MainWindow : Window
                     directShowCapture.ReleaseVideoFrame = null;
                     directShowCapture.VideoFrameCaptured = null;
                 }
+                if (input is Vgb100VbiCaptureStream usermodeCapture)
+                {
+                    usermodeCapture.TryAcquireVideoFrame = null;
+                    usermodeCapture.VideoFrameCaptured = null;
+                }
                 rawPreviewBitmap.Dispose();
                 videoPreviewImage.Source = null;
                 videoPreviewBitmap.Dispose();
@@ -7355,13 +7516,38 @@ public partial class MainWindow : Window
         {
             IReadOnlyList<Vgb100DeviceInfo> devices = await Task.Run(Vgb100VbiCaptureStream.Enumerate);
             interfaces.AddRange(devices.Select(device => new LiveCaptureInterface(
-                $"{device.Name} · usermode driver", device.Path, UsermodeVgb100Kind)));
+                UsermodeInterfaceName(device, devices.Count > 1), device.Path, UsermodeVgb100Kind)));
         }
         catch
         {
             // libusb is optional; without it only the platform transports are listed.
         }
         return interfaces;
+    }
+
+    private static string UsermodeInterfaceName(Vgb100DeviceInfo device, bool showLocation)
+    {
+        string name = device.Revision == Vgb100Device.SupportedRevision
+            ? "August VGB100 (usermode)"
+            : $"August VGB100 rev {device.Revision >> 8:x}.{device.Revision & 0xff:x2} (usermode, untested)";
+        return showLocation ? $"{name} · USB {device.Bus}-{device.Address}" : name;
+    }
+
+    /// <summary>Paths of the hot-pluggable interfaces, to notice a card being added or removed.</summary>
+    private static List<string> DiscoverHotplugInterfacePaths()
+    {
+        var paths = new List<string>();
+        if (OperatingSystem.IsLinux())
+            paths.AddRange(DiscoverDeviceFiles(["vbi*"], "Video4Linux VBI").Select(item => item.Path));
+        try
+        {
+            paths.AddRange(Vgb100VbiCaptureStream.Enumerate().Select(device => device.Path));
+        }
+        catch
+        {
+            // libusb is optional.
+        }
+        return paths;
     }
 
     private static string? FindRelatedLinuxVideoInterface(string busInfo)
