@@ -41,6 +41,48 @@ public partial class AboutWindow : Window
         Close();
     }
 
+    private void OnNoticesLinkClicked(object? sender, RoutedEventArgs e)
+    {
+        bool showNotices = !NoticesPanel.IsVisible;
+        if (showNotices && NoticesList.Children.Count == 0) LoadNotices();
+        NoticesPanel.IsVisible = showNotices;
+        Picture.IsVisible = AnimatedTitle.IsVisible = !showNotices;
+        BlackImageOverlay.IsVisible = !showNotices && App.TerminatorAboutUnlocked;
+        NoticesLink.Content = showNotices ? "Back" : "Credits and licenses";
+    }
+
+    private static readonly (string Name, string Author, string License)[] Credits =
+    [
+        ("Avalonia", "AvaloniaUI", "MIT"),
+        ("DirectShowLib", "DirectShowLib contributors", "LGPL-2.1"),
+        ("vhs-teletext (VHS patterns, OpenCL matcher)", "Alistair Buxton, David Alan Gilbert", "GPL-3.0+"),
+        ("Linux cx231xx / cx25840 drivers (ported)", "Linux kernel contributors", "GPL-2.0+"),
+        ("libusb", "libusb contributors", "LGPL-2.1+"),
+    ];
+
+    private void LoadNotices()
+    {
+        NoticesList.Children.Add(new TextBlock { Text = "Credits and licenses", FontSize = 14, FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 0, 0, 8) });
+        var muted = new SolidColorBrush(Color.Parse("#8E939C"));
+        foreach (var (name, author, license) in Credits)
+        {
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 0, 0, 6) };
+            row.Children.Add(new StackPanel
+            {
+                Children =
+                {
+                    new TextBlock { Text = name, FontSize = 12, TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = author, FontSize = 11, Foreground = muted },
+                },
+            });
+            var licenseText = new TextBlock { Text = license, FontSize = 11, Foreground = muted, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top };
+            Grid.SetColumn(licenseText, 1);
+            row.Children.Add(licenseText);
+            NoticesList.Children.Add(row);
+        }
+        NoticesList.Children.Add(new TextBlock { Text = "Details: THIRD_PARTY_NOTICES.md", FontSize = 11, Foreground = muted, Margin = new Thickness(0, 6, 0, 0) });
+    }
+
     private async void OnSupportLinkClicked(object? sender, RoutedEventArgs e)
     {
         await Launcher.LaunchUriAsync(new Uri("https://ko-fi.com/sinisinavideoteka"));
