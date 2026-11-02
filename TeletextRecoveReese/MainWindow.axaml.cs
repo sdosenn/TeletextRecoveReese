@@ -4979,7 +4979,6 @@ public partial class MainWindow : Window
                                    ?? presets.FirstOrDefault();
         var statusText = new TextBlock
         {
-            Width = 440,
             Foreground = Brushes.LightGray,
             TextWrapping = TextWrapping.Wrap,
         };
@@ -5028,7 +5027,7 @@ public partial class MainWindow : Window
             BorderThickness = new Thickness(1),
             Child = previewContent,
         };
-        var refreshButton = new Button { Content = "Refresh", Width = 90 };
+        var refreshButton = new Button { Content = "Refresh", Width = 90, HorizontalAlignment = HorizontalAlignment.Right };
         var useButton = new Button { Content = "Start capture", Width = 110, IsDefault = true };
         var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
         var extraRoll = CreateVbiExtraRollControl();
@@ -5056,90 +5055,113 @@ public partial class MainWindow : Window
             SizeToContent = SizeToContent.WidthAndHeight,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Content = new StackPanel
+            Content = new Grid
             {
-                Width = 480,
                 Margin = new Thickness(20),
-                Spacing = 12,
-                [Grid.IsSharedSizeScopeProperty] = true,
+                ColumnDefinitions = new ColumnDefinitions("Auto,Auto"),
+                ColumnSpacing = 20,
                 Children =
                 {
-                    new Grid
+                    new StackPanel
                     {
-                        ColumnDefinitions = new ColumnDefinitions("*,*"),
-                        ColumnSpacing = 12,
+                        Width = 480,
+                        Spacing = 12,
+                        [Grid.IsSharedSizeScopeProperty] = true,
                         Children =
                         {
-                            new StackPanel
+                            new Grid
                             {
-                                Spacing = 6,
+                                ColumnDefinitions = new ColumnDefinitions("*,*"),
+                                ColumnSpacing = 12,
                                 Children =
                                 {
-                                    new TextBlock { Text = "VBI interface", FontWeight = FontWeight.SemiBold },
-                                    interfaceCombo,
-                                    cardNameText,
+                                    new StackPanel
+                                    {
+                                        Spacing = 6,
+                                        Children =
+                                        {
+                                            new TextBlock { Text = "VBI interface", FontWeight = FontWeight.SemiBold },
+                                            interfaceCombo,
+                                            cardNameText,
+                                        },
+                                    },
+                                    new StackPanel
+                                    {
+                                        [Grid.ColumnProperty] = 1,
+                                        Spacing = 6,
+                                        Children =
+                                        {
+                                            new TextBlock { Text = "Capture card preset", FontWeight = FontWeight.SemiBold },
+                                            presetCombo,
+                                            asyncModeReadCheckBox,
+                                        },
+                                    },
                                 },
                             },
-                            new StackPanel
+                            new Grid
                             {
-                                [Grid.ColumnProperty] = 1,
-                                Spacing = 6,
+                                ColumnDefinitions = new ColumnDefinitions("*,*"),
+                                ColumnSpacing = 12,
                                 Children =
                                 {
-                                    new TextBlock { Text = "Capture card preset", FontWeight = FontWeight.SemiBold },
-                                    presetCombo,
-                                    asyncModeReadCheckBox,
+                                    new StackPanel
+                                    {
+                                        Spacing = 6,
+                                        Children =
+                                        {
+                                            new TextBlock { Text = "Video input", FontWeight = FontWeight.SemiBold },
+                                            inputCombo,
+                                        },
+                                    },
+                                    new StackPanel
+                                    {
+                                        [Grid.ColumnProperty] = 1,
+                                        Spacing = 6,
+                                        Children =
+                                        {
+                                            new TextBlock { Text = "Video standard", FontWeight = FontWeight.SemiBold },
+                                            standardCombo,
+                                        },
+                                    },
                                 },
                             },
+                            statusText,
+                            refreshButton,
+                            CreateVbiTapeFormatPanel(tapeFormat),
+                            CreateVbiExtraRollPanel(extraRoll),
+                            new StackPanel
+                            {
+                                Orientation = Orientation.Horizontal,
+                                Spacing = 24,
+                                Children = { keepEmptyPacketsCheckBox, equalizeLineLevels },
+                            },
+                            recordRawVbiCheckBox,
                         },
                     },
+                    // The video preview sits beside the settings to keep the dialog low.
                     new Grid
                     {
-                        ColumnDefinitions = new ColumnDefinitions("*,*"),
-                        ColumnSpacing = 12,
+                        [Grid.ColumnProperty] = 1,
+                        Width = 440,
+                        RowDefinitions = new RowDefinitions("Auto,Auto,*,Auto"),
+                        RowSpacing = 8,
                         Children =
                         {
+                            previewBorder,
+                            new Border { [Grid.RowProperty] = 1, Child = previewStatusText },
                             new StackPanel
                             {
-                                Spacing = 6,
-                                Children =
-                                {
-                                    new TextBlock { Text = "Video input", FontWeight = FontWeight.SemiBold },
-                                    inputCombo,
-                                },
-                            },
-                            new StackPanel
-                            {
-                                [Grid.ColumnProperty] = 1,
-                                Spacing = 6,
-                                Children =
-                                {
-                                    new TextBlock { Text = "Video standard", FontWeight = FontWeight.SemiBold },
-                                    standardCombo,
-                                },
+                                [Grid.RowProperty] = 3,
+                                Orientation = Orientation.Horizontal,
+                                HorizontalAlignment = HorizontalAlignment.Right,
+                                Spacing = 8,
+                                Children = { cancelButton, useButton },
                             },
                         },
-                    },
-                    statusText,
-                    previewBorder,
-                    previewStatusText,
-                    CreateVbiTapeFormatPanel(tapeFormat),
-                    CreateVbiExtraRollPanel(extraRoll),
-                    equalizeLineLevels,
-                    recordRawVbiCheckBox,
-                    keepEmptyPacketsCheckBox,
-                    new Grid
-                    {
-                        ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"),
-                        ColumnSpacing = 8,
-                        Children = { refreshButton, cancelButton, useButton },
                     },
                 },
             },
         };
-        Grid.SetColumn(refreshButton, 0);
-        Grid.SetColumn(cancelButton, 2);
-        Grid.SetColumn(useButton, 3);
 
         LinuxV4l2DeviceInfo? selectedDevice = null;
         DirectShowDeviceInfo? selectedDirectShowDevice = null;
@@ -5456,9 +5478,7 @@ public partial class MainWindow : Window
                 statusText.Foreground = Brushes.LightGray;
                 statusText.Text = OperatingSystem.IsWindows()
                     ? "Usermode libusb driver. The card needs the WinUSB driver (for example installed with Zadig)."
-                    : OperatingSystem.IsLinux()
-                        ? "Usermode libusb driver. The cx231xx kernel driver stays loaded and keeps the audio."
-                        : "Usermode libusb driver.";
+                    : "Usermode libusb driver.";
                 await RestartPreviewAsync();
                 UpdateStartButton();
                 return;
@@ -8480,7 +8500,7 @@ public partial class MainWindow : Window
         [
             new(VbiTapeFormat.Vhs, "VHS"),
             new(VbiTapeFormat.Betamax, "Betamax"),
-            new(VbiTapeFormat.Video2000, "Video 2000"),
+            new(VbiTapeFormat.Grundig2x4, "Grundig 2x4"),
         ];
         VbiTapeFormat selected = _sessionState.VbiTapeFormat ?? VbiTapeFormat.Vhs;
         return new ComboBox
@@ -8504,7 +8524,7 @@ public partial class MainWindow : Window
         ToolTip.SetTip(
             checkBox,
             "Amplifies weak VBI lines to the level of the strongest Teletext lines before detection, "
-            + "for tapes whose first VBI lines replay darker (seen on Video 2000)");
+            + "for tapes whose first VBI lines replay darker");
         return checkBox;
     }
 

@@ -1,11 +1,12 @@
 namespace TeletextRecoveReese.Core;
 
 /// <summary>Recording format whose trained vhs-teletext pattern tables are used.</summary>
+// Values are stored in the session state, so existing ones must not change.
 public enum VbiTapeFormat
 {
-    Vhs,
-    Betamax,
-    Video2000,
+    Vhs = 0,
+    Betamax = 1,
+    Grundig2x4 = 2,
 }
 
 public sealed record VbiCaptureOptions(

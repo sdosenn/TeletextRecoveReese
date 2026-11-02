@@ -12,7 +12,7 @@ internal static class VbiTapeFormatRegressions
             CheckTable(format, "parity", VbiPatternResources.OpenParity(format));
             CheckTable(format, "hamming", VbiPatternResources.OpenHamming(format));
         }
-        Console.WriteLine("PASS: VHS, Betamax and Video 2000 pattern tables are bundled");
+        Console.WriteLine("PASS: VHS, Betamax and Grundig 2x4 pattern tables are bundled");
         LineGainEqualizesWeakLines();
     }
 

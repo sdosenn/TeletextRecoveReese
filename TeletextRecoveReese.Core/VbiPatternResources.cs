@@ -20,7 +20,7 @@ public static class VbiPatternResources
     private static string DataDirectory(VbiTapeFormat format) => format switch
     {
         VbiTapeFormat.Betamax => "betamax",
-        VbiTapeFormat.Video2000 => "grundig_2x4",
+        VbiTapeFormat.Grundig2x4 => "grundig_2x4",
         _ => "vhs",
     };
 

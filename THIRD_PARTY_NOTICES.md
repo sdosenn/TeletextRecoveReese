@@ -2,8 +2,8 @@
 
 ## vhs-teletext pattern tables
 
-TeletextRecoveReese includes the trained VHS, Betamax and Video 2000 (Grundig
-2x4) signal-pattern tables from Alistair Buxton's `vhs-teletext` project:
+TeletextRecoveReese includes the trained VHS, Betamax and Grundig 2x4
+signal-pattern tables from Alistair Buxton's `vhs-teletext` project:
 
 - `TeletextRecoveReese.Core/Assets/VbiPatterns/vhs/{full,parity,hamming}.dat`
 - `TeletextRecoveReese.Core/Assets/VbiPatterns/betamax/{full,parity,hamming}.dat`
