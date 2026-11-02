@@ -8,24 +8,37 @@ namespace TeletextRecoveReese.Core;
 // a 20-byte little-endian header ("OXTH", version 1, kind 1, two reserved bytes,
 // the VBI frame index counted from the first field received as Int64, width and
 // height as UInt16) followed by width x height straight-alpha RGBA pixels.
+// A TeletextRecoveReese VbiTcpServer instead starts with a VbiStreamDescription
+// header that gives its own sample format; it ignores returned header rows.
 public sealed class TcpVbiCaptureStream : LiveVbiCaptureStream
 {
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly TcpClient _client;
     private readonly NetworkStream _source;
-    private readonly VbiCaptureOptions _options;
     private readonly byte[] _frame;
+    private readonly int _sampleBytes;
     private int _offset;
     private int _length;
     private long _capturedFrames;
 
-    private TcpVbiCaptureStream(TcpClient client, VbiCaptureOptions options)
+    private TcpVbiCaptureStream(
+        TcpClient client, VbiStreamDescription description, ReadOnlySpan<byte> firstSamples)
     {
         _client = client;
         _source = client.GetStream();
-        _options = options;
-        _frame = new byte[checked(options.LineLength * options.FieldLines * 2 * 2)];
+        Description = description;
+        _sampleBytes = description.BytesPerSample;
+        _frame = new byte[description.FrameBytes];
+        // Samples already read while looking for a server header start the first frame.
+        firstSamples.CopyTo(_frame);
+        _length = firstSamples.Length;
     }
+
+    /// <summary>Stream format: sent by a VbiTcpServer, otherwise the VHS-decode VBI-only TBC layout.</summary>
+    public VbiStreamDescription Description { get; }
+
+    /// <summary>True when the sender is a VbiTcpServer rather than a headerless (Oxide RF) sender.</summary>
+    public bool IsServerStream { get; private init; }
 
     public static async Task<TcpVbiCaptureStream> ConnectAsync(
         string address, VbiCaptureOptions options, CancellationToken cancellationToken = default)
@@ -35,24 +48,44 @@ public sealed class TcpVbiCaptureStream : LiveVbiCaptureStream
             || uri.AbsolutePath is not ("" or "/") || uri.Query.Length != 0
             || uri.Fragment.Length != 0 || uri.UserInfo.Length != 0)
             throw new ArgumentException("Enter tcp://HOST:5556.", nameof(address));
-        if (!options.IsUInt16 || options.LineLength != 1135 || options.FieldLines != 16
-            || options.FieldRangeStart != 0 || options.FieldRangeEnd != 16)
-            throw new ArgumentException("Select the VHS-decode VBI-only TBC preset (UInt16, 1135 samples, 16 lines).", nameof(options));
         var client = new TcpClient { NoDelay = true };
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(10));
             await client.ConnectAsync(uri.Host, uri.Port, timeout.Token).ConfigureAwait(false);
-            return new TcpVbiCaptureStream(client, options);
+            NetworkStream source = client.GetStream();
+            var start = new byte[VbiStreamDescription.Magic.Length];
+            int startLength = 0;
+            while (startLength < start.Length)
+            {
+                int count = await source.ReadAsync(start.AsMemory(startLength), timeout.Token).ConfigureAwait(false);
+                if (count == 0) throw new EndOfStreamException("The VBI TCP sender closed the connection.");
+                startLength += count;
+            }
+            if (start.AsSpan().SequenceEqual(VbiStreamDescription.Magic))
+            {
+                VbiStreamDescription description =
+                    await VbiStreamDescription.ReadAsync(source, timeout.Token).ConfigureAwait(false);
+                return new TcpVbiCaptureStream(client, description, []) { IsServerStream = true };
+            }
+            if (!options.IsUInt16 || options.LineLength != 1135 || options.FieldLines != 16
+                || options.FieldRangeStart != 0 || options.FieldRangeEnd != 16)
+                throw new ArgumentException("Select the VHS-decode VBI-only TBC preset (UInt16, 1135 samples, 16 lines).", nameof(options));
+            var headerless = new VbiStreamDescription(
+                options.Name, options.SampleRate, 1135, 16, 16, true,
+                options.LineStart, options.LineStartEnd,
+                options.StandardDeviationThreshold, options.SignalLevelThreshold,
+                options.CriFcRangeThreshold, options.CriFcConfidenceThreshold);
+            return new TcpVbiCaptureStream(client, headerless, start);
         }
         catch { client.Dispose(); throw; }
     }
 
-    public override uint SamplingRate => checked((uint)_options.SampleRate);
-    public override int SamplesPerLine => _options.LineLength;
-    public override int FirstFieldLines => 16;
-    public override int SecondFieldLines => 16;
+    public override uint SamplingRate => checked((uint)Math.Round(Description.SampleRate));
+    public override int SamplesPerLine => Description.SamplesPerLine;
+    public override int FirstFieldLines => Description.FirstFieldLines;
+    public override int SecondFieldLines => Description.SecondFieldLines;
     public override long CapturedFrames => Interlocked.Read(ref _capturedFrames);
     public override Action<byte[]>? RawFrameCaptured { get; set; }
     public override bool CanRead => true;
@@ -64,9 +97,10 @@ public sealed class TcpVbiCaptureStream : LiveVbiCaptureStream
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
         if (buffer.Length == 0) return 0;
-        if (_offset == _length)
+        if (_offset == _length && _length == _frame.Length) _offset = _length = 0;
+        // The first frame may already hold samples read during connection.
+        if (_length < _frame.Length)
         {
-            _offset = _length = 0;
             while (_length < _frame.Length)
             {
                 int count = await _source.ReadAsync(_frame.AsMemory(_length), cancellationToken).ConfigureAwait(false);
@@ -82,8 +116,9 @@ public sealed class TcpVbiCaptureStream : LiveVbiCaptureStream
             Interlocked.Increment(ref _capturedFrames);
             if (RawFrameCaptured is { } callback)
             {
-                var preview = new byte[_frame.Length / 2];
-                for (int i = 0; i < preview.Length; i++) preview[i] = _frame[i * 2 + 1];
+                var preview = new byte[_frame.Length / _sampleBytes];
+                if (_sampleBytes == 1) _frame.CopyTo(preview, 0);
+                else for (int i = 0; i < preview.Length; i++) preview[i] = _frame[i * 2 + 1];
                 callback(preview);
             }
         }

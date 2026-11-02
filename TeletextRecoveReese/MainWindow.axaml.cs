@@ -376,6 +376,9 @@ public partial class MainWindow : Window
     private readonly HashSet<TeletextPage> _broadcastFastextScanned = new();
     private PageInstance? _decodedBroadcastInstance;
 
+    // Remembered while the application runs; every start enables live deconvolution.
+    private bool _liveDeconvolutionEnabled = true;
+
     private sealed class SessionState
     {
         public string? BroadcastFilePath { get; set; }
@@ -431,6 +434,8 @@ public partial class MainWindow : Window
         public bool? ShowLiveDeconvolvedPage { get; set; }
         public bool? RecordRawVbiToDisk { get; set; }
         public LiveRawVbiStorage? LiveRawVbiStorageMode { get; set; }
+        public bool? HostLiveVbiServer { get; set; }
+        public int? LiveVbiServerPort { get; set; }
         public bool? KeepEmptyLiveCapturePackets { get; set; }
         public bool? AutoStopLiveCaptureOnNoTeletext { get; set; }
         public int? LiveCaptureNoTeletextTimeoutMinutes { get; set; }
@@ -547,7 +552,7 @@ public partial class MainWindow : Window
         OpenDecoded,
     }
 
-    private sealed class RecordingReadStream(Stream source, Stream recording) : Stream
+    private sealed class RecordingReadStream(Stream source, params Stream[] recordings) : Stream
     {
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -564,14 +569,17 @@ public partial class MainWindow : Window
         {
             int count = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
             if (count > 0)
-                await recording.WriteAsync(buffer[..count], cancellationToken).ConfigureAwait(false);
+                foreach (Stream recording in recordings)
+                    await recording.WriteAsync(buffer[..count], cancellationToken).ConfigureAwait(false);
             return count;
         }
 
         public override int Read(byte[] buffer, int offset, int count)
         {
             int read = source.Read(buffer, offset, count);
-            if (read > 0) recording.Write(buffer, offset, read);
+            if (read > 0)
+                foreach (Stream recording in recordings)
+                    recording.Write(buffer, offset, read);
             return read;
         }
 
@@ -5062,7 +5070,7 @@ public partial class MainWindow : Window
             ItemsSource = rawVbiStorageItems,
             SelectedItem = rawVbiStorageItems.FirstOrDefault(item => item.Storage == savedRawVbiStorage)
                 ?? rawVbiStorageItems[0],
-            Width = 320,
+            Width = 300,
             Height = 34,
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
@@ -5070,6 +5078,36 @@ public partial class MainWindow : Window
         ToolTip.SetTip(
             rawVbiStorageCombo,
             "Keeps the complete raw sample stream, either in a temporary file that can be saved when capture stops or in a file chosen before capture starts");
+        var liveDeconvolutionCheckBox = new CheckBox
+        {
+            Content = "Live deconvolution",
+            IsChecked = _liveDeconvolutionEnabled,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTip.SetTip(
+            liveDeconvolutionCheckBox,
+            "Decodes Teletext while capturing. It can be switched on again in the capture window.");
+        var hostServerCheckBox = new CheckBox
+        {
+            Content = "Host VBI on TCP port",
+            IsChecked = _sessionState.HostLiveVbiServer == true,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTip.SetTip(
+            hostServerCheckBox,
+            "Streams the raw VBI to receivers on the local network; open it there with Open VBI TCP stream");
+        var serverPort = new NumericUpDown
+        {
+            Minimum = 1,
+            Maximum = 65535,
+            Increment = 1,
+            FormatString = "0",
+            Value = Math.Clamp(_sessionState.LiveVbiServerPort ?? VbiTcpServer.DefaultPort, 1, 65535),
+            Width = 120,
+            Height = 34,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsEnabled = hostServerCheckBox.IsChecked == true,
+        };
         LiveRawVbiStorage SelectedRawVbiStorage() =>
             (rawVbiStorageCombo.SelectedItem as LiveRawVbiStorageItem)?.Storage ?? LiveRawVbiStorage.None;
         var keepEmptyPacketsCheckBox = new CheckBox
@@ -5090,14 +5128,17 @@ public partial class MainWindow : Window
             {
                 Margin = new Thickness(20),
                 ColumnDefinitions = new ColumnDefinitions("Auto,Auto"),
+                // Raw VBI and capture rows line up with the hosting and start controls.
+                RowDefinitions = new RowDefinitions("Auto,Auto,Auto"),
                 ColumnSpacing = 20,
+                RowSpacing = 12,
+                [Grid.IsSharedSizeScopeProperty] = true,
                 Children =
                 {
                     new StackPanel
                     {
                         Width = 480,
                         Spacing = 12,
-                        [Grid.IsSharedSizeScopeProperty] = true,
                         Children =
                         {
                             new Grid
@@ -5156,59 +5197,88 @@ public partial class MainWindow : Window
                                     },
                                 },
                             },
-                            statusText,
-                            refreshButton,
-                            CreateVbiTapeFormatPanel(tapeFormat),
-                            CreateVbiExtraRollPanel(extraRoll),
-                            new StackPanel
-                            {
-                                Orientation = Orientation.Horizontal,
-                                Spacing = 24,
-                                Children = { keepEmptyPacketsCheckBox, equalizeLineLevels },
-                            },
+                            // Refresh sits right below the dropdowns, beside the status line.
                             new Grid
                             {
-                                Margin = new Thickness(0, 4),
-                                ColumnDefinitions = CreateVbiOptionColumns(),
+                                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
                                 ColumnSpacing = 12,
                                 Children =
                                 {
-                                    new TextBlock
-                                    {
-                                        Text = "Raw VBI",
-                                        FontWeight = FontWeight.SemiBold,
-                                        VerticalAlignment = VerticalAlignment.Center,
-                                    },
+                                    statusText,
                                     new Border
                                     {
                                         [Grid.ColumnProperty] = 1,
-                                        [Grid.ColumnSpanProperty] = 2,
-                                        Child = rawVbiStorageCombo,
+                                        VerticalAlignment = VerticalAlignment.Top,
+                                        Child = refreshButton,
                                     },
                                 },
                             },
+                            CreateVbiTapeFormatPanel(tapeFormat),
+                            CreateVbiExtraRollPanel(extraRoll),
                         },
                     },
                     // The video preview sits beside the settings to keep the dialog low.
-                    new Grid
+                    new StackPanel
                     {
                         [Grid.ColumnProperty] = 1,
                         Width = 440,
-                        RowDefinitions = new RowDefinitions("Auto,Auto,*,Auto"),
-                        RowSpacing = 8,
+                        Spacing = 8,
                         Children =
                         {
                             previewBorder,
-                            new Border { [Grid.RowProperty] = 1, Child = previewStatusText },
-                            new StackPanel
+                            previewStatusText,
+                        },
+                    },
+                    new Grid
+                    {
+                        [Grid.RowProperty] = 1,
+                        Width = 480,
+                        Margin = new Thickness(0, 4),
+                        ColumnDefinitions = CreateVbiOptionColumns(),
+                        ColumnSpacing = 12,
+                        Children =
+                        {
+                            new TextBlock
                             {
-                                [Grid.RowProperty] = 3,
-                                Orientation = Orientation.Horizontal,
-                                HorizontalAlignment = HorizontalAlignment.Right,
-                                Spacing = 8,
-                                Children = { cancelButton, useButton },
+                                Text = "Raw VBI",
+                                FontWeight = FontWeight.SemiBold,
+                                VerticalAlignment = VerticalAlignment.Center,
+                            },
+                            new Border
+                            {
+                                [Grid.ColumnProperty] = 1,
+                                [Grid.ColumnSpanProperty] = 2,
+                                Child = rawVbiStorageCombo,
                             },
                         },
+                    },
+                    new StackPanel
+                    {
+                        [Grid.RowProperty] = 1,
+                        [Grid.ColumnProperty] = 1,
+                        Orientation = Orientation.Horizontal,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Spacing = 12,
+                        Children = { hostServerCheckBox, serverPort },
+                    },
+                    // The checkboxes may run on under the preview, left of the buttons.
+                    new StackPanel
+                    {
+                        [Grid.RowProperty] = 2,
+                        [Grid.ColumnSpanProperty] = 2,
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Left,
+                        Spacing = 24,
+                        Children = { keepEmptyPacketsCheckBox, equalizeLineLevels, liveDeconvolutionCheckBox },
+                    },
+                    new StackPanel
+                    {
+                        [Grid.RowProperty] = 2,
+                        [Grid.ColumnProperty] = 1,
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { cancelButton, useButton },
                     },
                 },
             },
@@ -5698,6 +5768,14 @@ public partial class MainWindow : Window
             _sessionState.LinuxVbiAsyncModeRead = asyncModeReadCheckBox.IsChecked == true;
             SaveSessionState();
         };
+        liveDeconvolutionCheckBox.IsCheckedChanged += (_, _) =>
+            _liveDeconvolutionEnabled = liveDeconvolutionCheckBox.IsChecked == true;
+        hostServerCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            serverPort.IsEnabled = hostServerCheckBox.IsChecked == true;
+            _sessionState.HostLiveVbiServer = hostServerCheckBox.IsChecked == true;
+            SaveSessionState();
+        };
         rawVbiStorageCombo.SelectionChanged += (_, _) =>
         {
             _sessionState.LiveRawVbiStorageMode = SelectedRawVbiStorage();
@@ -5747,6 +5825,12 @@ public partial class MainWindow : Window
             else if (OperatingSystem.IsWindows() && (directShowInput is null || directShowStandard is null))
                 return;
             LiveRawVbiStorage rawVbiStorage = SelectedRawVbiStorage();
+            bool liveDeconvolution = liveDeconvolutionCheckBox.IsChecked == true;
+            int? vbiServerPort = hostServerCheckBox.IsChecked == true
+                ? (int)(serverPort.Value ?? VbiTcpServer.DefaultPort)
+                : null;
+            if (vbiServerPort is not null)
+                _sessionState.LiveVbiServerPort = vbiServerPort;
             string? rawVbiDestination = null;
             if (rawVbiStorage == LiveRawVbiStorage.SpecificLocation)
             {
@@ -5775,21 +5859,27 @@ public partial class MainWindow : Window
                     keepEmptyPacketsCheckBox.IsChecked == true,
                     null, null, null, null, vgb100Input: usermodeInput!.Input,
                     vgb100Standard: usermodeStandard!.Standard,
-                    rawVbiDestination: rawVbiDestination);
+                    rawVbiDestination: rawVbiDestination,
+                    liveDeconvolution: liveDeconvolution,
+                    vbiServerPort: vbiServerPort);
             else if (OperatingSystem.IsLinux())
                 await StartLiveVbiCaptureAsync(
                     captureInterface, preset, selectedVideoInterface,
                     rawVbiStorage,
                     keepEmptyPacketsCheckBox.IsChecked == true,
                     captureInput, captureStandard, null, null,
-                    rawVbiDestination: rawVbiDestination);
+                    rawVbiDestination: rawVbiDestination,
+                    liveDeconvolution: liveDeconvolution,
+                    vbiServerPort: vbiServerPort);
             else if (OperatingSystem.IsWindows())
                 await StartLiveVbiCaptureAsync(
                     captureInterface, preset, null,
                     rawVbiStorage,
                     keepEmptyPacketsCheckBox.IsChecked == true,
                     null, null, directShowInput, directShowStandard,
-                    rawVbiDestination: rawVbiDestination);
+                    rawVbiDestination: rawVbiDestination,
+                    liveDeconvolution: liveDeconvolution,
+                    vbiServerPort: vbiServerPort);
         };
 
         dialog.Closed += (_, _) =>
@@ -5863,7 +5953,9 @@ public partial class MainWindow : Window
         string? sourceFilePath = null,
         Vgb100Input? vgb100Input = null,
         Vgb100Standard vgb100Standard = Vgb100Standard.Pal,
-        string? rawVbiDestination = null)
+        string? rawVbiDestination = null,
+        bool liveDeconvolution = true,
+        int? vbiServerPort = null)
     {
         bool networkMode = sourceFilePath?.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase) == true;
         bool fileMode = sourceFilePath is not null && !networkMode;
@@ -5923,6 +6015,28 @@ public partial class MainWindow : Window
             return;
         }
 
+        // A TeletextRecoveReese VBI server describes its own capture format.
+        if (input is TcpVbiCaptureStream { IsServerStream: true } serverStream)
+        {
+            VbiStreamDescription description = serverStream.Description;
+            preset = new CaptureCardPreset
+            {
+                Name = description.PresetName,
+                SampleRate = description.SampleRate,
+                LineLength = description.SamplesPerLine,
+                LineStart = description.LineStart,
+                LineStartEnd = description.LineStartEnd,
+                SampleType = description.IsUInt16 ? "UInt16" : "UInt8",
+                FieldLines = description.FirstFieldLines,
+                FieldRangeStart = 0,
+                FieldRangeEnd = description.FirstFieldLines,
+                StandardDeviationThreshold = description.StandardDeviationThreshold,
+                SignalLevelThreshold = description.SignalLevelThreshold,
+                CriFcRangeThreshold = description.CriFcRangeThreshold,
+                CriFcConfidenceThreshold = description.CriFcConfidenceThreshold,
+            };
+        }
+
         await using (input)
         {
             bool usingAutoDetectedPreset = preset.IsAutoDetected;
@@ -5950,6 +6064,28 @@ public partial class MainWindow : Window
                 EqualizeLineLevels: _sessionState.VbiEqualizeLineLevels ?? false);
             // Preview pixels use eight-bit levels; decoding retains the source precision.
             var previewOptions = options with { IsUInt16 = false };
+            VbiTcpServer? vbiServer = null;
+            if (vbiServerPort is { } port)
+            {
+                try
+                {
+                    vbiServer = VbiTcpServer.Start(port, new VbiStreamDescription(
+                        resolvedPreset.Name, options.SampleRate, input.SamplesPerLine,
+                        input.FirstFieldLines, input.SecondFieldLines, options.IsUInt16,
+                        resolvedPreset.LineStart, resolvedPreset.LineStartEnd,
+                        resolvedPreset.StandardDeviationThreshold, resolvedPreset.SignalLevelThreshold,
+                        resolvedPreset.CriFcRangeThreshold, resolvedPreset.CriFcConfidenceThreshold));
+                }
+                catch (Exception ex)
+                {
+                    await ShowMessageAsync("Could not host VBI server", ex.Message);
+                    return;
+                }
+            }
+            using VbiTcpServer? vbiServerScope = vbiServer;
+            string vbiServerAddresses = vbiServer is null
+                ? string.Empty
+                : string.Join(" / ", vbiServer.GetAddresses());
             string temporaryOutput = Path.Combine(
                 Path.GetTempPath(), $"TeletextRecoveReese-live-{Guid.NewGuid():N}.t42");
             string? temporaryRawCapture = rawVbiStorage == LiveRawVbiStorage.TemporaryFile
@@ -6122,10 +6258,10 @@ public partial class MainWindow : Window
             var runDeconvolutionCheckBox = new CheckBox
             {
                 Content = fileMode ? "Deconvolution (pause/resume)" : "Live deconvolution",
-                IsChecked = true,
+                IsChecked = liveDeconvolution,
             };
             var deconvolutionControl = new ToggleableDeconvolutionControl(
-                true, input.LinesPerFrame);
+                liveDeconvolution, input.LinesPerFrame);
             int configuredNoTeletextTimeoutMinutes = Math.Clamp(
                 _sessionState.LiveCaptureNoTeletextTimeoutMinutes ?? 5,
                 1, 30);
@@ -7446,12 +7582,17 @@ public partial class MainWindow : Window
                         : "   No-data auto-stop paused"
                     : string.Empty;
                 timingText.Text = $"Elapsed {FormatVbiDuration(elapsed.Elapsed)}   Device {input.SamplingRate:N0} Hz · {input.SamplesPerLine} samples/line · {input.LinesPerFrame} lines/frame{autoStopStatus}";
+                if (vbiServer is not null)
+                {
+                    int receivers = vbiServer.ClientCount;
+                    timingText.Text += $"\nServing VBI on {vbiServerAddresses} · {receivers} receiver{(receivers == 1 ? "" : "s")}";
+                }
             });
             Exception? failure = null;
             // A TCP VBI sender (Oxide RF) receives each changed header row back as
             // an image, tagged with its VBI frame, to show or burn in the clock.
             // Live options carry a whole frame (both fields) in FieldLines.
-            await using TeletextHeaderReturn? headerReturn = input is TcpVbiCaptureStream tcpInput
+            await using TeletextHeaderReturn? headerReturn = input is TcpVbiCaptureStream { IsServerStream: false } tcpInput
                 ? new TeletextHeaderReturn(this, tcpInput, options.FieldLines)
                 : null;
             _ = Task.Run(async () =>
@@ -7464,8 +7605,9 @@ public partial class MainWindow : Window
                         FileOptions.Asynchronous | FileOptions.SequentialScan);
                     if (rawCapture is null)
                     {
+                        Stream source = vbiServer is null ? input : new RecordingReadStream(input, vbiServer);
                         await VbiDeconvolutionEngine.DeconvolveAsync(
-                            input, output, options, reporter, packetReporter,
+                            source, output, options, reporter, packetReporter,
                             cancellation.Token, deconvolutionControl, headerReturn);
                     }
                     else
@@ -7477,7 +7619,9 @@ public partial class MainWindow : Window
                             FileAccess.Write,
                             FileShare.None, 1024 * 1024,
                             FileOptions.Asynchronous | FileOptions.SequentialScan);
-                        var recordingInput = new RecordingReadStream(input, rawOutput);
+                        var recordingInput = vbiServer is null
+                            ? new RecordingReadStream(input, rawOutput)
+                            : new RecordingReadStream(input, rawOutput, vbiServer);
                         await VbiDeconvolutionEngine.DeconvolveAsync(
                             recordingInput, output, options, reporter, packetReporter,
                             cancellation.Token, deconvolutionControl, headerReturn);
@@ -7491,6 +7635,8 @@ public partial class MainWindow : Window
                 });
             });
             await dialog.ShowDialog(this);
+            // Receivers see the end of the stream as soon as capture stops.
+            vbiServer?.Dispose();
 
             // Pages assembled for the live monitor are deliberately temporary.
             // Leave the editor empty after capture; the decoded stream below is
@@ -8168,8 +8314,8 @@ public partial class MainWindow : Window
                 Children =
                 {
                     new TextBlock { Text = "VBI-only TBC server (trusted LAN)" }, address,
-                    new TextBlock { Text = "Raw UInt16 LE · 1135 samples · 16 lines per field", Foreground = Brushes.LightGray },
-                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { cancel, connect } },
+                    new TextBlock { Text = "TeletextRecoveReese or Oxide RF VBI server", Foreground = Brushes.LightGray },
+                    new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8, Children = { cancel, connect } },
                 },
             },
         };
@@ -8181,13 +8327,9 @@ public partial class MainWindow : Window
         _sessionState.LastCaptureCardPresetName = "VHS-decode VBI-only TBC";
         var selection = await ShowVbiPresetSelectionAsync();
         if (selection is null) return;
+        // A TeletextRecoveReese VBI server sends its own format; the connection
+        // rejects other presets only for a headerless VHS-decode stream.
         var preset = selection.Value.Preset;
-        if (preset.SampleType != "UInt16" || preset.LineLength != 1135
-            || preset.FieldLines != 16 || preset.FieldRangeStart != 0 || preset.FieldRangeEnd != 16)
-        {
-            await ShowMessageAsync("Open VBI TCP stream", "Select the VHS-decode VBI-only TBC preset.");
-            return;
-        }
         await StartLiveVbiCaptureAsync(new LiveCaptureInterface(endpoint, endpoint, "TCP"),
             preset, null, LiveRawVbiStorage.None, _sessionState.KeepEmptyLiveCapturePackets ?? false,
             null, null, null, null, endpoint);
@@ -9044,6 +9186,7 @@ public partial class MainWindow : Window
         EnhancementItemsControl.Items.Clear();
         EnhancementInfoText.Text = "X/26 enhancements (0)";
         EnhancementClipboardButton.IsEnabled = false;
+        EnhancementCleanupButton.IsEnabled = false;
         _pageHistories.Clear();
         _deletedSquashPacketIndices.Clear();
         _structuralDirty = false;
@@ -10943,11 +11086,13 @@ public partial class MainWindow : Window
         {
             EnhancementInfoText.Text = "X/26 enhancements (0)";
             EnhancementClipboardButton.IsEnabled = false;
+            EnhancementCleanupButton.IsEnabled = false;
             AddEnhancementListEntry("No X/26 enhancement packets on this page.");
             return;
         }
 
         EnhancementClipboardButton.IsEnabled = true;
+        EnhancementCleanupButton.IsEnabled = true;
 
         int displayedTriplets = 0;
         int activeRow = -1;
@@ -11098,6 +11243,57 @@ public partial class MainWindow : Window
         CommitPageEdit(_squashPage);
         UpdateEnhancementList(_squashPage);
         SquashGrid.InvalidateVisual();
+    }
+
+    private async void OnRemoveHiddenEnhancementCharactersClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_squashPage is not { } page) return;
+        EnsurePageHistory(page);
+        int removed = PageAssembler.RemoveHiddenEnhancementCharacters(page);
+        if (removed == 0)
+        {
+            await ShowMessageAsync("Remove hidden X/26 characters", "Every X/26 character on this page is shown.");
+            return;
+        }
+        CommitPageEdit(page);
+        UpdateEnhancementList(page);
+        SquashGrid.InvalidateVisual();
+    }
+
+    private void OnNativeRemoveAllHiddenEnhancementCharactersClicked(object? sender, EventArgs e) =>
+        OnRemoveAllHiddenEnhancementCharactersClicked(sender, new RoutedEventArgs());
+
+    private async void OnRemoveAllHiddenEnhancementCharactersClicked(object? sender, RoutedEventArgs e)
+    {
+        List<TeletextPage> pages = _squashStore.AllInstances
+            .Select(instance => instance.Page)
+            .Where(page => page.EnhancementPackets.Count > 0)
+            .ToList();
+        if (pages.Count == 0)
+        {
+            await ShowMessageAsync("Remove hidden X/26 characters", "No squashed page has X/26 enhancement packets.");
+            return;
+        }
+
+        int removed = 0;
+        int changedPages = 0;
+        foreach (TeletextPage page in pages)
+        {
+            EnsurePageHistory(page);
+            int pageRemoved = PageAssembler.RemoveHiddenEnhancementCharacters(page);
+            if (pageRemoved == 0) continue;
+            CommitPageEdit(page);
+            removed += pageRemoved;
+            changedPages++;
+        }
+
+        if (_squashPage is not null) UpdateEnhancementList(_squashPage);
+        SquashGrid.InvalidateVisual();
+        await ShowMessageAsync(
+            "Remove hidden X/26 characters",
+            removed == 0
+                ? "Every X/26 character on the squashed pages is shown."
+                : $"Removed {removed:N0} hidden X/26 triplet(s) from {changedPages:N0} page(s). Each page can be restored with Undo.");
     }
 
     private void OnEnhancementHoverChanged(object? sender, EnhancementHoverChangedEventArgs e)

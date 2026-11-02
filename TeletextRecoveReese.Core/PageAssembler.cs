@@ -462,8 +462,10 @@ public class PageAssembler
                     terminated = true;
                     break;
                 }
+                // An intermediate termination marker ends this packet; the
+                // enhancement data continues in the next designation packet.
                 if (mode == 0x1F)
-                    continue;
+                    break;
 
                 if (mode == 0x04)
                 {
@@ -560,9 +562,12 @@ public class PageAssembler
                 }
 
                 int mode = triplet.ExtendedMode;
+                // Only a marker with the final bit ends the data, as in
+                // ApplyLevel15Enhancements; an intermediate marker ends just this
+                // packet and is dropped because the rebuilt packets are contiguous.
                 if (mode == 0x1F)
                 {
-                    terminated = true;
+                    terminated = (triplet.Data & 1) != 0;
                     break;
                 }
                 if (mode == 0x04)
@@ -693,9 +698,12 @@ public class PageAssembler
                 }
 
                 int mode = triplet.ExtendedMode;
+                // Only a marker with the final bit ends the data, as in
+                // ApplyLevel15Enhancements; an intermediate marker ends just this
+                // packet and is dropped because the rebuilt packets are contiguous.
                 if (mode == 0x1F)
                 {
-                    terminated = true;
+                    terminated = (triplet.Data & 1) != 0;
                     break;
                 }
                 if (mode == 0x04)
@@ -937,9 +945,12 @@ public class PageAssembler
         {
             for (int tripletNumber = 0; tripletNumber < 13; tripletNumber++)
             {
+                EnhancementTriplet triplet = packet.Triplets[tripletNumber];
+                // Shifted slots would move an intermediate marker and its packet's
+                // padding to other packet positions, so they are left out.
+                if (IsIntermediateTermination(triplet)) break;
                 int offset = 3 + tripletNumber * 3;
                 rawTriplets.Add(packet.RawPacket.AsSpan(offset, 3).ToArray());
-                EnhancementTriplet triplet = packet.Triplets[tripletNumber];
                 int slot = rawTriplets.Count - 1;
                 if (!triplet.UncorrectableError)
                 {
@@ -1001,36 +1012,13 @@ public class PageAssembler
                 new EnhancementTriplet { Address = 63, Mode = 0x1F, Data = 7 }));
         }
 
-        int packetCount = (rawTriplets.Count + 12) / 13;
-        if (packetCount > 16)
+        if ((rawTriplets.Count + 12) / 13 > 16)
         {
             error = "There is no room for the inserted X/26 triplets.";
             return false;
         }
 
-        var existingIndices = orderedPackets
-            .GroupBy(packet => packet.DesignationCode)
-            .ToDictionary(group => group.Key, group => group.First().PacketIndex);
-        byte[] terminalBytes = EncodeEnhancementTriplet(
-            new EnhancementTriplet { Address = 63, Mode = 0x1F, Data = 7 });
-        page.EnhancementPackets.Clear();
-        for (int designation = 0; designation < packetCount; designation++)
-        {
-            byte[] raw = CreateEmptyEnhancementPacket(page.Magazine, designation);
-            for (int tripletNumber = 0; tripletNumber < 13; tripletNumber++)
-            {
-                int sourceIndex = designation * 13 + tripletNumber;
-                byte[] bytes = sourceIndex < rawTriplets.Count
-                    ? rawTriplets[sourceIndex]
-                    : terminalBytes;
-                bytes.CopyTo(raw, 3 + tripletNumber * 3);
-            }
-            EnhancementPacket? decoded = DecodeEnhancementPacket(
-                raw, existingIndices.GetValueOrDefault(designation, -1));
-            if (decoded is not null)
-                page.EnhancementPackets.Add(decoded);
-        }
-
+        RebuildEnhancementPacketsFromRaw(page, orderedPackets, rawTriplets);
         ApplyLevel15Enhancements(page);
         return true;
     }
@@ -1081,45 +1069,73 @@ public class PageAssembler
         Data = triplet.Data,
     };
 
+    /// <summary>
+    /// Removes one triplet while copying every other Hamming 24/18 codeword as its
+    /// original three bytes, so uncorrectable triplets stay uncorrectable (and
+    /// ignored) instead of being freshly encoded into visible characters.
+    /// </summary>
     public static bool DeleteEnhancementTriplet(
         TeletextPage page,
         EnhancementPacket sourcePacket,
         int sourceTripletNumber)
     {
-        if (!page.EnhancementPackets.Contains(sourcePacket)) return false;
+        if (!page.EnhancementPackets.Contains(sourcePacket)
+            || sourceTripletNumber is < 0 or >= 13)
+            return false;
 
-        var remaining = new List<EnhancementTriplet>();
-        bool found = false;
-        bool terminated = false;
-        foreach (var packet in page.EnhancementPackets.OrderBy(packet => packet.DesignationCode))
+        var orderedPackets = page.EnhancementPackets
+            .OrderBy(packet => packet.DesignationCode)
+            .ToList();
+        var rawTriplets = new List<byte[]>(orderedPackets.Count * 13);
+        foreach (EnhancementPacket packet in orderedPackets)
         {
-            foreach (var triplet in packet.Triplets)
+            for (int tripletNumber = 0; tripletNumber < 13; tripletNumber++)
             {
-                if (ReferenceEquals(packet, sourcePacket)
-                    && triplet.TripletNumber == sourceTripletNumber)
-                {
-                    found = true;
+                // An intermediate marker and the padding after it would end up at
+                // other packet positions once the slots shift, so they are left out.
+                if (IsIntermediateTermination(packet.Triplets[tripletNumber])) break;
+                if (ReferenceEquals(packet, sourcePacket) && tripletNumber == sourceTripletNumber)
                     continue;
-                }
-
-                if (!triplet.UncorrectableError
-                    && triplet.ExtendedMode == 0x1F
-                    && (triplet.Data & 1) != 0)
-                {
-                    terminated = true;
-                    break;
-                }
-
-                remaining.Add(CloneTriplet(triplet));
+                rawTriplets.Add(packet.RawPacket.AsSpan(3 + tripletNumber * 3, 3).ToArray());
             }
-
-            if (terminated) break;
         }
 
-        if (!found) return false;
-        RebuildEnhancementPackets(page, remaining);
+        RebuildEnhancementPacketsFromRaw(page, orderedPackets, rawTriplets);
         ApplyLevel15Enhancements(page);
         return true;
+    }
+
+    private static bool IsIntermediateTermination(EnhancementTriplet triplet) =>
+        !triplet.UncorrectableError && triplet.ExtendedMode == 0x1F && (triplet.Data & 1) == 0;
+
+    private static void RebuildEnhancementPacketsFromRaw(
+        TeletextPage page,
+        IReadOnlyList<EnhancementPacket> orderedPackets,
+        IReadOnlyList<byte[]> rawTriplets)
+    {
+        int packetCount = (rawTriplets.Count + 12) / 13;
+        var existingIndices = orderedPackets
+            .GroupBy(packet => packet.DesignationCode)
+            .ToDictionary(group => group.Key, group => group.First().PacketIndex);
+        byte[] terminalBytes = EncodeEnhancementTriplet(
+            new EnhancementTriplet { Address = 63, Mode = 0x1F, Data = 7 });
+        page.EnhancementPackets.Clear();
+        for (int designation = 0; designation < packetCount; designation++)
+        {
+            byte[] raw = CreateEmptyEnhancementPacket(page.Magazine, designation);
+            for (int tripletNumber = 0; tripletNumber < 13; tripletNumber++)
+            {
+                int sourceIndex = designation * 13 + tripletNumber;
+                byte[] bytes = sourceIndex < rawTriplets.Count
+                    ? rawTriplets[sourceIndex]
+                    : terminalBytes;
+                bytes.CopyTo(raw, 3 + tripletNumber * 3);
+            }
+            EnhancementPacket? decoded = DecodeEnhancementPacket(
+                raw, existingIndices.GetValueOrDefault(designation, -1));
+            if (decoded is not null)
+                page.EnhancementPackets.Add(decoded);
+        }
     }
 
     /// <summary>
@@ -1162,7 +1178,7 @@ public class PageAssembler
 
                 if (triplet.ExtendedMode == 0x1F)
                 {
-                    terminated = true;
+                    terminated = (triplet.Data & 1) != 0;
                     break;
                 }
 
@@ -1185,6 +1201,100 @@ public class PageAssembler
         ApplyLevel15Enhancements(page);
         return changes;
     }
+
+    /// <summary>
+    /// Removes X/26 character triplets that this application does not show, so
+    /// another decoder cannot display characters that were never visible while
+    /// editing: characters in rows reserved for double-height bottom halves, in
+    /// the right half of double-width characters, without a valid active row,
+    /// overwritten by a later triplet for the same cell, in modes that are not
+    /// rendered here, after the termination marker, or with uncorrectable Hamming
+    /// errors. Concealed cells count as shown because they appear on reveal.
+    /// Non-character triplets are kept. Returns the number of removed triplets.
+    /// </summary>
+    public static int RemoveHiddenEnhancementCharacters(TeletextPage page)
+    {
+        if (page.EnhancementPackets.Count == 0) return 0;
+        bool[] bottomHalfRows = TeletextLayout.FindBottomHalfRows(page);
+        var kept = new List<(EnhancementTriplet Triplet, int Row, int Column)>();
+        int removed = 0;
+        int activeRow = -1;
+        bool terminated = false;
+        foreach (var packet in page.EnhancementPackets.OrderBy(packet => packet.DesignationCode))
+        {
+            bool packetEnded = false;
+            foreach (var triplet in packet.Triplets)
+            {
+                if (terminated || packetEnded)
+                {
+                    // Padding after the marker is only counted when it carries data.
+                    if (IsEnhancementCharacter(triplet) && !triplet.UncorrectableError) removed++;
+                    continue;
+                }
+                if (triplet.UncorrectableError)
+                {
+                    removed++;
+                    continue;
+                }
+
+                int mode = triplet.ExtendedMode;
+                // Markers are dropped because the rebuilt packets are contiguous.
+                if (mode == 0x1F)
+                {
+                    terminated = (triplet.Data & 1) != 0;
+                    packetEnded = true;
+                    continue;
+                }
+                if (mode == 0x04)
+                    activeRow = triplet.Address == 40 ? 24 : triplet.Address - 40;
+                else if (mode == 0x07 && triplet.Address == 63)
+                    activeRow = 0;
+
+                if (!IsEnhancementCharacter(triplet))
+                {
+                    kept.Add((triplet, -1, -1));
+                    continue;
+                }
+
+                int column = triplet.Address;
+                bool shown = activeRow is >= 0 and < TeletextLayout.Rows
+                    && IsRenderedEnhancementCharacter(triplet)
+                    && !bottomHalfRows[activeRow]
+                    && (!page.Grid[column, activeRow].DoubleWidth
+                        || TeletextLayout.IsDoubleWidthLeadCell(page, column, activeRow));
+                if (!shown)
+                {
+                    removed++;
+                    continue;
+                }
+
+                int replaced = kept.FindLastIndex(item => item.Row == activeRow && item.Column == column);
+                if (replaced >= 0)
+                {
+                    kept.RemoveAt(replaced);
+                    removed++;
+                }
+                kept.Add((triplet, activeRow, column));
+            }
+        }
+
+        if (removed == 0) return 0;
+        if (kept.All(item => item.Triplet.ExtendedMode is 0x04 or 0x07))
+            page.EnhancementPackets.Clear();
+        else
+            RebuildEnhancementPackets(page, kept.Select(item => CloneTriplet(item.Triplet)).ToList());
+        ApplyLevel15Enhancements(page);
+        return removed;
+    }
+
+    // Column triplets that place a character: G1, G3 (two modes), G0, DRCS, G2
+    // and G0 with diacritical mark.
+    private static bool IsEnhancementCharacter(EnhancementTriplet triplet) =>
+        triplet.Address < 40 && triplet.ExtendedMode is 0x21 or 0x22 or 0x29 or 0x2B or 0x2D or 0x2F or >= 0x30;
+
+    // The subset ApplyLevel15Enhancements displays.
+    private static bool IsRenderedEnhancementCharacter(EnhancementTriplet triplet) =>
+        triplet.ExtendedMode >= 0x30 || (triplet.ExtendedMode == 0x2F && triplet.Data is 0x62 or 0x72);
 
     private static bool IsPlausibleActivePosition(EnhancementTriplet triplet) =>
         (triplet.ExtendedMode == 0x04 && triplet.Address is >= 40 and <= 63 && triplet.Data is >= 0 and < 40)

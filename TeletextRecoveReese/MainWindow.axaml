@@ -97,6 +97,7 @@
                     <NativeMenuItem Header="Manage squashed pages…" IsEnabled="False" Click="OnNativeManageSquashedPagesClicked" />
                     <NativeMenuItem Header="Create squashed stream" IsEnabled="False" Click="OnNativeCreateSquashedStreamClicked" />
                     <NativeMenuItem Header="Apply squashed repairs to full broadcast…" IsEnabled="False" Click="OnNativeApplySquashedRepairsClicked" />
+                    <NativeMenuItem Header="Remove hidden X/26 characters from all pages…" IsVisible="False" Click="OnNativeRemoveAllHiddenEnhancementCharactersClicked" />
                     <NativeMenuItemSeparator/>
                     <NativeMenuItem Header="Previous page" Gesture="Meta+Left" Click="OnNativePreviousPageShortcutClicked" />
                     <NativeMenuItem Header="Next page" Gesture="Meta+Right" Click="OnNativeNextPageShortcutClicked" />
@@ -257,6 +258,7 @@
                 <MenuItem x:Name="ManageSquashedPagesMenuItem" Header="Manage squashed pages…" IsEnabled="False" Click="OnManageSquashedPagesClicked" />
                 <MenuItem x:Name="CreateSquashedStreamMenuItem" Header="Create _squashed stream" IsEnabled="False" Click="OnCreateSquashedStreamClicked" />
                 <MenuItem x:Name="ApplySquashedRepairsMenuItem" Header="Apply squashed repairs to _full broadcast..." IsEnabled="False" Click="OnApplySquashedRepairsClicked" />
+                <MenuItem Header="Remove hidden X/26 characters from all pages..." IsVisible="False" Click="OnRemoveAllHiddenEnhancementCharactersClicked" />
                 <Separator/>
                 <MenuItem x:Name="PreviousPageMenuItem" Header="_Previous page" InputGesture="Ctrl+Left" Click="OnPreviousPageShortcutClicked" />
                 <MenuItem x:Name="NextPageMenuItem" Header="_Next page" InputGesture="Ctrl+Right" Click="OnNextPageShortcutClicked" />
@@ -488,14 +490,27 @@
                                 VerticalAlignment="Top">
                             <Grid x:Name="SidebarSectionsGrid" RowDefinitions="*,*" RowSpacing="8">
                                 <Grid x:Name="X26SidebarSection" Grid.Row="0" RowDefinitions="Auto,*" RowSpacing="6">
-                                    <Grid ColumnDefinitions="*,Auto">
+                                    <Grid ColumnDefinitions="*,Auto,Auto">
                                         <TextBlock x:Name="EnhancementInfoText"
                                                    Text="X/26 enhancements (0)"
                                                    Foreground="{DynamicResource SecondaryTextBrush}"
                                                    FontWeight="SemiBold"
                                                    VerticalAlignment="Center"/>
-                                        <Button x:Name="EnhancementClipboardButton"
+                                        <Button x:Name="EnhancementCleanupButton"
                                                 Grid.Column="1"
+                                                Content="🧹"
+                                                Width="28"
+                                                Height="26"
+                                                Padding="0"
+                                                Margin="4,0,0,0"
+                                                FontSize="15"
+                                                IsEnabled="False"
+                                                HorizontalContentAlignment="Center"
+                                                VerticalContentAlignment="Center"
+                                                ToolTip.Tip="Remove X/26 characters that are not shown on this page"
+                                                Click="OnRemoveHiddenEnhancementCharactersClicked"/>
+                                        <Button x:Name="EnhancementClipboardButton"
+                                                Grid.Column="2"
                                                 Content="📋"
                                                 Width="28"
                                                 Height="26"

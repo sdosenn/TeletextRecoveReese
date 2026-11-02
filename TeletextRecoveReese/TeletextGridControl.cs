@@ -961,48 +961,11 @@ public class TeletextGridControl : Control
             ? _screenshotAnimateFlash && !_screenshotFlashVisible
             : !SuppressFlash && !FlashPhaseVisible);
 
-    private static bool IsDoubleWidthLeadCell(TeletextPage page, int column, int row)
-    {
-        // The size control occupies the first cell of a double-width run. After
-        // it, alternating cells contain a character and its reserved right half.
-        int runStart = column;
-        while (runStart > 0 && page.Grid[runStart - 1, row].DoubleWidth)
-            runStart--;
+    private static bool IsDoubleWidthLeadCell(TeletextPage page, int column, int row) =>
+        TeletextLayout.IsDoubleWidthLeadCell(page, column, row);
 
-        return column > runStart && (column - runStart) % 2 == 1;
-    }
-
-    private static bool[] FindLevelOneBottomHalfRows(TeletextPage page)
-    {
-        var bottomHalfRows = new bool[Rows];
-
-        // Include the final display row as a bottom half when the penultimate
-        // row contains a height attribute, so both halves render together.
-        for (int row = 1; row < Rows - 1; row++)
-        {
-            bool hasDoubleHeightAttribute = false;
-            if (page.RawRows[row] is { Length: 42 } raw)
-            {
-                for (int column = 0; column < Columns; column++)
-                {
-                    byte code = (byte)(raw[2 + column] & 0x7F);
-                    if (code is 0x0D or 0x0F)
-                    {
-                        hasDoubleHeightAttribute = true;
-                        break;
-                    }
-                }
-            }
-
-            if (hasDoubleHeightAttribute)
-            {
-                bottomHalfRows[row + 1] = true;
-                row++; // a bottom-half row cannot itself begin another pair
-            }
-        }
-
-        return bottomHalfRows;
-    }
+    private static bool[] FindLevelOneBottomHalfRows(TeletextPage page) =>
+        TeletextLayout.FindBottomHalfRows(page);
 
     private void DrawControlCodeOverlays(DrawingContext context)
     {

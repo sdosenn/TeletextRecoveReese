@@ -309,6 +309,8 @@ SquashPageOperationsRegressions.Run();
 BroadcastServiceRegressions.Run();
 Vgb100Regressions.Run();
 VbiTapeFormatRegressions.Run();
+VbiTcpServerRegressions.Run();
+EnhancementEditRegressions.Run();
 
 var cancelled = new CancellationToken(true);
 try
