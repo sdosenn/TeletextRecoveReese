@@ -1,8 +1,7 @@
 # TeletextRecoveReese
 
-Cross-platform tool for VHS teletext recovery, developed with OpenAI
-Codex.<br>
-Capture VBI, deconvolve and restore teletext from VHS tapes all in one cross-platform GUI application.
+Cross-platform tool for teletext recovery, developed with AI tools.<br>
+Capture VBI, deconvolve and restore teletext from tapes all in one cross-platform GUI application.
 
 <p align="left">
   <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.9.3-beta">
@@ -16,23 +15,23 @@ Capture VBI, deconvolve and restore teletext from VHS tapes all in one cross-pla
 ## Realtime VBI capture and deconvolving chain
 Deconvolve data in real time and see teletext in the exact moment on the tape that's playing.<br>
 No need to store data to disk and separately deconvolve it later. Do it all in one pass.<br>
-Of course raw VBI can be stored for preservation if needed.<br>
+Raw VBI can be stored for preservation if needed.<br>
 You can also hot swap tapes to quickly date taped broadcasts.<br>
 
 <img width="780" height="452" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/4263db68-66a8-4cfc-b447-ec28574045d8" />
 
 ## Supported capture cards
 
-| Capture card | Windows  | Linux | macOS |
-| ------------- |:-------------:|:-------------:|:-------------:|
-| August VGB100 |<span style="color: green">Supported</span> * |<span style="color: green">Supported</span> * |<span style="color: green">Supported</span> *
-| SAA7131 PCI/USB | <span style="color: green">Supported</span> |<span style="color: green">Supported</span>| <span style="color: red">Not supported</span>
-| BT8x8   |<span style="color: orange">Supported</span>|<span style="color: green">Supported</span>|<span style="color: red">Not supported</span>
-| CX88   |<span style="color: orange">Supported</span>|<span style="color: green">Supported</span>|<span style="color: red">Not supported</span>
-
+| Capture card | Windows | Linux | macOS |
+| :--- | :---: | :---: | :---: |
+| August VGB100 | ![Windows](https://img.shields.io/badge/Supported-brightgreen) | ![Linux](https://img.shields.io/badge/Supported-brightgreen) | ![macOS](https://img.shields.io/badge/Supported-brightgreen) |
+| Elgato video capture | ![Windows](https://img.shields.io/badge/Supported-brightgreen) | ![Linux](https://img.shields.io/badge/Driver%20issues-orange) | ![macOS](https://img.shields.io/badge/Not%20supported-red) |
+| SAA7131 PCI/USB | ![Windows](https://img.shields.io/badge/Supported-brightgreen) | ![Linux](https://img.shields.io/badge/Supported-brightgreen) | ![macOS](https://img.shields.io/badge/Not%20supported-red) |
+| BT8x8 | ![Windows](https://img.shields.io/badge/Supported-orange) | ![Linux](https://img.shields.io/badge/Supported-brightgreen) | ![macOS](https://img.shields.io/badge/Not%20supported-red) |
+| CX88 | ![Windows](https://img.shields.io/badge/Supported-orange) | ![Linux](https://img.shields.io/badge/Supported-brightgreen) | ![macOS](https://img.shields.io/badge/Not%20supported-red) |
 ## Capture card notes
 
-### August VGB
+### August VGB100
 Officially this card is only supported up to Windows 10.<br>
 Linux drivers have issues with freezing while reading VBI data.<br>
 Use a provided built-in libusb usermode driver as of version 0.9.3-beta.<br>
@@ -41,6 +40,12 @@ This card lacks line TBC features so the signal from VHS tapes can be jittery.
 For Windows 10/11 use [Zadig](https://zadig.akeo.ie/) to install signed libusb driver.<br>
 For Linux make sure udev rules allow access to the USB device.<br>
 For macOS install libusb via homebrew.
+
+### Elgato video capture
+Well supported on Windows with official drivers.<br>
+Users reported driver issues on Linux.<br>
+On macOS the VBI interface is not exposed.<br>
+This card lacks line TBC features so the signal from VHS tapes can be jittery.
 
 ### SAA7131 based capture cards
 Well supported on modern x64 Windows and a recommended route with desktop PCs.<br>
