@@ -430,6 +430,7 @@ public partial class MainWindow : Window
         public bool? LinkDoubleHeightCells { get; set; }
         public bool? ShowLiveDeconvolvedPage { get; set; }
         public bool? RecordRawVbiToDisk { get; set; }
+        public LiveRawVbiStorage? LiveRawVbiStorageMode { get; set; }
         public bool? KeepEmptyLiveCapturePackets { get; set; }
         public bool? AutoStopLiveCaptureOnNoTeletext { get; set; }
         public int? LiveCaptureNoTeletextTimeoutMinutes { get; set; }
@@ -525,6 +526,19 @@ public partial class MainWindow : Window
             if ((uint)lineWithinField < (uint)_manualPacketSpanSamples.Length)
                 Volatile.Write(ref _manualPacketSpanSamples[lineWithinField], samples);
         }
+    }
+
+    // Values are stored in the session state, so existing ones must not change.
+    private enum LiveRawVbiStorage
+    {
+        None = 0,
+        TemporaryFile = 1,
+        SpecificLocation = 2,
+    }
+
+    private sealed record LiveRawVbiStorageItem(LiveRawVbiStorage Storage, string Name)
+    {
+        public override string ToString() => Name;
     }
 
     private enum LiveCaptureCompletionChoice
@@ -5033,14 +5047,31 @@ public partial class MainWindow : Window
         var extraRoll = CreateVbiExtraRollControl();
         var tapeFormat = CreateVbiTapeFormatControl();
         var equalizeLineLevels = CreateVbiEqualizeLineLevelsCheckBox();
-        var recordRawVbiCheckBox = new CheckBox
+        List<LiveRawVbiStorageItem> rawVbiStorageItems =
+        [
+            new(LiveRawVbiStorage.None, "Do not store raw VBI data"),
+            new(LiveRawVbiStorage.TemporaryFile, "Store raw VBI to temp file to save later"),
+            new(LiveRawVbiStorage.SpecificLocation, "Store raw VBI to specific location"),
+        ];
+        LiveRawVbiStorage savedRawVbiStorage = _sessionState.LiveRawVbiStorageMode
+            ?? (_sessionState.RecordRawVbiToDisk == true
+                ? LiveRawVbiStorage.TemporaryFile
+                : LiveRawVbiStorage.None);
+        var rawVbiStorageCombo = new ComboBox
         {
-            Content = "Write raw VBI to temp file to save later",
-            IsChecked = _sessionState.RecordRawVbiToDisk == true,
+            ItemsSource = rawVbiStorageItems,
+            SelectedItem = rawVbiStorageItems.FirstOrDefault(item => item.Storage == savedRawVbiStorage)
+                ?? rawVbiStorageItems[0],
+            Width = 320,
+            Height = 34,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
         };
         ToolTip.SetTip(
-            recordRawVbiCheckBox,
-            "Keeps the complete raw sample stream so it can be saved when capture stops");
+            rawVbiStorageCombo,
+            "Keeps the complete raw sample stream, either in a temporary file that can be saved when capture stops or in a file chosen before capture starts");
+        LiveRawVbiStorage SelectedRawVbiStorage() =>
+            (rawVbiStorageCombo.SelectedItem as LiveRawVbiStorageItem)?.Storage ?? LiveRawVbiStorage.None;
         var keepEmptyPacketsCheckBox = new CheckBox
         {
             Content = "Preserve capture timing",
@@ -5135,7 +5166,27 @@ public partial class MainWindow : Window
                                 Spacing = 24,
                                 Children = { keepEmptyPacketsCheckBox, equalizeLineLevels },
                             },
-                            recordRawVbiCheckBox,
+                            new Grid
+                            {
+                                Margin = new Thickness(0, 4),
+                                ColumnDefinitions = CreateVbiOptionColumns(),
+                                ColumnSpacing = 12,
+                                Children =
+                                {
+                                    new TextBlock
+                                    {
+                                        Text = "Raw VBI",
+                                        FontWeight = FontWeight.SemiBold,
+                                        VerticalAlignment = VerticalAlignment.Center,
+                                    },
+                                    new Border
+                                    {
+                                        [Grid.ColumnProperty] = 1,
+                                        [Grid.ColumnSpanProperty] = 2,
+                                        Child = rawVbiStorageCombo,
+                                    },
+                                },
+                            },
                         },
                     },
                     // The video preview sits beside the settings to keep the dialog low.
@@ -5647,9 +5698,9 @@ public partial class MainWindow : Window
             _sessionState.LinuxVbiAsyncModeRead = asyncModeReadCheckBox.IsChecked == true;
             SaveSessionState();
         };
-        recordRawVbiCheckBox.IsCheckedChanged += (_, _) =>
+        rawVbiStorageCombo.SelectionChanged += (_, _) =>
         {
-            _sessionState.RecordRawVbiToDisk = recordRawVbiCheckBox.IsChecked == true;
+            _sessionState.LiveRawVbiStorageMode = SelectedRawVbiStorage();
             SaveSessionState();
         };
         keepEmptyPacketsCheckBox.IsCheckedChanged += (_, _) =>
@@ -5695,6 +5746,13 @@ public partial class MainWindow : Window
                 return;
             else if (OperatingSystem.IsWindows() && (directShowInput is null || directShowStandard is null))
                 return;
+            LiveRawVbiStorage rawVbiStorage = SelectedRawVbiStorage();
+            string? rawVbiDestination = null;
+            if (rawVbiStorage == LiveRawVbiStorage.SpecificLocation)
+            {
+                rawVbiDestination = await PickLiveRawVbiDestinationAsync(dialog);
+                if (rawVbiDestination is null) return;
+            }
             if (!preset.IsAutoDetected)
                 _sessionState.LastCaptureCardPresetName = preset.Name;
             _sessionState.VbiExtraRoll = (int)(extraRoll.Value ?? 0);
@@ -5713,22 +5771,25 @@ public partial class MainWindow : Window
             if (captureInterface.IsUsermodeVgb100)
                 await StartLiveVbiCaptureAsync(
                     captureInterface, preset, null,
-                    recordRawVbiCheckBox.IsChecked == true,
+                    rawVbiStorage,
                     keepEmptyPacketsCheckBox.IsChecked == true,
                     null, null, null, null, vgb100Input: usermodeInput!.Input,
-                    vgb100Standard: usermodeStandard!.Standard);
+                    vgb100Standard: usermodeStandard!.Standard,
+                    rawVbiDestination: rawVbiDestination);
             else if (OperatingSystem.IsLinux())
                 await StartLiveVbiCaptureAsync(
                     captureInterface, preset, selectedVideoInterface,
-                    recordRawVbiCheckBox.IsChecked == true,
+                    rawVbiStorage,
                     keepEmptyPacketsCheckBox.IsChecked == true,
-                    captureInput, captureStandard, null, null);
+                    captureInput, captureStandard, null, null,
+                    rawVbiDestination: rawVbiDestination);
             else if (OperatingSystem.IsWindows())
                 await StartLiveVbiCaptureAsync(
                     captureInterface, preset, null,
-                    recordRawVbiCheckBox.IsChecked == true,
+                    rawVbiStorage,
                     keepEmptyPacketsCheckBox.IsChecked == true,
-                    null, null, directShowInput, directShowStandard);
+                    null, null, directShowInput, directShowStandard,
+                    rawVbiDestination: rawVbiDestination);
         };
 
         dialog.Closed += (_, _) =>
@@ -5793,7 +5854,7 @@ public partial class MainWindow : Window
         LiveCaptureInterface captureInterface,
         CaptureCardPreset preset,
         string? videoInterfacePath,
-        bool recordRawVbi,
+        LiveRawVbiStorage rawVbiStorage,
         bool keepEmptyPackets,
         LinuxV4l2Input? linuxInput,
         LinuxV4l2Standard? linuxStandard,
@@ -5801,7 +5862,8 @@ public partial class MainWindow : Window
         DirectShowVideoStandard? directShowStandard,
         string? sourceFilePath = null,
         Vgb100Input? vgb100Input = null,
-        Vgb100Standard vgb100Standard = Vgb100Standard.Pal)
+        Vgb100Standard vgb100Standard = Vgb100Standard.Pal,
+        string? rawVbiDestination = null)
     {
         bool networkMode = sourceFilePath?.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase) == true;
         bool fileMode = sourceFilePath is not null && !networkMode;
@@ -5890,10 +5952,14 @@ public partial class MainWindow : Window
             var previewOptions = options with { IsUInt16 = false };
             string temporaryOutput = Path.Combine(
                 Path.GetTempPath(), $"TeletextRecoveReese-live-{Guid.NewGuid():N}.t42");
-            string? temporaryRawCapture = recordRawVbi
+            string? temporaryRawCapture = rawVbiStorage == LiveRawVbiStorage.TemporaryFile
                 ? Path.Combine(
                     Path.GetTempPath(), $"TeletextRecoveReese-live-{Guid.NewGuid():N}.vbi")
                 : null;
+            string? storedRawCapture = rawVbiStorage == LiveRawVbiStorage.SpecificLocation
+                ? rawVbiDestination
+                : null;
+            string? rawCapture = temporaryRawCapture ?? storedRawCapture;
             using var cancellation = new CancellationTokenSource();
             using var videoPreviewCancellation = new CancellationTokenSource();
             var phaseText = new TextBlock
@@ -7396,7 +7462,7 @@ public partial class MainWindow : Window
                         temporaryOutput, FileMode.CreateNew, FileAccess.Write,
                         FileShare.None, 1024 * 1024,
                         FileOptions.Asynchronous | FileOptions.SequentialScan);
-                    if (temporaryRawCapture is null)
+                    if (rawCapture is null)
                     {
                         await VbiDeconvolutionEngine.DeconvolveAsync(
                             input, output, options, reporter, packetReporter,
@@ -7404,8 +7470,11 @@ public partial class MainWindow : Window
                     }
                     else
                     {
+                        // The file picker already confirmed replacing a chosen file.
                         await using var rawOutput = new FileStream(
-                            temporaryRawCapture, FileMode.CreateNew, FileAccess.Write,
+                            rawCapture,
+                            storedRawCapture is null ? FileMode.CreateNew : FileMode.Create,
+                            FileAccess.Write,
                             FileShare.None, 1024 * 1024,
                             FileOptions.Asynchronous | FileOptions.SequentialScan);
                         var recordingInput = new RecordingReadStream(input, rawOutput);
@@ -7480,7 +7549,7 @@ public partial class MainWindow : Window
                             : LiveCaptureCompletionChoice.Discard
                         : LiveCaptureCompletionChoice.OpenDecoded
                     : await ShowLiveCaptureCompletionDialogAsync(
-                        temporaryRawCapture, packetCount,
+                        temporaryRawCapture, storedRawCapture, packetCount,
                         autoStoppedForNoTeletext ? activeNoTeletextTimeoutMinutes : null);
                 if (completionChoice == LiveCaptureCompletionChoice.Discard)
                     return;
@@ -7521,6 +7590,10 @@ public partial class MainWindow : Window
                 {
                     if (temporaryRawCapture is not null && File.Exists(temporaryRawCapture))
                         File.Delete(temporaryRawCapture);
+                    // Do not leave an empty file behind when capture never delivered samples.
+                    if (storedRawCapture is not null && File.Exists(storedRawCapture)
+                        && new FileInfo(storedRawCapture).Length == 0)
+                        File.Delete(storedRawCapture);
                 }
                 catch { }
             }
@@ -8116,7 +8189,7 @@ public partial class MainWindow : Window
             return;
         }
         await StartLiveVbiCaptureAsync(new LiveCaptureInterface(endpoint, endpoint, "TCP"),
-            preset, null, false, _sessionState.KeepEmptyLiveCapturePackets ?? false,
+            preset, null, LiveRawVbiStorage.None, _sessionState.KeepEmptyLiveCapturePackets ?? false,
             null, null, null, null, endpoint);
     }
 
@@ -8160,7 +8233,7 @@ public partial class MainWindow : Window
         {
             await StartLiveVbiCaptureAsync(
                 new LiveCaptureInterface(Path.GetFileName(inputPath), inputPath, "File"),
-                preset, null, false, _sessionState.KeepEmptyLiveCapturePackets ?? false,
+                preset, null, LiveRawVbiStorage.None, _sessionState.KeepEmptyLiveCapturePackets ?? false,
                 null, null, null, null, inputPath);
             return;
         }
@@ -10068,11 +10141,14 @@ public partial class MainWindow : Window
         FilePickerOpenOptions options) =>
         OpenFilePickerRememberingFolderAsync(StorageProvider, options);
 
-    private async Task<IStorageFile?> SaveFilePickerRememberingFolderAsync(FilePickerSaveOptions options)
+    private async Task<IStorageFile?> SaveFilePickerRememberingFolderAsync(
+        FilePickerSaveOptions options,
+        TopLevel? owner = null)
     {
-        using IStorageFolder? startFolder = await GetLastUsedFolderAsync(StorageProvider);
+        IStorageProvider storageProvider = (owner ?? this).StorageProvider;
+        using IStorageFolder? startFolder = await GetLastUsedFolderAsync(storageProvider);
         options.SuggestedStartLocation ??= startFolder;
-        IStorageFile? file = await StorageProvider.SaveFilePickerAsync(options);
+        IStorageFile? file = await storageProvider.SaveFilePickerAsync(options);
         if (file is not null) RememberPickerFolder(file);
         return file;
     }
@@ -12871,14 +12947,46 @@ public partial class MainWindow : Window
         return createPreset;
     }
 
+    private async Task<string?> PickLiveRawVbiDestinationAsync(Window owner)
+    {
+        IStorageFile? destination = await SaveFilePickerRememberingFolderAsync(
+            new FilePickerSaveOptions
+            {
+                Title = "Store raw VBI capture",
+                SuggestedFileName = $"live-{DateTime.Now:yyyyMMdd-HHmmss}.vbi",
+                DefaultExtension = "vbi",
+                FileTypeChoices = new[]
+                {
+                    new FilePickerFileType("Raw VBI sample stream")
+                    {
+                        Patterns = new[] { "*.vbi", "*.bin" },
+                    },
+                },
+            },
+            owner);
+        if (destination is null) return null;
+        if (!destination.Path.IsFile)
+        {
+            await ShowMessageAsync("Store raw VBI capture", "The selected destination is not a local file.");
+            return null;
+        }
+        return destination.Path.LocalPath;
+    }
+
     private async Task<LiveCaptureCompletionChoice> ShowLiveCaptureCompletionDialogAsync(
         string? rawCapturePath,
+        string? storedRawCapturePath,
         long packetCount,
         int? autoStopNoTeletextMinutes = null)
     {
         LiveCaptureCompletionChoice choice = LiveCaptureCompletionChoice.Discard;
         bool hasRawCapture = rawCapturePath is not null && File.Exists(rawCapturePath);
-        string resultText = packetCount > 0
+        bool hasStoredRawCapture = storedRawCapturePath is not null && File.Exists(storedRawCapturePath);
+        string resultText = hasStoredRawCapture
+            ? packetCount > 0
+                ? $"Recovered {packetCount:N0} Teletext packets. The raw VBI capture was stored to {storedRawCapturePath}. Open the decoded stream or discard it."
+                : $"No Teletext packets were recovered. The raw VBI capture was stored to {storedRawCapturePath} for later analysis."
+            : packetCount > 0
             ? hasRawCapture
                 ? $"Recovered {packetCount:N0} Teletext packets. You can save the raw VBI capture, then open the decoded stream or discard everything."
                 : $"Recovered {packetCount:N0} Teletext packets. Raw VBI recording was disabled; open the decoded stream or discard everything."
@@ -12897,6 +13005,7 @@ public partial class MainWindow : Window
             Content = "Save VBI file…",
             Width = 120,
             IsEnabled = hasRawCapture,
+            IsVisible = !hasStoredRawCapture,
         };
         if (!hasRawCapture)
             ToolTip.SetTip(saveRawButton, "Raw VBI recording was disabled for this capture");
