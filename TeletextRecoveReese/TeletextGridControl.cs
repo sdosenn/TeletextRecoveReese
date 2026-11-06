@@ -79,13 +79,17 @@ public class TeletextGridControl : Control
         Stream stream,
         TeletextPage? page = null,
         bool animateFlash = false,
-        bool flashVisible = true)
+        bool flashVisible = true,
+        int? outputWidth = null,
+        int? outputHeight = null)
     {
         ArgumentNullException.ThrowIfNull(stream);
 
-        using var bitmap = new RenderTargetBitmap(
-            new PixelSize((int)(Columns * CellWidth), (int)(Rows * CellHeight)),
-            new Vector(96, 96));
+        int nativeWidth = (int)(Columns * CellWidth);
+        int nativeHeight = (int)(Rows * CellHeight);
+        int width = outputWidth ?? nativeWidth;
+        int height = outputHeight ?? nativeHeight;
+        using var bitmap = new RenderTargetBitmap(new PixelSize(width, height), new Vector(96, 96));
         _renderingScreenshot = true;
         _screenshotPageOverride = page;
         _screenshotAnimateFlash = animateFlash;
@@ -93,7 +97,20 @@ public class TeletextGridControl : Control
         try
         {
             InvalidateVisual();
-            bitmap.Render(this);
+            if (width == nativeWidth && height == nativeHeight)
+            {
+                bitmap.Render(this);
+            }
+            else
+            {
+                // Draw the vector page straight at the requested size so text and
+                // mosaics stay sharp instead of upscaling a native-size raster.
+                using DrawingContext context = bitmap.CreateDrawingContext();
+                using (context.PushTransform(Matrix.CreateScale(
+                           (double)width / nativeWidth,
+                           (double)height / nativeHeight)))
+                    Render(context);
+            }
             bitmap.Save(stream, PngBitmapEncoderOptions.Default);
         }
         finally
@@ -182,12 +199,30 @@ public class TeletextGridControl : Control
 
     private Typeface _gridTypeface = new(FontFamily.Default);
     private bool _useTifaxNineWorkaround;
+    private double _gridFontScale = 1.0;
+    private double _gridFontThickness;
 
-    public void SetFontFamily(FontFamily fontFamily, string? familyName = null)
+    public void SetFontFamily(
+        FontFamily fontFamily,
+        string? familyName = null,
+        FontWeight? weight = null,
+        double sizeScale = 1.0,
+        double thickness = 0.0)
     {
-        _gridTypeface = new Typeface(fontFamily);
+        _gridTypeface = new Typeface(fontFamily, FontStyle.Normal, weight ?? FontWeight.Normal);
         _useTifaxNineWorkaround = IsTifaxFont(familyName ?? fontFamily.Name);
+        _gridFontScale = Math.Clamp(sizeScale, 0.5, 1.5);
+        _gridFontThickness = Math.Clamp(thickness, 0.0, 2.0);
         InvalidateVisual();
+    }
+
+    // Thickens glyphs without switching to a bold face by repeating the text
+    // in half-pixel horizontal steps up to the requested extra thickness.
+    private void DrawThickenedText(DrawingContext context, FormattedText text, Point origin)
+    {
+        context.DrawText(text, origin);
+        for (double step = 0.5; step <= _gridFontThickness + 0.001; step += 0.5)
+            context.DrawText(text, new Point(origin.X + step, origin.Y));
     }
 
     private static bool IsTifaxFont(string? familyName) =>
@@ -1350,7 +1385,7 @@ public class TeletextGridControl : Control
         string displayText,
         TeletextColor foreground)
     {
-        double fontSize = CellHeight * 0.85;
+        double fontSize = CellHeight * 0.85 * _gridFontScale;
 
         if (_useTifaxNineWorkaround && displayText == "9")
         {
@@ -1370,7 +1405,7 @@ public class TeletextGridControl : Control
         double offsetY = (CellHeight - text.Height) / 2.0 + 3;
         var textOrigin = new Point(origin.X + offsetX, origin.Y + offsetY);
 
-        context.DrawText(text, textOrigin);
+        DrawThickenedText(context, text, textOrigin);
     }
 
     private void DrawTifaxNine(
@@ -1390,16 +1425,16 @@ public class TeletextGridControl : Control
         double offsetX = (CellWidth - text.Width) / 2.0;
         double offsetY = (CellHeight - text.Height) / 2.0 + 3;
 
-        // The subsequent 180-degree transform reverses translation direction,
-        // so +0.5 here moves the final rendered glyph 0.5 px left and up.
-        var textOrigin = new Point(
-            origin.X + offsetX + 0.5,
-            origin.Y + offsetY + 0.5);
-        var cellCenter = new Point(
-            origin.X + CellWidth / 2.0,
-            origin.Y + CellHeight / 2.0);
-        using (context.PushTransform(Matrix.CreateRotation(Math.PI, cellCenter)))
-            context.DrawText(text, textOrigin);
+        var textOrigin = new Point(origin.X + offsetX, origin.Y + offsetY);
+
+        // Rotating around the 6's own ink centre keeps the resulting 9 in exactly
+        // the ink box of the neighbouring digits. Thickening runs leftwards once
+        // rotated, so the pivot moves right by half of it to compensate.
+        Rect ink = text.BuildGeometry(textOrigin)?.Bounds
+            ?? new Rect(origin, new Size(CellWidth, CellHeight));
+        var pivot = new Point(ink.Center.X + _gridFontThickness / 2.0, ink.Center.Y);
+        using (context.PushTransform(Matrix.CreateRotation(Math.PI, pivot)))
+            DrawThickenedText(context, text, textOrigin);
     }
 
     private static void DrawTeletextDiacritical(

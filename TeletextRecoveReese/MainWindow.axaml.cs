@@ -396,6 +396,9 @@ public partial class MainWindow : Window
         public int? SquashPage { get; set; }
         public int? SquashSubpage { get; set; }
         public string? GridFontFamily { get; set; }
+        public int? GridFontWeight { get; set; }
+        public int? GridFontSizePercent { get; set; }
+        public double? GridFontThickness { get; set; }
         public bool? ShowX26EnhancementsSidebar { get; set; }
         public bool? ShowControlCodes { get; set; }
         public bool? ShowSquashControlCodes { get; set; }
@@ -633,6 +636,22 @@ public partial class MainWindow : Window
     {
         public override string ToString() => Name;
     }
+
+    private sealed record FontWeightChoice(string Name, FontWeight Weight)
+    {
+        public override string ToString() => Name;
+    }
+
+    private static readonly FontWeightChoice[] GridFontWeightChoices =
+    {
+        new("Light", FontWeight.Light),
+        new("Normal", FontWeight.Normal),
+        new("Medium", FontWeight.Medium),
+        new("SemiBold", FontWeight.SemiBold),
+        new("Bold", FontWeight.Bold),
+    };
+    private static readonly int[] GridFontSizePercentages = { 80, 85, 90, 95, 100, 105, 110, 115, 120 };
+    private static readonly double[] GridFontThicknessChoices = { 0.0, 0.5, 1.0, 1.5 };
 
     private sealed record VideoEncoderChoice(string Name, string Description)
     {
@@ -1962,13 +1981,72 @@ public partial class MainWindow : Window
             Foreground = Brushes.White,
             Margin = new Thickness(0, 0, 0, 6),
         };
-        var preview = new TextBlock
+        FontWeight savedWeight = (FontWeight)(_sessionState.GridFontWeight ?? (int)FontWeight.Normal);
+        var weightBox = new ComboBox
         {
-            Text = "TELETEXT PREVIEW\nABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz\n0123456789  ! ? . , : ;",
-            FontSize = 24,
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = Brushes.White,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ItemsSource = GridFontWeightChoices,
+            SelectedItem = GridFontWeightChoices.FirstOrDefault(choice => choice.Weight == savedWeight)
+                ?? GridFontWeightChoices[1],
         };
+        int savedSizePercent = _sessionState.GridFontSizePercent ?? 100;
+        var sizeBox = new ComboBox
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ItemsSource = GridFontSizePercentages.Select(value => $"{value}%").ToArray(),
+            SelectedIndex = Math.Max(0, Array.IndexOf(GridFontSizePercentages, savedSizePercent)),
+        };
+        double savedThickness = _sessionState.GridFontThickness ?? 0.0;
+        int savedThicknessIndex = Array.FindIndex(
+            GridFontThicknessChoices,
+            value => Math.Abs(value - savedThickness) < 0.001);
+        var thicknessBox = new ComboBox
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ItemsSource = GridFontThicknessChoices
+                .Select(value => value == 0.0 ? "None" : $"+{value:0.0} px")
+                .ToArray(),
+            SelectedIndex = Math.Max(0, savedThicknessIndex),
+        };
+        StackPanel OptionColumn(string label, Control control) => new()
+        {
+            Spacing = 4,
+            Children =
+            {
+                new TextBlock { Text = label, FontWeight = FontWeight.SemiBold },
+                control,
+            },
+        };
+        var optionsGrid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,*,*"),
+            ColumnSpacing = 10,
+            Margin = new Thickness(0, 10, 0, 0),
+        };
+        Control weightColumn = OptionColumn("Weight", weightBox);
+        Control sizeColumn = OptionColumn("Size", sizeBox);
+        Control thicknessColumn = OptionColumn("Extra thickness", thicknessBox);
+        Grid.SetColumn(sizeColumn, 1);
+        Grid.SetColumn(thicknessColumn, 2);
+        optionsGrid.Children.Add(weightColumn);
+        optionsGrid.Children.Add(sizeColumn);
+        optionsGrid.Children.Add(thicknessColumn);
+
+        // Layered copies, shifted in half-pixel steps, mirror how the grid thickens glyphs.
+        var preview = new Grid();
+        const string previewText =
+            "TELETEXT PREVIEW\nABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz\n0123456789  ! ? . , : ;";
+        for (int layer = 0; layer <= GridFontThicknessChoices.Length; layer++)
+        {
+            preview.Children.Add(new TextBlock
+            {
+                Text = previewText,
+                FontSize = 24,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = Brushes.White,
+                Margin = new Thickness(layer * 0.5, 0, 0, 0),
+            });
+        }
         var previewBorder = new Border
         {
             Background = new SolidColorBrush(Color.Parse("#181818")),
@@ -2005,22 +2083,24 @@ public partial class MainWindow : Window
         };
         var content = new Grid
         {
-            RowDefinitions = new RowDefinitions("Auto,*,Auto,Auto"),
+            RowDefinitions = new RowDefinitions("Auto,*,Auto,Auto,Auto"),
             Margin = new Thickness(14),
         };
         content.Children.Add(searchBox);
         Grid.SetRow(fontList, 1);
         content.Children.Add(fontList);
-        Grid.SetRow(previewBorder, 2);
+        Grid.SetRow(optionsGrid, 2);
+        content.Children.Add(optionsGrid);
+        Grid.SetRow(previewBorder, 3);
         content.Children.Add(previewBorder);
-        Grid.SetRow(buttonPanel, 3);
+        Grid.SetRow(buttonPanel, 4);
         content.Children.Add(buttonPanel);
 
         var dialog = new Window
         {
             Title = "Choose grid font",
             Width = 620,
-            Height = 610,
+            Height = 680,
             MinWidth = 480,
             MinHeight = 480,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -2032,11 +2112,24 @@ public partial class MainWindow : Window
         {
             if (fontList.SelectedItem is not FontChoice chosen) return;
             selectedName.Text = chosen.Name;
-            preview.FontFamily = chosen.Family;
+            FontWeight weight = (weightBox.SelectedItem as FontWeightChoice)?.Weight ?? FontWeight.Normal;
+            double scale = GridFontSizePercentages[Math.Max(0, sizeBox.SelectedIndex)] / 100.0;
+            double thickness = GridFontThicknessChoices[Math.Max(0, thicknessBox.SelectedIndex)];
+            for (int layer = 0; layer < preview.Children.Count; layer++)
+            {
+                var layerText = (TextBlock)preview.Children[layer];
+                layerText.FontFamily = chosen.Family;
+                layerText.FontWeight = weight;
+                layerText.FontSize = 24 * scale;
+                layerText.IsVisible = layer * 0.5 <= thickness + 0.001;
+            }
             okButton.IsEnabled = true;
         }
 
         fontList.SelectionChanged += (_, _) => UpdatePreview();
+        weightBox.SelectionChanged += (_, _) => UpdatePreview();
+        sizeBox.SelectionChanged += (_, _) => UpdatePreview();
+        thicknessBox.SelectionChanged += (_, _) => UpdatePreview();
         searchBox.TextChanged += (_, _) =>
         {
             string query = searchBox.Text?.Trim() ?? string.Empty;
@@ -2045,7 +2138,17 @@ public partial class MainWindow : Window
                 : _installedFontFamilies.Where(choice =>
                     choice.Name.Contains(query, StringComparison.CurrentCultureIgnoreCase)).ToList();
         };
-        okButton.Click += (_, _) => dialog.Close(fontList.SelectedItem as FontChoice);
+        okButton.Click += (_, _) =>
+        {
+            if (fontList.SelectedItem is FontChoice)
+            {
+                _sessionState.GridFontWeight =
+                    (int)((weightBox.SelectedItem as FontWeightChoice)?.Weight ?? FontWeight.Normal);
+                _sessionState.GridFontSizePercent = GridFontSizePercentages[Math.Max(0, sizeBox.SelectedIndex)];
+                _sessionState.GridFontThickness = GridFontThicknessChoices[Math.Max(0, thicknessBox.SelectedIndex)];
+            }
+            dialog.Close(fontList.SelectedItem as FontChoice);
+        };
         cancelButton.Click += (_, _) => dialog.Close(null);
 
         string? initial = _activeGridFontFamily;
@@ -2074,11 +2177,17 @@ public partial class MainWindow : Window
         choice ??= _installedFontFamilies.FirstOrDefault();
         if (choice is null) return;
 
-        SquashGrid.SetFontFamily(choice.Family, choice.Name);
-        BroadcastGrid.SetFontFamily(choice.Family, choice.Name);
+        var weight = (FontWeight)(_sessionState.GridFontWeight ?? (int)FontWeight.Normal);
+        double sizeScale = Math.Clamp(_sessionState.GridFontSizePercent ?? 100, 50, 150) / 100.0;
+        double thickness = Math.Clamp(_sessionState.GridFontThickness ?? 0.0, 0.0, 2.0);
+        SquashGrid.SetFontFamily(choice.Family, choice.Name, weight, sizeScale, thickness);
+        BroadcastGrid.SetFontFamily(choice.Family, choice.Name, weight, sizeScale, thickness);
         _activeGridFontFamily = choice.Name;
         App.GridFontFamilyName = choice.Name;
         App.GridFontFamily = choice.Family;
+        App.GridFontWeight = weight;
+        App.GridFontSizeScale = sizeScale;
+        App.GridFontThickness = thickness;
 
         if (persist || !string.Equals(
                 requestedFamilyName,
@@ -13914,7 +14023,13 @@ public partial class MainWindow : Window
                 await Task.Delay(1, cancellation.Token);
                 await using (var stream = File.Create(visiblePath))
                 {
-                    grid.SaveScreenshotPng(stream, page, animateFlash: animateFlash, flashVisible: true);
+                    grid.SaveScreenshotPng(
+                        stream,
+                        page,
+                        animateFlash: animateFlash,
+                        flashVisible: true,
+                        outputWidth: outputWidth,
+                        outputHeight: outputHeight);
                     await stream.FlushAsync();
                 }
                 renderedImages++;
@@ -13928,7 +14043,13 @@ public partial class MainWindow : Window
                     progressText.Text = $"Creating frame {renderedImages + 1} of {totalImages}…";
                     await Task.Delay(1, cancellation.Token);
                     await using var stream = File.Create(hiddenPath);
-                    grid.SaveScreenshotPng(stream, page, animateFlash: true, flashVisible: false);
+                    grid.SaveScreenshotPng(
+                        stream,
+                        page,
+                        animateFlash: true,
+                        flashVisible: false,
+                        outputWidth: outputWidth,
+                        outputHeight: outputHeight);
                     await stream.FlushAsync();
                     renderedImages++;
                     progressBar.Value = renderedImages * 50.0 / totalImages;
@@ -13974,7 +14095,7 @@ public partial class MainWindow : Window
             foreach (string argument in new[]
             {
                 "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0",
-                "-i", concatPath, "-r", "2", "-vf", $"scale={outputWidth}:{outputHeight}:flags=lanczos", "-c:v", encoder,
+                "-i", concatPath, "-r", "2", "-c:v", encoder,
                 "-pix_fmt", "yuv420p", "-progress", "pipe:1", "-nostats", outputPath,
             })
                 startInfo.ArgumentList.Add(argument);

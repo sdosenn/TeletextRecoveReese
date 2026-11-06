@@ -13,6 +13,9 @@ public class App : Application
     public static int UiScalePercent { get; set; } = 100;
     public static string? GridFontFamilyName { get; set; }
     public static FontFamily? GridFontFamily { get; set; }
+    public static FontWeight GridFontWeight { get; set; } = FontWeight.Normal;
+    public static double GridFontSizeScale { get; set; } = 1.0;
+    public static double GridFontThickness { get; set; }
     public static bool TerminatorAboutUnlocked { get; set; }
 
     public static void ApplyUiScale(Window window)

@@ -81,7 +81,12 @@ public partial class MainWindow
         {
             if (sub is null) return new TextBlock();
             var preview = new TeletextGridControl { IsHitTestVisible = false, SuppressFlash = true };
-            preview.SetFontFamily(App.GridFontFamily ?? FontFamily.Default, App.GridFontFamilyName);
+            preview.SetFontFamily(
+                App.GridFontFamily ?? FontFamily.Default,
+                App.GridFontFamilyName,
+                App.GridFontWeight,
+                App.GridFontSizeScale,
+                App.GridFontThickness);
             void Display(int index)
             {
                 var page = sub.Copies[Math.Clamp(index, 0, sub.Copies.Count - 1)].Page;
