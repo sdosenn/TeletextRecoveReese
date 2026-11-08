@@ -20,6 +20,10 @@ You can also hot swap tapes to quickly date taped broadcasts.<br>
 
 <img width="780" height="452" alt="TeletextRecoveReese preview" src="https://github.com/user-attachments/assets/4263db68-66a8-4cfc-b447-ec28574045d8" />
 
+## Required GPU
+Deconvolution requires a graphic card with OpenCL support.<br>
+Any GPU made in the past 10 years should generally work but newer the GPU the better.
+
 ## Supported capture cards
 
 | Capture card | Windows | Linux | macOS |
@@ -37,7 +41,25 @@ Linux drivers have issues with freezing while reading VBI data.<br>
 Use a provided built-in libusb usermode driver as of version 0.9.3-beta.<br>
 This card lacks line TBC features so the signal from VHS tapes can be jittery.
 
-For Windows 10/11 use [Zadig](https://zadig.akeo.ie/) to install signed libusb driver.<br>
+<details>
+<summary>Windows 10/11:</summary>
+
+Before starting make sure that there are no installed drivers for the card.<br>
+If the official drivers were installed at any point uninstall device and delete the drivers.<br><br>
+<img width="412" height="107" alt="image" src="https://github.com/user-attachments/assets/ac02dcb9-8c04-4781-bfe5-e7fdcce073f6" /><br><br>
+Download [Zadig](https://zadig.akeo.ie/) and run it.<br>
+There should be 2 devices (Video Capture interface 0 and 1) with no drivers installed.<br><br>
+<img width="562" height="245" alt="image" src="https://github.com/user-attachments/assets/ecfbe746-e2f0-4de1-8945-d74fab751359" /><br><br>
+Select "WinUSB" and press "Install Driver" for both interfaces.<br><br>
+<img width="562" height="245" alt="image" src="https://github.com/user-attachments/assets/8e5e608d-55b6-4722-8ef1-9caf39a9265c" /><br><br>
+Device manager should now look like this:<br>
+"Video Capture" devices should now be shown under "Universal Serial Bus controllers" with no exclamation marks.<br><br>
+<img width="357" height="92" alt="image" src="https://github.com/user-attachments/assets/ff9f2c7c-b821-4a5f-8ca6-4bda6c14b01e" /><br><br>
+August VGB100 usermode driver will now be available in the list to use.<br><br>
+<img width="505" height="196" alt="image" src="https://github.com/user-attachments/assets/b06a2ebe-32d6-41c1-9f2e-ba994b0a71a7" />
+
+</details>
+
 For Linux make sure udev rules allow access to the USB device.<br>
 For macOS install libusb via homebrew.
 
