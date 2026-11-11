@@ -408,6 +408,7 @@ public partial class MainWindow : Window
         public bool? ShowSquashDiacritics { get; set; }
         public bool? ShowBroadcastDiacritics { get; set; }
         public bool? SuppressFlash { get; set; }
+        public bool? RevealConcealed { get; set; }
         public bool? ShowFastextCrcToolbar { get; set; }
         public bool? ToolbarOnBottom { get; set; }
         public string? VideoEncoder { get; set; }
@@ -685,6 +686,7 @@ public partial class MainWindow : Window
     private NativeMenuItem? _nativeX26EnhancementsMenuItem;
     private NativeMenuItem? _nativeVideoBookmarksMenuItem;
     private NativeMenuItem? _nativeSuppressFlashMenuItem;
+    private NativeMenuItem? _nativeRevealConcealedMenuItem;
     private NativeMenuItem? _nativeFastextCrcToolbarMenuItem;
     private NativeMenuItem? _nativeToolbarOnBottomMenuItem;
     private NativeMenuItem? _nativeExportVideoMenuItem;
@@ -3993,6 +3995,35 @@ public partial class MainWindow : Window
         SaveSessionState();
     }
 
+    private void OnRevealConcealedClicked(object? sender, RoutedEventArgs e)
+    {
+        SetRevealConcealed(RevealConcealedMenuItem.IsChecked);
+    }
+
+    private void OnNativeRevealConcealedClicked(object? sender, EventArgs e)
+    {
+        bool reveal = !SquashGrid.RevealConcealed;
+        SetRevealConcealed(reveal);
+
+        // Same Cocoa checkbox timing workaround as Suppress flash.
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_nativeRevealConcealedMenuItem is not null)
+                _nativeRevealConcealedMenuItem.IsChecked = reveal;
+        }, DispatcherPriority.Background);
+    }
+
+    private void SetRevealConcealed(bool reveal)
+    {
+        SquashGrid.RevealConcealed = reveal;
+        BroadcastGrid.RevealConcealed = reveal;
+        RevealConcealedMenuItem.IsChecked = reveal;
+        if (_nativeRevealConcealedMenuItem is not null)
+            _nativeRevealConcealedMenuItem.IsChecked = reveal;
+        _sessionState.RevealConcealed = reveal;
+        SaveSessionState();
+    }
+
     private void OnToolbarOnBottomClicked(object? sender, RoutedEventArgs e) =>
         SetToolbarOnBottom(ToolbarOnBottomMenuItem.IsChecked, saveSession: true);
 
@@ -4635,6 +4666,8 @@ public partial class MainWindow : Window
                 .FirstOrDefault(item => item.Header?.ToString() == "Page bookmarks sidebar");
             _nativeSuppressFlashMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
                 .FirstOrDefault(item => item.Header?.ToString() == "Suppress flash");
+            _nativeRevealConcealedMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
+                .FirstOrDefault(item => item.Header?.ToString() == "Reveal");
             _nativeFastextCrcToolbarMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
                 .FirstOrDefault(item => item.Header?.ToString() == "Fastext and CRC toolbar");
             _nativeToolbarOnBottomMenuItem = viewMenu.Items.OfType<NativeMenuItem>()
@@ -10170,6 +10203,13 @@ public partial class MainWindow : Window
         if (_nativeSuppressFlashMenuItem is not null)
             _nativeSuppressFlashMenuItem.IsChecked = suppressFlash;
 
+        bool revealConcealed = _sessionState.RevealConcealed ?? false;
+        SquashGrid.RevealConcealed = revealConcealed;
+        BroadcastGrid.RevealConcealed = revealConcealed;
+        RevealConcealedMenuItem.IsChecked = revealConcealed;
+        if (_nativeRevealConcealedMenuItem is not null)
+            _nativeRevealConcealedMenuItem.IsChecked = revealConcealed;
+
         SetFastextCrcToolbarVisibility(
             _sessionState.ShowFastextCrcToolbar ?? true,
             saveSession: false);
@@ -10687,6 +10727,7 @@ public partial class MainWindow : Window
         _sessionState.ShowSquashDiacritics = SquashGrid.ShowDiacriticMarkers;
         _sessionState.ShowBroadcastDiacritics = BroadcastGrid.ShowDiacriticMarkers;
         _sessionState.SuppressFlash = SquashGrid.SuppressFlash;
+        _sessionState.RevealConcealed = SquashGrid.RevealConcealed;
         _sessionState.ShowFastextCrcToolbar = FastextCrcToolbarMenuItem.IsChecked;
         _sessionState.ToolbarOnBottom = ToolbarOnBottomMenuItem.IsChecked;
         CaptureBroadcastRangeSessionState();

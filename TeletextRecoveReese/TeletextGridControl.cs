@@ -296,6 +296,7 @@ public class TeletextGridControl : Control
     private bool _showDiacriticMarkers;
     private bool _linkDoubleHeightCells;
     private bool _suppressFlash;
+    private bool _revealConcealed;
     private bool _flashPhaseVisible = true;
     private bool _isDraggingDiacritic;
     private int _draggedDesignationCode = -1;
@@ -412,6 +413,18 @@ public class TeletextGridControl : Control
         {
             if (_suppressFlash == value) return;
             _suppressFlash = value;
+            InvalidateVisual();
+        }
+    }
+
+    /// <summary>Shows text hidden by Conceal display (0x18), like a TV's Reveal key.</summary>
+    public bool RevealConcealed
+    {
+        get => _revealConcealed;
+        set
+        {
+            if (_revealConcealed == value) return;
+            _revealConcealed = value;
             InvalidateVisual();
         }
     }
@@ -866,7 +879,7 @@ public class TeletextGridControl : Control
                         new Rect(origin, new Size(CellWidth, CellHeight)));
                 }
 
-                if (cell.Conceal || ShouldHideFlashingCell(cell)) continue;
+                if ((cell.Conceal && !RevealConcealed) || ShouldHideFlashingCell(cell)) continue;
 
                 DrawCellContent(context, origin, cell);
             }
@@ -915,7 +928,7 @@ public class TeletextGridControl : Control
                     if (bottomHalfRows[y]) continue;
                     var cell = renderedPage.Grid[x, y];
                     if (!cell.DoubleHeight && !cell.DoubleWidth) continue;
-                    if (cell.Conceal || ShouldHideFlashingCell(cell)
+                    if ((cell.Conceal && !RevealConcealed) || ShouldHideFlashingCell(cell)
                         || (cell.DoubleWidth && !IsDoubleWidthLeadCell(renderedPage, x, y)))
                         continue;
 

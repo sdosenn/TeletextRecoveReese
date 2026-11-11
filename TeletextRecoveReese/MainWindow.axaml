@@ -80,6 +80,9 @@
                     <NativeMenuItem Header="Suppress flash"
                                     ToggleType="CheckBox"
                                     Click="OnNativeSuppressFlashClicked" />
+                    <NativeMenuItem Header="Reveal"
+                                    ToggleType="CheckBox"
+                                    Click="OnNativeRevealConcealedClicked" />
                     <NativeMenuItem Header="Fastext and CRC toolbar"
                                     ToggleType="CheckBox"
                                     IsChecked="True"
@@ -241,6 +244,10 @@
                           Header="Suppress _flash"
                           ToggleType="CheckBox"
                           Click="OnSuppressFlashClicked" />
+                <MenuItem x:Name="RevealConcealedMenuItem"
+                          Header="_Reveal"
+                          ToggleType="CheckBox"
+                          Click="OnRevealConcealedClicked" />
                 <MenuItem x:Name="FastextCrcToolbarMenuItem"
                           Header="_Fastext and CRC toolbar"
                           ToggleType="CheckBox"
