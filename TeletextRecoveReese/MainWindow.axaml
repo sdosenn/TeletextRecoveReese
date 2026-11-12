@@ -28,6 +28,7 @@
                     <NativeMenuItem Header="Open recent"><NativeMenu /></NativeMenuItem>
                     <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Import DVB teletext…" Click="OnNativeImportDvbTeletextClicked" />
+                    <NativeMenuItem Header="Import TTI teletext…" Click="OnNativeImportTtiTeletextClicked" />
                     <NativeMenuItemSeparator />
                     <NativeMenuItem Header="Save" Gesture="Meta+S" Click="OnNativeSaveClicked" />
                     <NativeMenuItem Header="Save as…" Gesture="Meta+Shift+S" Click="OnNativeSaveAsClicked" />
@@ -188,6 +189,7 @@
                 <MenuItem x:Name="OpenRecentMenuItem" Header="Open _recent" />
                 <Separator />
                 <MenuItem Header="Import _DVB teletext..." Click="OnImportDvbTeletextClicked" />
+                <MenuItem Header="Import _TTI teletext..." Click="OnImportTtiTeletextClicked" />
                 <Separator />
                 <MenuItem x:Name="SaveMenuItem" Header="_Save" InputGesture="Ctrl+S" Click="OnSaveClicked" />
                 <MenuItem x:Name="SaveAsMenuItem" Header="Save _as..." Click="OnSaveAsClicked" />

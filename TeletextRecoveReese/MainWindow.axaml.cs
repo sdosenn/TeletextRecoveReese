@@ -4786,6 +4786,66 @@ public partial class MainWindow : Window
         await RememberFileAsync(file.Path.IsFile ? file.Path.LocalPath : null, broadcast: true);
     }
 
+    private void OnNativeImportTtiTeletextClicked(object? sender, EventArgs e) =>
+        OnImportTtiTeletextClicked(sender, new RoutedEventArgs());
+
+    private async void OnImportTtiTeletextClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_squashFileOpen && _squashDirty)
+        {
+            UnsavedCaptureCloseChoice choice = await ConfirmUnsavedSquashOnCloseAsync(
+                "importing TTI pages");
+            if (choice == UnsavedCaptureCloseChoice.Cancel) return;
+            if (choice == UnsavedCaptureCloseChoice.Save
+                && !await SaveSquashAsync(forcePicker: false))
+                return;
+        }
+
+        IReadOnlyList<IStorageFile> files = await OpenFilePickerRememberingFolderAsync(
+            new FilePickerOpenOptions
+            {
+                Title = "Import TTI teletext",
+                AllowMultiple = true,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("TTI teletext pages") { Patterns = new[] { "*.tti", "*.ttix" } },
+                    FilePickerFileTypes.All,
+                },
+            });
+        if (files.Count == 0) return;
+
+        var importer = new TtiImporter();
+        var skipped = new List<string>();
+        foreach (IStorageFile file in files)
+        {
+            try
+            {
+                await using Stream stream = await file.OpenReadAsync();
+                if (importer.Read(stream) == 0) skipped.Add(file.Name);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                skipped.Add($"{file.Name} ({ex.Message})");
+            }
+        }
+        if (importer.SubpageCount == 0)
+        {
+            await ShowMessageAsync("Import TTI teletext", "No TTI pages were found in the selected files.");
+            return;
+        }
+
+        var packets = new MemoryStream(importer.Packets.Count * 42);
+        foreach (byte[] packet in importer.Packets) packets.Write(packet);
+        packets.Position = 0;
+        CaptureRecentFilePositions();
+        await LoadSquashStreamAsync(packets, filePath: null);
+        if (skipped.Count > 0)
+            await ShowMessageAsync(
+                "Import TTI teletext",
+                $"Imported {importer.SubpageCount:N0} pages. These files contained no TTI pages:\n\n"
+                + string.Join("\n", skipped));
+    }
+
     private async void OnImportDvbTeletextClicked(object? sender, RoutedEventArgs e)
     {
         if (HasUnsavedCapturedStream())
