@@ -5257,29 +5257,7 @@ public partial class MainWindow : Window
         var extraRoll = CreateVbiExtraRollControl();
         var tapeFormat = CreateVbiTapeFormatControl();
         var equalizeLineLevels = CreateVbiEqualizeLineLevelsCheckBox();
-        List<LiveRawVbiStorageItem> rawVbiStorageItems =
-        [
-            new(LiveRawVbiStorage.None, "Do not store raw VBI data"),
-            new(LiveRawVbiStorage.TemporaryFile, "Store raw VBI to temp file to save later"),
-            new(LiveRawVbiStorage.SpecificLocation, "Store raw VBI to specific location"),
-        ];
-        LiveRawVbiStorage savedRawVbiStorage = _sessionState.LiveRawVbiStorageMode
-            ?? (_sessionState.RecordRawVbiToDisk == true
-                ? LiveRawVbiStorage.TemporaryFile
-                : LiveRawVbiStorage.None);
-        var rawVbiStorageCombo = new ComboBox
-        {
-            ItemsSource = rawVbiStorageItems,
-            SelectedItem = rawVbiStorageItems.FirstOrDefault(item => item.Storage == savedRawVbiStorage)
-                ?? rawVbiStorageItems[0],
-            Width = 300,
-            Height = 34,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        ToolTip.SetTip(
-            rawVbiStorageCombo,
-            "Keeps the complete raw sample stream, either in a temporary file that can be saved when capture stops or in a file chosen before capture starts");
+        ComboBox rawVbiStorageCombo = CreateRawVbiStorageCombo();
         var liveDeconvolutionCheckBox = new CheckBox
         {
             Content = "Live deconvolution",
@@ -5310,8 +5288,7 @@ public partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             IsEnabled = hostServerCheckBox.IsChecked == true,
         };
-        LiveRawVbiStorage SelectedRawVbiStorage() =>
-            (rawVbiStorageCombo.SelectedItem as LiveRawVbiStorageItem)?.Storage ?? LiveRawVbiStorage.None;
+        LiveRawVbiStorage SelectedRawVbiStorage() => SelectedRawVbiStorageOf(rawVbiStorageCombo);
         var keepEmptyPacketsCheckBox = new CheckBox
         {
             Content = "Preserve capture timing",
@@ -8504,6 +8481,7 @@ public partial class MainWindow : Window
     private async void OnOpenTcpVbiCaptureClicked(object? sender, RoutedEventArgs e)
     {
         var address = new TextBox { Text = "tcp://127.0.0.1:5556", MinWidth = 390 };
+        ComboBox rawVbiStorageCombo = CreateRawVbiStorageCombo();
         var connect = new Button { Content = "Continue", IsDefault = true };
         var cancel = new Button { Content = "Cancel", IsCancel = true };
         var dialog = new Window
@@ -8517,12 +8495,34 @@ public partial class MainWindow : Window
                 {
                     new TextBlock { Text = "VBI-only TBC server (trusted LAN)" }, address,
                     new TextBlock { Text = "TeletextRecoveReese or Oxide RF VBI server", Foreground = Brushes.LightGray },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal, Spacing = 12,
+                        Children =
+                        {
+                            new TextBlock { Text = "Raw VBI", FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center },
+                            rawVbiStorageCombo,
+                        },
+                    },
                     new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8, Children = { cancel, connect } },
                 },
             },
         };
         string? endpoint = null;
-        connect.Click += (_, _) => { endpoint = address.Text?.Trim(); dialog.Close(); };
+        LiveRawVbiStorage rawVbiStorage = LiveRawVbiStorage.None;
+        string? rawVbiDestination = null;
+        connect.Click += async (_, _) =>
+        {
+            rawVbiStorage = SelectedRawVbiStorageOf(rawVbiStorageCombo);
+            if (rawVbiStorage == LiveRawVbiStorage.SpecificLocation)
+            {
+                rawVbiDestination = await PickLiveRawVbiDestinationAsync(dialog);
+                if (rawVbiDestination is null) return;
+            }
+            _sessionState.LiveRawVbiStorageMode = rawVbiStorage;
+            endpoint = address.Text?.Trim();
+            dialog.Close();
+        };
         cancel.Click += (_, _) => dialog.Close();
         await dialog.ShowDialog(this);
         if (string.IsNullOrWhiteSpace(endpoint)) return;
@@ -8533,8 +8533,8 @@ public partial class MainWindow : Window
         // rejects other presets only for a headerless VHS-decode stream.
         var preset = selection.Value.Preset;
         await StartLiveVbiCaptureAsync(new LiveCaptureInterface(endpoint, endpoint, "TCP"),
-            preset, null, LiveRawVbiStorage.None, _sessionState.KeepEmptyLiveCapturePackets ?? false,
-            null, null, null, null, endpoint);
+            preset, null, rawVbiStorage, _sessionState.KeepEmptyLiveCapturePackets ?? false,
+            null, null, null, null, endpoint, rawVbiDestination: rawVbiDestination);
     }
 
     private async void OnOpenVbiCaptureClicked(object? sender, RoutedEventArgs e)
@@ -13352,6 +13352,37 @@ public partial class MainWindow : Window
         await dialog.ShowDialog(this);
         return createPreset;
     }
+
+    private ComboBox CreateRawVbiStorageCombo()
+    {
+        List<LiveRawVbiStorageItem> rawVbiStorageItems =
+        [
+            new(LiveRawVbiStorage.None, "Do not store raw VBI data"),
+            new(LiveRawVbiStorage.TemporaryFile, "Store raw VBI to temp file to save later"),
+            new(LiveRawVbiStorage.SpecificLocation, "Store raw VBI to specific location"),
+        ];
+        LiveRawVbiStorage savedRawVbiStorage = _sessionState.LiveRawVbiStorageMode
+            ?? (_sessionState.RecordRawVbiToDisk == true
+                ? LiveRawVbiStorage.TemporaryFile
+                : LiveRawVbiStorage.None);
+        var rawVbiStorageCombo = new ComboBox
+        {
+            ItemsSource = rawVbiStorageItems,
+            SelectedItem = rawVbiStorageItems.FirstOrDefault(item => item.Storage == savedRawVbiStorage)
+                ?? rawVbiStorageItems[0],
+            Width = 300,
+            Height = 34,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTip.SetTip(
+            rawVbiStorageCombo,
+            "Keeps the complete raw sample stream, either in a temporary file that can be saved when capture stops or in a file chosen before capture starts");
+        return rawVbiStorageCombo;
+    }
+
+    private static LiveRawVbiStorage SelectedRawVbiStorageOf(ComboBox combo) =>
+        (combo.SelectedItem as LiveRawVbiStorageItem)?.Storage ?? LiveRawVbiStorage.None;
 
     private async Task<string?> PickLiveRawVbiDestinationAsync(Window owner)
     {
