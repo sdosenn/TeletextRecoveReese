@@ -7,6 +7,8 @@ public enum VbiTapeFormat
     Vhs = 0,
     Betamax = 1,
     Grundig2x4 = 2,
+    // Trained from a VHS RF capture decoded by vhs-decode/OxideRF (VBI-only TBC).
+    VhsRf = 3,
 }
 
 public sealed record VbiCaptureOptions(

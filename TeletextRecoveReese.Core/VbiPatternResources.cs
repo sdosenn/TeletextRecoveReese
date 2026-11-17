@@ -21,6 +21,7 @@ public static class VbiPatternResources
     {
         VbiTapeFormat.Betamax => "betamax",
         VbiTapeFormat.Grundig2x4 => "grundig_2x4",
+        VbiTapeFormat.VhsRf => "vhs_rf",
         _ => "vhs",
     };
 

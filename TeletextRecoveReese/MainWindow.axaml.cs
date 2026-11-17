@@ -8916,6 +8916,7 @@ public partial class MainWindow : Window
         List<VbiTapeFormatItem> formats =
         [
             new(VbiTapeFormat.Vhs, "VHS"),
+            new(VbiTapeFormat.VhsRf, "VHS (RF)"),
             new(VbiTapeFormat.Betamax, "Betamax"),
             new(VbiTapeFormat.Grundig2x4, "Grundig 2x4"),
         ];
