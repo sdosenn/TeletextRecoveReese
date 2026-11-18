@@ -4,8 +4,8 @@ Cross-platform tool for teletext recovery, developed with AI tools.<br>
 Capture VBI, deconvolve and restore teletext from tapes all in one cross-platform GUI application.
 
 <p align="left">
-  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.9.3-beta">
-    <img src="https://img.shields.io/badge/Download_latest_release-0.9.3_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.9.3 beta">
+  <a href="https://github.com/sdosenn/TeletextRecoveReese/releases/tag/0.9.4-beta">
+    <img src="https://img.shields.io/badge/Download_latest_release-0.9.4_beta-2ea44f?style=for-the-badge&logo=github" alt="Download TeletextRecoveReese 0.9.4 beta">
   </a>
 </p>
 
@@ -245,7 +245,7 @@ dotnet run --project TeletextRecoveReese -- -startnew
 
 ## Status
 
-- Current development version: **0.9.2**
+- Current development version: **0.9.4**
 - Actively developed and used for real restoration work.
 - Complete EN 300 706 coverage and broader interoperability testing are ongoing.
 - Licensed under GPL-3.0.
