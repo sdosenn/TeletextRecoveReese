@@ -204,13 +204,12 @@ public class TeletextGridControl : Control
 
     public void SetFontFamily(
         FontFamily fontFamily,
-        string? familyName = null,
         FontWeight? weight = null,
         double sizeScale = 1.0,
         double thickness = 0.0)
     {
         _gridTypeface = new Typeface(fontFamily, FontStyle.Normal, weight ?? FontWeight.Normal);
-        _useTifaxNineWorkaround = IsTifaxFont(familyName ?? fontFamily.Name);
+        _useTifaxNineWorkaround = RendersWithTifax(_gridTypeface);
         _gridFontScale = Math.Clamp(sizeScale, 0.5, 1.5);
         _gridFontThickness = Math.Clamp(thickness, 0.0, 2.0);
         InvalidateVisual();
@@ -225,8 +224,21 @@ public class TeletextGridControl : Control
             context.DrawText(text, new Point(origin.X + step, origin.Y));
     }
 
-    private static bool IsTifaxFont(string? familyName) =>
-        string.Equals(familyName?.Trim(), "TIFAX", StringComparison.OrdinalIgnoreCase);
+    // Decide from the typeface that is actually drawn, not the requested name:
+    // an uninstalled "TIFAX" silently falls back to the platform font (which must
+    // keep its own 9), while aliases such as "TeleText" can resolve to TIFAX.
+    private static bool RendersWithTifax(Typeface typeface)
+    {
+        try
+        {
+            return FontManager.Current.TryGetGlyphTypeface(typeface, out var glyphTypeface)
+                && string.Equals(glyphTypeface.FamilyName?.Trim(), "TIFAX", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     // Selection is painted after all page content so it always remains visible.
     private static readonly Brush SelFillBrush = new SolidColorBrush(Color.Parse("#553344AA"));

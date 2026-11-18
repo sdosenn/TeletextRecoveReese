@@ -2182,8 +2182,8 @@ public partial class MainWindow : Window
         var weight = (FontWeight)(_sessionState.GridFontWeight ?? (int)FontWeight.Normal);
         double sizeScale = Math.Clamp(_sessionState.GridFontSizePercent ?? 100, 50, 150) / 100.0;
         double thickness = Math.Clamp(_sessionState.GridFontThickness ?? 0.0, 0.0, 2.0);
-        SquashGrid.SetFontFamily(choice.Family, choice.Name, weight, sizeScale, thickness);
-        BroadcastGrid.SetFontFamily(choice.Family, choice.Name, weight, sizeScale, thickness);
+        SquashGrid.SetFontFamily(choice.Family, weight, sizeScale, thickness);
+        BroadcastGrid.SetFontFamily(choice.Family, weight, sizeScale, thickness);
         _activeGridFontFamily = choice.Name;
         App.GridFontFamilyName = choice.Name;
         App.GridFontFamily = choice.Family;
@@ -4497,14 +4497,22 @@ public partial class MainWindow : Window
         RecentFileEntry? file = string.IsNullOrWhiteSpace(path) ? null : _sessionState.RecentFiles.FirstOrDefault(entry =>
             string.Equals(entry.Path, path, StringComparison.OrdinalIgnoreCase));
         List<VideoBookmarkEntry> bookmarks = file?.VideoBookmarks ?? new List<VideoBookmarkEntry>();
-        _updatingPageBookmarkList = true;
-        list.Items.Clear();
-        foreach (VideoBookmarkEntry bookmark in bookmarks
-                     .OrderBy(item => item.Magazine).ThenBy(item => item.Page).ThenBy(item => item.Subpage))
-        {
-            list.Items.Add(new PageBookmarkListEntry(
+        List<PageBookmarkListEntry> entries = bookmarks
+            .OrderBy(item => item.Magazine).ThenBy(item => item.Page).ThenBy(item => item.Subpage)
+            .Select(bookmark => new PageBookmarkListEntry(
                 bookmark,
-                $"{bookmark.Magazine}{bookmark.Page:X2}-{bookmark.Subpage:X4} — {bookmark.Name}"));
+                $"{bookmark.Magazine}{bookmark.Page:X2}-{bookmark.Subpage:X4} — {bookmark.Name}"))
+            .ToList();
+        _updatingPageBookmarkList = true;
+        // The squash pane refreshes this list from a tunnelled PointerPressed, i.e.
+        // before a click reaches the ListBox. Rebuilding the items then would
+        // destroy the clicked container mid-click, so only rebuild on real changes.
+        if (!list.Items.OfType<PageBookmarkListEntry>().SequenceEqual(entries)
+            || list.Items.Count != entries.Count)
+        {
+            list.Items.Clear();
+            foreach (PageBookmarkListEntry entry in entries)
+                list.Items.Add(entry);
         }
         list.SelectedIndex = -1;
         _updatingPageBookmarkList = false;

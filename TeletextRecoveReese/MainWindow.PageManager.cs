@@ -83,7 +83,6 @@ public partial class MainWindow
             var preview = new TeletextGridControl { IsHitTestVisible = false, SuppressFlash = true };
             preview.SetFontFamily(
                 App.GridFontFamily ?? FontFamily.Default,
-                App.GridFontFamilyName,
                 App.GridFontWeight,
                 App.GridFontSizeScale,
                 App.GridFontThickness);
