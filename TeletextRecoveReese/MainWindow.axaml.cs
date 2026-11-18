@@ -8923,8 +8923,9 @@ public partial class MainWindow : Window
     {
         List<VbiTapeFormatItem> formats =
         [
-            new(VbiTapeFormat.Vhs, "VHS"),
-            new(VbiTapeFormat.VhsRf, "VHS (RF)"),
+            new(VbiTapeFormat.Vhs, "VHS (vhs-teletext)"),
+            new(VbiTapeFormat.VhsComposite, "VHS (composite)"),
+            new(VbiTapeFormat.VhsRf, "VHS (RF tap)"),
             new(VbiTapeFormat.Betamax, "Betamax"),
             new(VbiTapeFormat.Grundig2x4, "Grundig 2x4"),
         ];
@@ -8933,7 +8934,7 @@ public partial class MainWindow : Window
         {
             ItemsSource = formats,
             SelectedItem = formats.FirstOrDefault(item => item.Format == selected) ?? formats[0],
-            Width = 128,
+            Width = 170,
             Height = 34,
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
