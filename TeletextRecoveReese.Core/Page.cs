@@ -115,7 +115,14 @@ public class TeletextPage
 
     /// <summary>40 columns x 25 rows. Row index maps directly to teletext row number:
     /// index 0 = header (row 0), indices 1-24 = body text (rows 1-24).</summary>
-    public Cell[,] Grid { get; } = new Cell[40, 25];
+    /// <remarks>Allocated on first use: one grid is ~64 KB, and recovery keeps every
+    /// reception of a long capture while only ever reading its raw packets.</remarks>
+    public Cell[,] Grid => _grid ??= CreateDefaultGrid();
+    private Cell[,]? _grid;
+
+    /// <summary>When false, rows are stored as raw packets only and never decoded
+    /// into <see cref="Grid"/>. Used for bulk recovery, which votes on bytes.</summary>
+    public bool DecodeGrid { get; init; } = true;
 
     /// <summary>The exact 42-byte packet received for each row (null if that row was
     /// never captured for this instance). This is the byte-level source of truth -
@@ -144,9 +151,15 @@ public class TeletextPage
     public TeletextPage()
     {
         Array.Fill(RawRowPacketIndices, -1);
+    }
+
+    private static Cell[,] CreateDefaultGrid()
+    {
+        var grid = new Cell[40, 25];
         for (int y = 0; y < 25; y++)
             for (int x = 0; x < 40; x++)
-                Grid[x, y] = Cell.Default;
+                grid[x, y] = Cell.Default;
+        return grid;
     }
 
     public string RowText(int row)

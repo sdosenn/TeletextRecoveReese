@@ -14,6 +14,7 @@ public class PageAssembler
     private readonly PageStore _store;
     private readonly bool _decodeEnhancements;
     private readonly bool _combineRepeatedHeaderPreambles;
+    private readonly bool _decodeGrid;
 
     // magazine -> the instance currently being built (rows are still arriving for it)
     private readonly Dictionary<int, PageInstance> _inProgress = new();
@@ -28,11 +29,12 @@ public class PageAssembler
     public long RepeatedBodyRows { get; private set; }
 
     public PageAssembler(PageStore store, bool decodeEnhancements = true,
-        bool combineRepeatedHeaderPreambles = false)
+        bool combineRepeatedHeaderPreambles = false, bool decodeGrid = true)
     {
         _store = store;
         _decodeEnhancements = decodeEnhancements;
         _combineRepeatedHeaderPreambles = combineRepeatedHeaderPreambles;
+        _decodeGrid = decodeGrid;
     }
 
     private static (int value, bool uncorrectable) DecodeNibblePair(byte lo, byte hi)
@@ -143,7 +145,10 @@ public class PageAssembler
             Magazine = magazine,
             PageNumber = pageNumber,
             Subpage = subpage,
-            Page = new TeletextPage { Magazine = magazine, PageNumber = pageNumber, SubPage = subpage },
+            Page = new TeletextPage
+            {
+                Magazine = magazine, PageNumber = pageNumber, SubPage = subpage, DecodeGrid = _decodeGrid,
+            },
         };
         _inProgress[magazine] = newInstance;
 
@@ -435,6 +440,7 @@ public class PageAssembler
     /// </summary>
     public static void ApplyLevel15Enhancements(TeletextPage page)
     {
+        if (!page.DecodeGrid) return;
         for (int row = 0; row < 25; row++)
         for (int column = 0; column < 40; column++)
         {
@@ -1442,6 +1448,7 @@ public class PageAssembler
     /// </summary>
     private static void DecodeRowInto(TeletextPage page, int row, byte[] payload, int payloadStartX, int gridStartX, int length)
     {
+        if (!page.DecodeGrid) return;
         var currentFg = TeletextColor.White;
         var currentBg = TeletextColor.Black;
         bool mosaicMode = false;

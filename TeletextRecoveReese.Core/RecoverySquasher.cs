@@ -32,8 +32,10 @@ public static class RecoverySquasher
     {
         options ??= new RecoverySquashOptions();
         var store = new PageStore();
+        // Recovery votes on raw packets only; decoding a display grid for every
+        // reception of a long capture would need ~64 KB each (16 GB for 270k).
         var assembler = new PageAssembler(store, decodeEnhancements: true,
-            combineRepeatedHeaderPreambles: true);
+            combineRepeatedHeaderPreambles: true, decodeGrid: false);
         for (int index = 0; index < broadcastPackets.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
