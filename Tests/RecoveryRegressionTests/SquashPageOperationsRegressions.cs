@@ -48,6 +48,30 @@ internal static class SquashPageOperationsRegressions
             throw new Exception("Renumbered page shares mutable source packets.");
         Console.WriteLine("PASS: renumber preserves body, subpage, header flags, CRC row and absolute Fastext targets without changing source packets");
         CopiedRowsKeepTargetAddress();
+        CopiedPageCrcKeepsFastextLinks();
+    }
+
+    private static void CopiedPageCrcKeepsFastextLinks()
+    {
+        var linked = new TeletextPage { Magazine = 1, PageNumber = 0x00 };
+        PageAssembler.ApplyRow(linked, 0, Packet(0));
+        PageAssembler.SetFastextLink(linked, 0, 0x234, 0x0001);
+        byte[] before = (byte[])linked.FastextPacket!.Clone();
+        PageAssembler.SetPageCrc(linked, 0xBEEF);
+        if (TeletextPageCrc.ReadTransmitted(linked) != 0xBEEF
+            || linked.FastextLinks[0].PageNumber != 0x234 || linked.FastextLinks[0].SubPage != 1
+            || !linked.FastextPacket!.AsSpan(0, 40).SequenceEqual(before.AsSpan(0, 40)))
+            throw new Exception("Setting the page CRC changed the Fastext links.");
+
+        var unlinked = new TeletextPage { Magazine = 8, PageNumber = 0x42 };
+        PageAssembler.ApplyRow(unlinked, 0, Retarget(Packet(0), 8, 0x42));
+        PageAssembler.SetPageCrc(unlinked, 0x1234);
+        byte[] created = unlinked.FastextPacket!;
+        int address = Hamming.Decode84(created[0]).Value | Hamming.Decode84(created[1]).Value << 4;
+        if (TeletextPageCrc.ReadTransmitted(unlinked) != 0x1234 || address != (27 << 3)
+            || unlinked.FastextLinks.Any(link => link.PageNumber != 0x8FF))
+            throw new Exception("Setting a CRC on a page without X/27/0 did not create a valid packet.");
+        Console.WriteLine("PASS: copying a page CRC keeps Fastext links and creates X/27/0 when missing");
     }
 
     private static byte[] Retarget(byte[] packet, int magazine, int pageNumber = -1)

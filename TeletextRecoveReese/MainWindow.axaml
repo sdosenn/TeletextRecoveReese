@@ -790,7 +790,7 @@
                     </Grid>
                     <Grid x:Name="BroadcastFastextToolbar" Grid.Row="3" Width="640" Height="24" ColumnDefinitions="458,5,84,5,88" HorizontalAlignment="Center">
                         <UniformGrid x:Name="BroadcastFastextGrid" Columns="6" Rows="1" Width="458"/>
-                        <Border Grid.Column="2" Background="{DynamicResource CrcBackgroundBrush}" CornerRadius="2" ToolTip.Tip="Page CRC stored in packet X/27/0">
+                        <Border x:Name="BroadcastPageCrcBorder" Grid.Column="2" Background="{DynamicResource CrcBackgroundBrush}" CornerRadius="2" Cursor="Hand" ToolTip.Tip="Page CRC stored in packet X/27/0. Click to copy it into the open squashed page." PointerPressed="OnBroadcastPageCrcPressed">
                             <Grid ColumnDefinitions="30,*">
                                 <TextBlock Text="CRC" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="10" FontWeight="SemiBold"/>
                                 <TextBlock x:Name="BroadcastPageCrcText" Grid.Column="1" Text="----" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource PrimaryTextBrush}" FontFamily="Menlo,DejaVu Sans Mono,monospace" FontSize="10" FontWeight="Bold"/>

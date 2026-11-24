@@ -259,6 +259,19 @@ public class PageAssembler
         ApplyFastextPacket(page, packet, page.FastextPacketIndex);
     }
 
+    /// <summary>Stores <paramref name="crc"/> as the page CRC of packet X/27/0,
+    /// creating that packet (with no Fastext links) if the page has none.</summary>
+    public static void SetPageCrc(TeletextPage page, ushort crc)
+    {
+        byte[] packet = page.FastextPacket is { Length: 42 } existing
+            ? (byte[])existing.Clone()
+            : CreateBlankFastextPacket(page);
+        // ETS transmission order is bits 9-16 followed by bits 1-8.
+        packet[40] = (byte)(crc >> 8);
+        packet[41] = (byte)crc;
+        ApplyFastextPacket(page, packet, page.FastextPacketIndex);
+    }
+
     private static byte[] CreateBlankFastextPacket(TeletextPage page)
     {
         var packet = new byte[42];

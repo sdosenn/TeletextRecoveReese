@@ -3796,6 +3796,22 @@ public partial class MainWindow : Window
         UpdateFastextToolbars();
     }
 
+    private void OnBroadcastPageCrcPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(BroadcastPageCrcBorder).Properties.IsLeftButtonPressed
+            || BroadcastGrid.Page is not { } sourcePage
+            || TeletextPageCrc.ReadTransmitted(sourcePage) is not { } crc
+            || SquashGrid.Page is not { } page)
+            return;
+
+        e.Handled = true;
+        if (TeletextPageCrc.ReadTransmitted(page) == crc) return;
+        EnsurePageHistory(page);
+        PageAssembler.SetPageCrc(page, crc);
+        CommitPageEdit(page);
+        UpdateFastextToolbars();
+    }
+
     private static bool IsEmptyFastextPlaceholder(string text) =>
         string.IsNullOrWhiteSpace(text) || text.All(character => character == '-');
 
