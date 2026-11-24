@@ -47,5 +47,65 @@ internal static class SquashPageOperationsRegressions
         if (source.Grid[0, 1].Character != 'A' || source.RawRows[1]![2] != Odd('A'))
             throw new Exception("Renumbered page shares mutable source packets.");
         Console.WriteLine("PASS: renumber preserves body, subpage, header flags, CRC row and absolute Fastext targets without changing source packets");
+        CopiedRowsKeepTargetAddress();
+    }
+
+    private static byte[] Retarget(byte[] packet, int magazine, int pageNumber = -1)
+    {
+        int row = Hamming.Decode84(packet[0]).Value >> 3 | Hamming.Decode84(packet[1]).Value << 1;
+        int address = (magazine & 7) | row << 3;
+        packet[0] = Hamming.Encode84(address & 15); packet[1] = Hamming.Encode84(address >> 4);
+        if (pageNumber >= 0)
+        {
+            packet[2] = Hamming.Encode84(pageNumber & 15); packet[3] = Hamming.Encode84(pageNumber >> 4);
+        }
+        return packet;
+    }
+
+    private static void CopiedRowsKeepTargetAddress()
+    {
+        // Source: broadcast page 2C5/0003 with its own clock text and control bits.
+        var sourceHeader = Retarget(Packet(0), 2, 0xC5);
+        PageStore.RewriteSubpageHeader(sourceHeader, 0x0003);
+        sourceHeader[8] = Hamming.Encode84(0x0F);
+        sourceHeader[10] = Odd('2'); sourceHeader[41] = Odd('9');
+        var sourceBody = Retarget(Packet(3), 2);
+        sourceBody[2] = Odd('Z');
+
+        // Target: squash page 100/0000 whose header and body are already captured.
+        var target = new TeletextPage { Magazine = 1, PageNumber = 0x00, SubPage = 0 };
+        byte[] targetHeader = Packet(0);
+        PageAssembler.ApplyRow(target, 0, targetHeader, 0);
+        PageAssembler.ApplyRow(target, 3, Packet(3), 3);
+
+        byte[] header = SquashPageOperations.CopyRowContent(sourceHeader, target, 0);
+        byte[] body = SquashPageOperations.CopyRowContent(sourceBody, target, 3);
+        if (!header.AsSpan(0, 10).SequenceEqual(targetHeader.AsSpan(0, 10)))
+            throw new Exception("A copied header replaced the target's page address, subcode or control bits.");
+        if (!header.AsSpan(10).SequenceEqual(sourceHeader.AsSpan(10)))
+            throw new Exception("A copied header did not take the source's display bytes.");
+        if ((Hamming.Decode84(body[0]).Value & 7) != 1 || Hamming.Decode84(body[0]).Value >> 3 != 1
+            || !body.AsSpan(2).SequenceEqual(sourceBody.AsSpan(2)))
+            throw new Exception("A copied body row kept the source magazine or lost its display bytes.");
+
+        // A target without a header gets one addressed to itself, not to the source.
+        var empty = new TeletextPage { Magazine = 8, PageNumber = 0x42, SubPage = 0x0007 };
+        byte[] created = SquashPageOperations.CopyRowContent(sourceHeader, empty, 0);
+        var store = new PageStore();
+        var assembler = new PageAssembler(store);
+        assembler.Feed(created, 0);
+        assembler.FinalizeAll();
+        if (store.GetKnownAddresses().SingleOrDefault() != (8, 0x42, 0x0007))
+            throw new Exception("A header copied onto an empty page was not addressed to that page.");
+        if (!created.AsSpan(10).SequenceEqual(sourceHeader.AsSpan(10)))
+            throw new Exception("A header copied onto an empty page lost the source display bytes.");
+
+        // A row missing from the capture clears the target row, still at its address.
+        byte[] cleared = SquashPageOperations.CopyRowContent(null, target, 3);
+        if ((Hamming.Decode84(cleared[0]).Value & 7) != 1 || cleared.Skip(2).Any(value => value != 0x20))
+            throw new Exception("Transferring an uncaptured row did not clear the target row.");
+        if (!target.RawRows[0]!.SequenceEqual(targetHeader))
+            throw new Exception("CopyRowContent changed the target page.");
+        Console.WriteLine("PASS: transferring a row keeps the target page's magazine, number, subcode and control bits");
     }
 }

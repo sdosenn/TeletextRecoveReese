@@ -60,4 +60,45 @@ public static class SquashPageOperations
         PageAssembler.SetNationalOptionOverride(result, source.NationalOptionOverride);
         return result;
     }
+
+    /// <summary>
+    /// Builds a packet that shows <paramref name="sourceRow"/>'s display bytes in
+    /// <paramref name="row"/> of <paramref name="target"/>. Addressing always stays
+    /// the target's: the magazine/row address and, on row 0, the page number,
+    /// subcode and control bits. Copying a header from another page must change
+    /// only what the row shows, never which page the target is saved as.
+    /// </summary>
+    public static byte[] CopyRowContent(byte[]? sourceRow, TeletextPage target, int row)
+    {
+        if (row is < 0 or > 24) throw new ArgumentOutOfRangeException(nameof(row));
+        byte[] packet = target.RawRows[row] is { Length: TeletextPacket.Length } existing
+            ? (byte[])existing.Clone()
+            : BlankPacket(target, row);
+        int address = (target.Magazine & 7) | (row << 3);
+        packet[0] = Hamming.Encode84(address & 15);
+        packet[1] = Hamming.Encode84(address >> 4);
+
+        int payloadStart = row == 0 ? 10 : 2;
+        if (sourceRow is { Length: TeletextPacket.Length })
+            Array.Copy(sourceRow, payloadStart, packet, payloadStart, TeletextPacket.Length - payloadStart);
+        else
+            // A row the capture never received still clears the target row.
+            Array.Fill(packet, (byte)0x20, payloadStart, TeletextPacket.Length - payloadStart);
+        return packet;
+    }
+
+    private static byte[] BlankPacket(TeletextPage page, int row)
+    {
+        var packet = new byte[TeletextPacket.Length];
+        // A parity-protected teletext space is 0x20 (already has odd parity).
+        Array.Fill(packet, (byte)0x20, 2, TeletextPacket.Length - 2);
+        if (row == 0)
+        {
+            packet[2] = Hamming.Encode84(page.PageNumber & 15);
+            packet[3] = Hamming.Encode84((page.PageNumber >> 4) & 15);
+            for (int index = 4; index < 10; index++) packet[index] = Hamming.Encode84(0);
+            PageStore.RewriteSubpageHeader(packet, page.SubPage);
+        }
+        return packet;
+    }
 }

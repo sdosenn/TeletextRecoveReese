@@ -4701,12 +4701,11 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Copies one row (0=header, 1-24=body) from the currently displayed
-    /// broadcast-stream page into the squash page, at the BYTE level - it copies the
-    /// exact raw 42-byte packet that was captured, then re-decodes it via the same
-    /// ApplyRow path used for live capture, so the squash page's raw bytes and
-    /// decoded grid both stay byte-for-byte faithful to what was actually broadcast
-    /// (important for saving back a real stream later, not just an approximation
-    /// re-encoded from decoded text/colors).</summary>
+    /// broadcast-stream page into the squash page, at the BYTE level - the captured
+    /// display bytes are copied exactly and re-decoded via the same ApplyRow path used
+    /// for live capture, so the squash page stays byte-for-byte faithful to what was
+    /// actually broadcast. The packet's addressing (magazine, and on the header the
+    /// page number, subcode and control bits) remains the squash page's own.</summary>
     private void OnTransferRowClicked(object? sender, RoutedEventArgs e)
     {
         if (_suppressNextTransferRowClick)
@@ -4718,21 +4717,18 @@ public partial class MainWindow : Window
         if (row is < 0 or > 24) return; // grid only has rows 0-24 (25 rows total)
         if (BroadcastGrid.Page is not { } sourcePage) return;
 
-        // A capture can have no packet at all for a visually blank row. Such a row
-        // must still be transferable so it can intentionally clear the target row.
-        // Preserve captured bytes exactly when present; otherwise create a valid
-        // blank packet with the correct magazine/row address.
-        var sourceRaw = sourcePage.RawRows[row];
-        var raw = sourceRaw is not null
-            ? (byte[])sourceRaw.Clone()
-            : CreateBlankPacket(sourcePage, row);
-
         // Always write into the page currently visible in the left pane. This matters
         // after loading/navigating a squashed capture, where the visible page may no
         // longer be the original _squashPage instance created at startup.
         var targetPage = SquashGrid.Page ?? _squashPage;
         _squashPage = targetPage;
         EnsurePageHistory(targetPage);
+
+        // Copy the captured display bytes exactly, but keep the target's magazine,
+        // page number, subcode and control bits. Copying those too would save the
+        // target page as another version of the source page. A row the capture never
+        // received still transfers, so it can intentionally clear the target row.
+        var raw = SquashPageOperations.CopyRowContent(sourcePage.RawRows[row], targetPage, row);
 
         // Keep the recovered page independent from the broadcast instance. Editing
         // the copied row later must never mutate the source capture's raw packet.
